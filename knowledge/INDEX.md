@@ -144,6 +144,33 @@
 
 > 来源：`milestones/M2-安全与确认/2.1-沙盒执行层.md` + `knowledge/sandbox-approval-design.md`。落地 `agent/runtime/sandbox.py`。
 
+**架构示意（命令如何流经沙盒执行层）**：
+
+```mermaid
+flowchart TD
+    B["bash 工具<br/>(M2.1 仍自管 subprocess<br/>M2.4 才改走执行器)"] -->|"构造 ExecRequest"| GE["get_executor()<br/>set_executor 注入点"]
+    GE -->|"默认 build_executor('local')<br/>或测试 FakeExecutor"| EX["Executor.run(req)"]
+    EX --> L["LocalExecutor.run"]
+    EX --> D["DockerExecutor.run"]
+    EX --> E["ExternalExecutor.run"]
+    EX -.->|"测试"| F["FakeExecutor.run"]
+    F --> FR["记录 request · 脚本化返回"]
+    D --> DR["docker run --rm -v :ro|rw<br/>--network none|host"]
+    E --> ER["直通 (外层已隔离)"]
+    L --> CF{"CommandFilter.check<br/>(cmd,profile,cwd)"}
+    CF -->|"danger-full → 跳过"| RUN["_run_subprocess"]
+    CF -->|"blocked"| BLK["ExecResult(ok=False)"]
+    CF -->|"pass"| ISO{"依运行时内核选隔离"}
+    ISO -->|"Linux + unshare 可用"| K["unshare -n 无网命名空间"]
+    ISO -->|"原生 Win/macOS · 或降级"| A["应用层拦截 (CommandFilter)"]
+    K --> RUN
+    A --> RUN
+    DR --> RUN
+    ER --> RUN
+    RUN --> RES["ExecResult(ok,output,error,returncode,sandbox)"]
+    PF["SandboxProfile 三档"] -. "决定 Filter 规则" .-> CF
+```
+
 - **接口签名**：`SandboxProfile(str,Enum)` 三值 `read-only`/`workspace-write`/`danger-full`；`ExecRequest(cmd,cwd,env,timeout=30,profile=WORKSPACE_WRITE)`；`ExecResult(ok,output,error,returncode,sandbox)`（形态对齐 `ToolResult` 的 `ok/output/error`，多 `sandbox` 名）；`Executor` Protocol（`name:str` + `async run(req)->ExecResult`，`runtime_checkable`）；`FilterVerdict(blocked,reason)`；`CommandFilter(workspace).check(cmd,profile,*,cwd)->FilterVerdict`；`LocalExecutor`/`DockerExecutor`/`ExternalExecutor`/`FakeExecutor`；`build_executor(mode,*,workspace,profile)`（mode∈local/docker/external）；模块级 `get_executor()`/`set_executor(ex)` 注入点。
 - **设计铁律（对齐设计文档 §2.2）**：`LocalExecutor` 按**运行时内核**选隔离，而非"是否 Windows 机器"——`os.uname().sysname=="Linux"`（含 WSL2，内核≥5.13）走 `unshare -n` 无网命名空间（断网，零依赖）；原生 Windows / macOS 无 Landlock/seccomp 内核原语，**走 `CommandFilter` 应用层主动拦截**（越界写/联网/破坏性→`ok=False`，**不打印告警**）。`unshare` 不可用（旧内核/无权限）时**降级为进程级 + ⚠️ 告警**（`_log.warning`），**绝不抛异常中断 Agent**。
 - **诚实边界（M2.1 范围）**：Linux 强隔离 = `unshare -n`（真实断网）+ `CommandFilter`（写/破坏性，应用层纵深防御）；内核级 Landlock/seccomp 的 Python 绑定（`landlock`/`seccomp` 包）留作**后续可选增强**（import 失败即跳过，不影响本模块）。macOS/WSL 之外：原生 Windows + `local` 是应用层强制（可被混淆绕过），真隔离靠 `docker`/`external`。`danger-full` **跳过 `CommandFilter`**——网络与写全部放行（用户显式接受风险）。
