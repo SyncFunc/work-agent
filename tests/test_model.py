@@ -116,21 +116,31 @@ async def test_openai_model_stream_accumulates_text_and_tool_calls():
 
 
 # ---------------- 配置（provider 无关） ---------------- #
-def test_settings_reads_env(monkeypatch):
-    monkeypatch.setenv("LLM_API_KEY", "sk-test")
-    monkeypatch.setenv("LLM_MODEL", "deepseek-v4-flash")
+def test_settings_llm_defaults():
+    """无配置时使用内置默认值（不依赖 YAML/运行环境）。"""
+    from pathlib import Path
+
+    import os
+    old = os.environ.get("AGENT_PROJECT_ROOT")
+    os.environ["AGENT_PROJECT_ROOT"] = str(Path.cwd() / "nonexistent")
     s = Settings()
-    assert s.llm_api_key == "sk-test"
-    assert s.llm_model == "deepseek-v4-flash"
+    if old is None:
+        del os.environ["AGENT_PROJECT_ROOT"]
+    else:
+        os.environ["AGENT_PROJECT_ROOT"] = old
+    assert s.llm.model == "deepseek-v4-flash"
+    assert s.llm.base_url == "https://api.deepseek.com"
+    assert s.llm.api_key == ""
 
 
-def test_settings_default_model_is_v4_flash():
-    s = Settings(llm_api_key="sk-x")
-    assert s.llm_model == "deepseek-v4-flash"
+def test_settings_llm_override():
+    s = Settings(llm=dict(api_key="sk-x", model="gpt-4"))
+    assert s.llm.api_key == "sk-x"
+    assert s.llm.model == "gpt-4"
 
 
 def test_model_builds_from_settings_offline():
-    s = Settings(llm_api_key="sk-x", llm_model="deepseek-v4-flash")
+    s = Settings(llm=dict(api_key="sk-x", model="deepseek-v4-flash"))
     m = OpenAICompatibleModel.from_settings(s)
     assert isinstance(m, OpenAICompatibleModel)
     assert m.model == "deepseek-v4-flash"

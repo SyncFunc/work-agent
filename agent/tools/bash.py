@@ -1,26 +1,21 @@
-"""内置命令执行工具：bash。
+"""内置命令执行工具：bash（M2.1+ 经沙箱执行层）。
 
-约定（M1.2 阶段）：
-- 通过 asyncio 创建子进程执行 shell 命令，捕获 stdout/stderr/returncode。
-- 仅捕获输出，不做网络/沙箱隔离（沙箱是 M2 的独立可插拔执行层）。
-- M1.2 测试用 `echo` 这类无害命令；真实环境的风险管控在 M2 接审批。
-- 超时采用「与 sleep 竞速 + kill」的健壮实现（Windows ProactorEventLoop 下
-  wait_for(communicate) 无法取消管道读取，故不依赖 wait_for 的取消语义）。
-- Windows 上 shell 经 cmd.exe 派生子进程，仅 kill 父进程会留下持管道的孤儿，
-  故超时杀进程树（taskkill /T）。
+- 统一经可插拔沙箱执行层 ``get_executor()`` 运行（默认 ``LocalExecutor``，测试可注入
+  ``FakeExecutor``）；不直接 ``subprocess``。
+- 超时 / 杀进程树 / UTF-8 解码等由执行层（``sandbox.py``）负责；本模块只构造
+  ``ExecRequest`` 并转回 ``ToolResult``。
+- 审批通过后需临时提升沙箱时，由 ``loop`` 直接以 ``elevated_profile`` 构造请求执行。
 """
 
 from __future__ import annotations
 
-import asyncio
-import locale
 import os
 import re
-import shutil
-import sys
+from pathlib import Path
 from typing import Any
 
 from agent.runtime.registry import ToolResult, ToolRisk, default_registry, tool
+from agent.runtime.sandbox import ExecRequest, get_executor
 
 
 # 按 ; && || | 切分命令为多段（每段独立判定是否只读）
@@ -71,81 +66,6 @@ def is_readonly_command(cmd: str, allowlist: list[str]) -> bool:
     return True
 
 
-# --------------------------------------------------------------------------- #
-# shell 解析（Windows 优先 git-bash：支持 linux 命令且输出 UTF-8；回退 cmd.exe）
-# --------------------------------------------------------------------------- #
-_SHELL_CACHE: tuple[list[str], bool] | None = None  # (argv 前缀, 是否 -c 模式)
-
-
-def _resolve_shell() -> tuple[list[str], bool]:
-    """返回 ``(prefix, use_c)``。
-
-    - ``prefix``：传给 ``create_subprocess_exec`` 的前缀，如 ``["bash", "-c"]``；
-      命令作为单个 argv 传入（不经二次 shell 解析，``&&`` / ``|`` 由该 shell 处理）。
-    - ``use_c``：True 表示用 ``prefix + [cmd]``（即 ``-c`` 模式）；False 表示走 ``create_subprocess_shell(cmd)``。
-
-    解析顺序：配置 ``bash_shell`` > 自动探测 git-bash > WSL bash > cmd.exe（Windows）/ /bin/sh（其他）。
-    """
-    global _SHELL_CACHE
-    if _SHELL_CACHE is not None:
-        return _SHELL_CACHE
-
-    from agent.config.settings import load_settings
-
-    explicit = load_settings().bash_shell
-    if explicit:
-        _SHELL_CACHE = (explicit.split() + ["-c"], True)
-        return _SHELL_CACHE
-
-    if sys.platform == "win32":
-        # git-bash 的 bash.exe 通常在 Git\bin 下；也接受 PATH 中名字含 git 的 bash。
-        candidates = [
-            r"D:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files\Git\bin\bash.exe",
-            r"C:\Program Files (x86)\Git\bin\bash.exe",
-        ]
-        found = next((c for c in candidates if os.path.isfile(c)), None)
-        if found is None:
-            gb = shutil.which("bash")
-            if gb and "git" in gb.lower():
-                found = gb
-        if found:
-            _SHELL_CACHE = ([found, "-c"], True)
-            return _SHELL_CACHE
-        # 兜底：cmd.exe（注意不保证支持 ls 等 linux 命令）
-        _SHELL_CACHE = (["cmd.exe", "/c"], True)
-        return _SHELL_CACHE
-
-    _SHELL_CACHE = (["/bin/sh", "-c"], True)
-    return _SHELL_CACHE
-
-
-def _decode(b: bytes) -> str:
-    """优先 UTF-8（git-bash 默认）；失败回退系统本地编码（如 GBK），再不行替换。"""
-    if not b:
-        return ""
-    try:
-        return b.decode("utf-8")
-    except UnicodeDecodeError:
-        return b.decode(locale.getpreferredencoding(False), errors="replace")
-
-
-async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
-    """杀掉进程（含 Windows 上的子进程树），使管道尽快关闭。"""
-    if sys.platform == "win32":
-        # taskkill /T 杀整棵树，/F 强制；避免 cmd.exe 派生的子进程变孤儿持管道。
-        try:
-            await asyncio.create_subprocess_exec(
-                "taskkill", "/F", "/T", "/PID", str(proc.pid),
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-        except OSError:
-            pass
-    else:
-        proc.kill()
-
-
 @tool(
     "bash",
     risk=ToolRisk.EXEC,
@@ -163,6 +83,13 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
     },
 )
 async def bash(args: dict[str, Any]) -> ToolResult:
+    """执行 shell 命令（M2.1+）：统一经可插拔沙箱执行层 ``get_executor()``。
+
+    ``get_executor()`` 模块级缓存（默认 ``LocalExecutor``，可被测试注入 ``FakeExecutor``），
+    不在此处直接 ``subprocess``；profile 由执行器持有，本工具只取 ``default_profile`` 填入
+    ``ExecRequest``。审批通过后需临时提升沙箱时，由 ``loop`` 直接构造带 ``elevated_profile``
+    的 ``ExecRequest`` 执行（见 ``loop._run_bash_in_sandbox``），不经本函数。
+    """
     cmd = args["cmd"]
     timeout = args.get("timeout", 30)
 
@@ -171,58 +98,13 @@ async def bash(args: dict[str, Any]) -> ToolResult:
     env["LANG"] = "C.UTF-8"
     env["LC_ALL"] = "C.UTF-8"
 
-    prefix, use_c = _resolve_shell()
-    try:
-        if use_c:
-            # prefix = ["bash", "-c"]；cmd 作为单个 argv 传给 shell，不经二次解析。
-            proc = await asyncio.create_subprocess_exec(
-                *prefix, cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-        else:
-            proc = await asyncio.create_subprocess_shell(
-                cmd,
-                stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
-                env=env,
-            )
-    except OSError as e:
-        return ToolResult(ok=False, error=str(e))
-
-    comm_task = asyncio.ensure_future(proc.communicate())
-    timer = asyncio.ensure_future(asyncio.sleep(timeout))
-    try:
-        done, _ = await asyncio.wait(
-            {comm_task, timer}, return_when=asyncio.FIRST_COMPLETED
-        )
-    except (asyncio.CancelledError, Exception):
-        timer.cancel()
-        raise
-
-    if comm_task in done:
-        timer.cancel()
-        try:
-            stdout_b, stderr_b = comm_task.result()
-        except OSError as e:
-            return ToolResult(ok=False, error=str(e))
-    else:
-        # 超时：杀进程树；被杀后管道关闭，communicate 会迅速收尾。
-        await _kill_tree(proc)
-        try:
-            stdout_b, stderr_b = await asyncio.wait_for(comm_task, timeout=2)
-        except (asyncio.TimeoutError, OSError):
-            stdout_b = b""
-            stderr_b = b""
-        return ToolResult(ok=False, error=f"command timed out after {timeout}s")
-
-    out = _decode(stdout_b) if stdout_b else ""
-    stderr = _decode(stderr_b) if stderr_b else ""
-    rc = proc.returncode or 0
-    if stderr:
-        out = out + ("" if out.endswith("\n") else "\n") + f"[stderr]\n{stderr}"
-    return ToolResult(ok=rc == 0, output=out, error=None if rc == 0 else f"exit code {rc}")
+    executor = get_executor()
+    profile = executor.default_profile
+    req = ExecRequest(cmd=cmd, cwd=Path.cwd(), env=env, timeout=timeout, profile=profile)
+    r = await executor.run(req)
+    # 直接透传执行层的输出与错误：sandbox 的 ExecResult.error 已含语义信息
+    # （如 "command timed out after 1s" 或 "沙箱拦截：..."），成功时为 None。
+    return ToolResult(ok=r.ok, output=r.output, error=r.error)
 
 
 default_registry.register(bash)

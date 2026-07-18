@@ -1,11 +1,11 @@
-"""M1.4 验收：PLAN 模式（计划落盘 + 进度更新 + 风险门控 + 事件往返）。
+"""M1.4 验收：PLAN 模式（计划落盘 + 进度更新 + 事件往返）。
 
 覆盖（详见 milestones/M1-骨架/1.4-PLAN模式.md）：
-- plan 模式：FakeModel 调 present_plan → 计划文件生成（正文 + 步骤），提前返回，无 mutating 工具执行。
-- plan 模式误调写工具 → 被风险门控拦截（ToolResult(ok=False, 含 "plan mode blocks")），循环不崩。
+- plan 模式：FakeModel 调 present_plan → 计划文件生成（正文 + 步骤），提前返回。
 - 执行期（plan_path 已知）调 update_plan → 计划文件步骤状态被改写、emit plan_progress。
 - 非 plan 模式：同一脚本正常执行写工具、不进入 plan 提前返回。
 - PlanStore 渲染↔解析对称；plan / plan_progress 事件 JSON 往返保真。
+- 执行限制由 sandbox_profile + approval_mode 保证（如 read-only + never），不再有独立风险门控。
 全程 FakeModel，不依赖真实 LLM。
 """
 
@@ -29,9 +29,19 @@ async def _echo(args: dict) -> ToolResult:
 
 
 def _settings(**kw) -> Settings:
-    base = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3, clarify_enabled=False)
-    base.update(kw)
-    return Settings(**base)
+    loop = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3)
+    for k in ("max_iterations", "max_tool_concurrency", "max_repeat_calls", "max_tool_output_chars"):
+        if k in kw:
+            loop[k] = kw.pop(k)
+    plan = {}
+    if "plan_mode" in kw:
+        plan["mode"] = kw.pop("plan_mode")
+    if "plan_file" in kw:
+        plan["file"] = kw.pop("plan_file")
+    clarify = dict(enabled=False)
+    if "clarify_enabled" in kw:
+        clarify["enabled"] = kw.pop("clarify_enabled")
+    return Settings(loop=loop, plan=plan, clarify=clarify, **kw)
 
 
 def _make_registry() -> ToolRegistry:
@@ -62,7 +72,8 @@ async def test_plan_mode_writes_plan_file(tmp_path):
     assert [e for e in res.events if e.type == "tool_use"] == []
 
 
-async def test_plan_mode_blocks_mutating_tool(tmp_path):
+async def test_plan_mode_write_executes_normally(tmp_path):
+    """PLAN 模式下写工具不再被风险门控拦截（由沙箱 read-only profile 负责）。"""
     settings = _settings(plan_mode=True, plan_file=str(tmp_path / "plan.md"))
     model = FakeModel([
         Decision(tool_calls=[ToolCall(id="w1", name="write", arguments={"path": "x", "content": "y"})]),
@@ -71,9 +82,9 @@ async def test_plan_mode_blocks_mutating_tool(tmp_path):
     res = await AgentLoop(model, _make_registry(), settings).run("写点东西")
 
     assert res.needs_plan_confirm is True  # 第二次决策转为计划，循环未崩
+    # 写工具被正常执行（不再被 plan mode 拦截），ToolResult ok
     tr = next(e for e in res.events if e.type == "tool_result")
-    assert tr.tool_result is not None and not tr.tool_result.ok
-    assert "plan mode blocks" in (tr.tool_result.error or "")
+    assert tr.tool_result is not None and tr.tool_result.ok
 
 
 async def test_exec_mode_update_plan_rewrites(tmp_path):
@@ -218,8 +229,8 @@ async def test_plan_mode_allows_find_command(tmp_path):
     assert res.text == "found files"
 
 
-async def test_plan_mode_blocks_mutating_bash(tmp_path):
-    """PLAN 模式下可变 bash（如 rm -rf）仍被风险门控拦截，循环不崩。"""
+async def test_plan_mode_mutating_bash_not_blocked_by_plan_mode(tmp_path):
+    """PLAN 模式下可变 bash 不再被独立风险门控拦截（拦截由沙箱层 CommandFilter 负责），循环不崩。"""
     from agent.tools.bash import bash as bash_spec
 
     reg = _make_registry()
@@ -232,11 +243,11 @@ async def test_plan_mode_blocks_mutating_bash(tmp_path):
     res = await AgentLoop(model, reg, settings).run("探索")
 
     assert res.needs_plan_confirm is True  # 第二次决策转为计划，循环未崩
-    blocked = next(
-        e for e in res.events
-        if e.type == "tool_result" and e.tool_result is not None and not e.tool_result.ok
-    )
-    assert "plan mode blocks mutating bash" in (blocked.tool_result.error or "")
+    # 不再被 plan mode 拦截，错误来自沙箱层 CommandFilter（而非 plan mode 风险门控）
+    tr = next(e for e in res.events if e.type == "tool_result")
+    assert tr.tool_result is not None and not tr.tool_result.ok
+    assert "plan mode blocks" not in (tr.tool_result.error or "")
+    assert "沙箱拦截" in (tr.tool_result.error or "")
 
 
 def test_plan_events_roundtrip():

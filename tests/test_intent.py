@@ -38,10 +38,16 @@ def _make_registry() -> ToolRegistry:
 
 
 def _settings(**kw) -> Settings:
-    base = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3,
-                clarify_enabled=True, max_clarify_rounds=2)
-    base.update(kw)
-    return Settings(**base)
+    loop = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3)
+    for k in ("max_iterations", "max_tool_concurrency", "max_repeat_calls", "max_tool_output_chars"):
+        if k in kw:
+            loop[k] = kw.pop(k)
+    clarify = dict(enabled=True, max_rounds=2)
+    if "clarify_enabled" in kw:
+        clarify["enabled"] = kw.pop("clarify_enabled")
+    if "max_clarify_rounds" in kw:
+        clarify["max_rounds"] = kw.pop("max_clarify_rounds")
+    return Settings(loop=loop, clarify=clarify, **kw)
 
 
 def _ask_clarify(q: dict) -> Decision:

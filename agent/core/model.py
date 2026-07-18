@@ -26,6 +26,9 @@ class ToolCall:
     id: str
     name: str
     arguments: dict[str, Any]
+    # 模型在调用时于 arguments 内动态返回的保留字段 ``_approval_request`` 会被适配器
+    # 提升到这里并从 arguments 剥除（真实工具看不到）。无需在工具 schema 里声明。
+    approval_request: bool = False
 
 
 @dataclass
@@ -130,7 +133,12 @@ def _from_openai(tc: Any) -> ToolCall:
         arguments = json.loads(raw) if raw else {}
     except json.JSONDecodeError:
         arguments = {}
-    return ToolCall(id=tc.id, name=tc.function.name, arguments=arguments)
+    # 动态保留字段：模型在 args 内返回 ``_approval_request``，harness 提升为字段并从 args 剥除
+    # （真实工具永远看不到这个保留字段）。无需在工具 schema 里静态声明。
+    approval_request = bool(arguments.pop("_approval_request", False))
+    return ToolCall(
+        id=tc.id, name=tc.function.name, arguments=arguments, approval_request=approval_request
+    )
 
 
 def _usage_to_dict(usage: Any) -> dict[str, int] | None:
@@ -252,7 +260,7 @@ class OpenAICompatibleModel:
 
     @classmethod
     def from_settings(cls, settings: Settings, client: Any | None = None) -> "OpenAICompatibleModel":
-        api_key = (settings.llm_api_key or "").strip()
+        api_key = (settings.llm.api_key or "").strip()
         if not api_key:
             raise ValueError(
                 "未配置 LLM_API_KEY（模型 API 密钥）。请在项目根目录的 .env 中设置 "
@@ -260,8 +268,8 @@ class OpenAICompatibleModel:
             )
         return cls(
             api_key=api_key,
-            base_url=settings.llm_base_url,
-            model=settings.llm_model,
+            base_url=settings.llm.base_url,
+            model=settings.llm.model,
             client=client,
         )
 
@@ -331,14 +339,14 @@ class OpenAICompatibleModel:
                         tc_name=slot["name"] or None,
                         tc_args=slot["arguments"] or None,
                     )
-        tool_calls = [
-            ToolCall(
-                id=s["id"],
-                name=s["name"],
-                arguments=json.loads(s["arguments"] or "{}"),
+        tool_calls = []
+        for s in acc.values():
+            a = json.loads(s["arguments"] or "{}")
+            # 同 _from_openai：剥除动态保留字段 _approval_request
+            approval_request = bool(a.pop("_approval_request", False))
+            tool_calls.append(
+                ToolCall(id=s["id"], name=s["name"], arguments=a, approval_request=approval_request)
             )
-            for s in acc.values()
-        ]
         yield StreamEvent(
             type="done",
             decision=Decision(text="".join(text_buf) or None, tool_calls=tool_calls, usage=usage),

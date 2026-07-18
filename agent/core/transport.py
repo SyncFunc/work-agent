@@ -27,6 +27,7 @@ if TYPE_CHECKING:
     from agent.core.events import EventStream
     from agent.core.intent import Question
     from agent.core.loop import AgentResult
+    from agent.runtime.approval import Action
 
 
 @runtime_checkable
@@ -52,6 +53,14 @@ class AgentTransport(Protocol):
 
     async def confirm_plan(self) -> bool:
         """询问用户是否执行当前计划（仅交互环境调用；异步，因在事件循环内被 await）。"""
+        ...
+
+    async def approve(self, action: "Action") -> bool:
+        """审批门 ASK 回调：向用户展示待审批的操作，返回 True 放行 / False 拒绝。
+
+        非交互环境的行为由 ``ApprovalGate.noninteractive_default`` 决定（默认放行），
+        所以本方法仅在被 ``gate.authorize()`` 调用时触发，且仅在交互环境才真正弹框。
+        """
         ...
 
     def notify(self, message: str) -> None:

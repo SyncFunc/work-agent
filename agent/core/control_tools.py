@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from agent.config.settings import Settings
+from agent.config.settings import ClarifyConfig
 
 # --------------------------------------------------------------------------- #
 # 工具名常量（被各模块引用，避免硬编码字符串）
@@ -106,7 +106,7 @@ UPDATE_PLAN_TOOL: dict[str, Any] = {
 
 
 def collect_control_tools(
-    settings: Settings,
+    clarify: ClarifyConfig,
     *,
     plan_mode: bool = False,
     has_plan: bool = False,
@@ -114,13 +114,13 @@ def collect_control_tools(
     """按当前模式收集应下发给模型的控制工具。
 
     规则（确定性，符合 98/1.6 法则）：
-    - `ask_clarification`：随 `settings.clarify_enabled` 并入。
+    - `ask_clarification`：随 `clarify.enabled` 并入。
     - `present_plan`：仅 **plan 模式**（`plan_mode=True`）并入。
     - `update_plan`：仅 **执行期**（`has_plan=True` 且 **非** plan 模式）并入——
       用于更新计划进度（M1.4 设计约束：update_plan 在「非 plan 模式」下使用）。
     """
     tools: list[dict] = []
-    if settings.clarify_enabled:
+    if clarify.enabled:
         tools.append(ASK_CLARIFICATION_TOOL)
     if plan_mode:
         tools.append(PRESENT_PLAN_TOOL)

@@ -28,7 +28,6 @@ from agent.runtime.approval import (
     Action,
     ApprovalGate,
     ApprovalMode,
-    ApprovalUI,
     Decision,
 )
 
@@ -56,6 +55,5 @@ __all__ = [
     "Action",
     "ApprovalGate",
     "ApprovalMode",
-    "ApprovalUI",
     "Decision",
 ]

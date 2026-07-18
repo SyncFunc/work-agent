@@ -40,6 +40,7 @@ from agent.core.control_tools import (
 from agent.core.events import Event, EventStream
 from agent.core.intent import Question
 from agent.core.transport import AgentTransport
+from agent.runtime.approval import Action
 
 
 # 写/改类工具名（与 agent.tools.fs 对齐）；其 ToolResult.diff 以高亮面板展示改动。
@@ -105,7 +106,7 @@ def _render_steps_panel(steps: Any, *, title: str) -> Panel:
     return Panel("\n".join(lines), title=title, border_style="magenta", expand=False)
 
 
-class TerminalTransport:
+class TerminalTransport(AgentTransport):
     """``AgentTransport`` 的 rich 终端实现：把 HITL 交互与事件流渲染统一到单一契约。"""
 
     def __init__(self, *, interactive: bool) -> None:
@@ -432,6 +433,26 @@ class TerminalTransport:
 
     def notify(self, message: str) -> None:
         typer.echo(message, err=True)
+
+    async def approve(self, action: "Action") -> bool:
+        """审批面板：展示待审批的操作并等待用户 y/N 确认。"""
+        self._console.print()
+        tool_label = {"bash": "🐚 命令", "read": "📖 读取", "write": "✏️ 写入", "edit": "✏️ 编辑"}.get(
+            action.tool, f"🔧 {action.tool}"
+        )
+        body = f"[bold]{tool_label}[/bold]\n"
+        body += f"[dim]{action.description}[/dim]\n"
+        if action.risk:
+            body += f"\n[cyan]风险等级:[/cyan] {action.risk}"
+        if action.approval_request:
+            body += "\n[yellow]模型主动请求审批[/yellow]"
+        self._console.print(Panel(body.strip(), title="🔒 审批请求", border_style="yellow", expand=False))
+        try:
+            session = PromptSession()
+            ans = await session.prompt_async("是否允许执行？ [y/N]: ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return ans.strip().lower() in {"y", "yes", "是"}
 
 
 # --------------------------------------------------------------------------- #

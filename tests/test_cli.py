@@ -145,7 +145,7 @@ def test_trace_parent_child():
         Decision(tool_calls=[ToolCall(id="t1", name="echo", arguments={"x": 1})]),
         Decision(text="done"),
     ])
-    loop = AgentLoop(model, _make_registry(), Settings(max_iterations=10), tracer=tracer)
+    loop = AgentLoop(model, _make_registry(), Settings(loop=dict(max_iterations=10)), tracer=tracer)
     asyncio.run(loop.run("task"))
 
     roots = [s for s in tracer.spans if s.parent_id is None]

@@ -140,7 +140,7 @@ def chat() -> None:
         raise typer.Exit(code=1)
     tracer = Tracer()
     reg = default_registry
-    session = Session(model, reg, settings, tracer, plan_mode=settings.plan_mode)
+    session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode)
     transport = TerminalTransport(interactive=True)
 
     typer.echo("进入 chat 模式（/plan /exec 切换模式；exit/quit 退出）。")
@@ -160,14 +160,14 @@ def chat() -> None:
             session.plan_mode = False
             # 若尚无已知计划但计划文件已落盘（如刚 /plan 产出未显式批准），自动载人，
             # 使 EXEC 模式能按 plan_path 下发 update_plan（推进步骤进度）。
-            if session.plan_path is None and os.path.isfile(settings.plan_file):
-                session.plan_path = settings.plan_file
+            if session.plan_path is None and os.path.isfile(settings.plan.file):
+                session.plan_path = settings.plan.file
             typer.echo("→ 已切换到 EXEC 模式（可执行）", err=True)
             continue
         if cmd in {"/approve"}:
             # 同上：自动载人已落盘计划，避免「已展示未批准」状态下丢失 plan_path。
-            if session.plan_path is None and os.path.isfile(settings.plan_file):
-                session.plan_path = settings.plan_file
+            if session.plan_path is None and os.path.isfile(settings.plan.file):
+                session.plan_path = settings.plan.file
             if session.plan_path:
                 session.plan_mode = False
                 typer.echo(f"→ 已批准计划并切到 EXEC 模式：{session.plan_path}", err=True)
