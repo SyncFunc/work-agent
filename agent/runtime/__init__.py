@@ -24,6 +24,13 @@ from agent.runtime.sandbox import (
     get_executor,
     set_executor,
 )
+from agent.runtime.approval import (
+    Action,
+    ApprovalGate,
+    ApprovalMode,
+    ApprovalUI,
+    Decision,
+)
 
 __all__ = [
     "RISK_LEVELS",
@@ -46,4 +53,9 @@ __all__ = [
     "build_executor",
     "get_executor",
     "set_executor",
+    "Action",
+    "ApprovalGate",
+    "ApprovalMode",
+    "ApprovalUI",
+    "Decision",
 ]

@@ -180,4 +180,40 @@ flowchart TD
 - **不破坏既有**：`bash` 工具本体**本步未改**（仍自管 subprocess，M2.4 才切换执行器）；PLAN 风险门控、`ToolResult` 失败降级、`_cap_result` 截断全部不变。`FakeExecutor` 记 `requests:list[ExecRequest]`，可在测试中断言 `ExecRequest.profile` 形态。
 - **落地验证**：`tests/test_sandbox.py`（14 用例）全绿——`build_executor` 按 mode 返回正确实例、四执行器满足 `Executor` 协议、`FakeExecutor` 记录请求+脚本化返回、`ExternalExecutor` 直通 `echo` 成功、`LocalExecutor` 在 CI(Linux/原生Windows/macOS) 跑通 `echo`（不强依赖 root）、`CommandFilter` 拦截网络/越界写/破坏性且静默（断言无 "未隔离" 告警）、`danger-full` 放行网络、注入点 `set/get_executor`。全量 `pytest` 99 passed。
 
+## M2.2 沉淀（审批门 ApprovalGate）
+
+> 来源：`milestones/M2-安全与确认/2.2-审批门.md` + `knowledge/sandbox-approval-design.md` §3。落地 `agent/runtime/approval.py`。
+
+- **接口签名**：`ApprovalMode(str,Enum)` 四值 `untrusted`/`on-request`/`on-failure`/`never`；`Action(tool,risk,args,description,approval_request=False,escalated=False)`；`Decision(verdict,reason)`（`verdict∈{allow,deny,ask}`）；`ApprovalGate(mode, *, allow, deny, ui, noninteractive_default="allow", sandbox_profile="workspace-write")`；`decide(action, sandbox_profile=None)->Decision`（**纯函数**）；`async authorize(action)->bool`（仅 ASK 分支 `await ui.approve`）。
+- **决策顺序铁律（安全不变量）**：`deny`(1) > `escalated`(2) > `read 非 untrusted`(3) > `allow`(4) > `mode`(5)。`deny` 优先于**一切**模式（含 `never` 下 deny 仍 DENY）；`escalated` 无视 mode 强制 ASK；`allow` 命中短路 ALLOW（但排在 deny/escalated 之后，故提权/deny 不受影响）。
+- **规则匹配**：`allow`/`deny` 字符串列表，支持**前缀匹配**（`rm `/`git push`）与**正则**（`/.../` 包裹，内部 `re.search`）。匹配对象：bash→`args["cmd"]` 经 `_normalize_cmd` 切段+去 `sudo`/`doas`/环境变量赋值（故 `sudo rm x` 被 `rm ` 命中）；`read`/`write`/`edit`→`args["path"]`。正则务必 `/.../` 包裹，裸串按前缀。
+- **HITL 协议**：`ui: ApprovalUI`（`runtime_checkable` Protocol，仅 `async approve(action)->bool`），M2.5 在 `AgentTransport` 实现；`gate` 不持有 IO，只在 ASK 分支调回调，确定性可测。`ui=None` 时 ASK 按 `noninteractive_default`（默认 `allow`）放行，不阻塞 CI（你已委派任务且命令进沙箱）。
+- **感知沙箱**：`decide` 接收 `sandbox_profile`（包含程度信号），当前决策**不因其改变 verdict**（profile 在执行时由沙箱层 OS 强制隔离，见 M2.1）；签名保留供 M2.4 增强。profile 是"放行后的封顶"，与审批结果正交。
+- **裁决树 mermaid**（decide 内部，权威图）：
+
+```mermaid
+flowchart TD
+    D["decide(action, sandbox_profile)"] --> Q1{"deny 规则命中?"}
+    Q1 -- "是" --> DN["DENY<br/>(安全网, 覆盖一切模式)"]
+    Q1 -- "否" --> QE{"escalated 提权?<br/>装包 / 改系统配置"}
+    QE -- "是" --> SH["ASK<br/>(强制, 不理会 mode)"]
+    QE -- "否" --> Q2{"risk==read 且<br/>mode!=untrusted?"}
+    Q2 -- "是" --> A1["ALLOW"]
+    Q2 -- "否" --> Q3{"allow 规则命中?"}
+    Q3 -- "是" --> A2["ALLOW<br/>(跳过 ASK, 不解除沙箱)"]
+    Q3 -- "否" --> Q4{"mode?"}
+    Q4 -- "untrusted" --> Q5{"risk?"}
+    Q5 -- "edit / exec" --> S["ASK<br/>(默认安全档, 每步问)"]
+    Q5 -- "read" --> A3["ALLOW"]
+    Q4 -- "on-request" --> Q6{"命令带模型<br/>approval_request 标记?"}
+    Q6 -- "是" --> S2["ASK<br/>(LLM 决定问此条)"]
+    Q6 -- "否" --> A4["ALLOW<br/>(全自动, 仅 deny 能拦)"]
+    Q4 -- "on-failure" --> A5["ALLOW<br/>(失败才交 ui.approve)"]
+    Q4 -- "never" --> A6["ALLOW<br/>(仍受 deny 约束)"]
+```
+
+- **与 PLAN 模式关系**：`ApprovalGate` 仅 EXEC 模式介入；PLAN 的 `_risk_blocked` 不动。纵深两道独立闸门（设计文档 §1）。
+- **对 M2.4 约束**：`loop._exec_tools` 执行每工具前构造 `Action` 并 `await gate.authorize`；拒绝/失败返回既有 `ToolResult(ok=False)` 落事件流、不崩循环。`on-failure` 模式 `authorize` 先 ALLOW，失败后再调 `ui.approve`（M2.4 实现）。
+- **落地验证**：`tests/test_approval.py` 30 passed；全量 `pytest` 129 passed。覆盖四模式矩阵(12)、deny 优先(含盖过 allow 短路)、allow 短路、escalated 无视模式、on-request 仅 `approval_request` 时 ASK、非交互默认 allow/deny、假 ui 真假、纯函数可重复、`sudo rm` 归一化、正则 `/^curl .*example\.com/`、路径 `/etc/` 匹配、接受 mode 字符串。
+
 
