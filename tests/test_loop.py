@@ -10,7 +10,7 @@ import pytest
 
 from agent.config.settings import Settings
 from agent.core.events import EventStream
-from agent.core.loop import AgentLoop, LoopMaxIteration, LoopStalled
+from agent.core.loop import AgentLoop, LoopStalled
 from agent.core.model import Decision, FakeModel, RecordingModel, ToolCall
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 
@@ -121,15 +121,30 @@ async def test_stall_detected_on_repeated_identical_calls():
     assert counter["n"] == 4
 
 
-async def test_max_iterations_hard_cap():
+async def test_max_iterations_soft_limit_returns_result():
+    """回归（M1.x 修复）：max_iterations 触顶不再抛 LoopMaxIteration 中断会话，而是软返回
+    ——带「已达最大轮次」提示、标记 soft_limit_hit、并把累计上下文（messages）交回，使会话
+    可续（上层 chat REPL 自然进入下一轮，用户接棒续跑，不丢失历史）。"""
     registry = _make_registry()
     calls = [ToolCall(id="c1", name="echo", arguments={"x": 2})]
     # 永不 final，但把 max_repeat_calls 调高，避免被 stall 抢先
     model = RecordingModel(decision=Decision(tool_calls=calls))
     loop = AgentLoop(model, registry, _settings(max_iterations=5, max_repeat_calls=1000))
 
-    with pytest.raises(LoopMaxIteration):
-        await loop.run("never ends")
+    result = await loop.run("never ends")
+
+    assert result.soft_limit_hit is True
+    assert result.text and "最大轮次" in result.text
+    assert result.iterations == 5
+    # 关键：累计上下文已交回，且自洽（最后一轮的 tool 回执齐全），可直接作为下一轮输入。
+    assert result.messages is not None
+    last = result.messages[-1]
+    assert last.role == "tool"  # 末轮 tool 调用已配对回执，无悬空 tool_calls
+    # 与 session 续接一致：下一轮 run 用该 messages 不会触发协议 400、不抛异常。
+    # （loop 构造时已带 max_repeat_calls=1000，模型永不 final 会再次软返回，但不再崩溃）
+    cont = await loop.run("继续", result.messages)
+    assert cont.messages is not None  # 续跑成功（不抛、不崩）
+    assert cont.soft_limit_hit is True
 
 
 async def test_unknown_tool_does_not_crash_loop():
@@ -253,11 +268,56 @@ async def test_empty_name_toolcall_treated_as_final():
 
     assert result.text == "这是审核计划"
     assert result.iterations == 1  # 关键：只迭代一次，未陷入刷屏
-    assert not any(e.type == "tool_result" for e in result.events)  # 无有效工具派发
+
+
+async def test_tool_call_delta_streamed_to_presenter():
+    """回归（write 流式输出）：模型流式产出工具调用参数（tool_call_delta）时，loop 把
+    增量逐个回调给 presenter.on_tool_call_delta，使 UI 能在参数生成过程中实时预览
+    （如 write/edit 的 content），而非等到决策收尾才一次性出现。"""
+    from agent.core.model import StreamEvent
+
+    class _DeltaModel:
+        def __init__(self) -> None:
+            self.n = 0
+
+        async def stream(self, messages, tools=None):
+            self.n += 1
+            if self.n == 1:
+                yield StreamEvent(type="tool_call_delta", tc_index=0, tc_name="echo",
+                                  tc_args='{"x": 1')
+                yield StreamEvent(type="tool_call_delta", tc_index=0, tc_name="echo",
+                                  tc_args='{"x": 123}')
+                yield StreamEvent(type="done", decision=Decision(
+                    tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 123})]))
+            else:
+                yield StreamEvent(type="done", decision=Decision(text="done"))
+
+    deltas = []
+
+    class _Spy:
+        def on_tool_call_delta(self, index, name, args_raw):
+            deltas.append((index, name, args_raw))
+
+        def on_text(self, text, kind):
+            pass
+
+        def on_tool_call(self, tc):
+            pass
+
+        def on_tool_result(self, tc, res):
+            pass
+
+    loop = AgentLoop(_DeltaModel(), _make_registry(), _settings())
+    await loop.run("use a tool", presenter=_Spy())
+
+    assert len(deltas) == 2
+    assert deltas[0][1] == "echo"
+    assert '{"x": 1' in deltas[0][2]
+    assert "123" in deltas[1][2]
     # 即便空白 name（如 " "）也应被过滤
     noise_ws = Decision(text="x", tool_calls=[ToolCall(id="w", name=" ", arguments={})])
     model2 = FakeModel([noise_ws])
-    result2 = await AgentLoop(model2, registry, _settings()).run("t")
+    result2 = await AgentLoop(model2, _make_registry(), _settings()).run("t")
     assert result2.iterations == 1
     assert result2.text == "x"
 

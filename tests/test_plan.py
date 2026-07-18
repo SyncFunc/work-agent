@@ -251,3 +251,77 @@ def test_plan_events_roundtrip():
     pp = next(e for e in rebuilt if e.type == "plan_progress")
     assert pp.plan_path == "/tmp/p.md"
     assert pp.plan_update == {"step_id": "S1", "status": "done", "note": "ok"}
+
+
+class _FakeUI:
+    """最小 SessionUI 替身：confirm_plan 为 async（复现修复前嵌套事件循环崩溃点）。"""
+
+    def __init__(self, confirm: bool = True) -> None:
+        self.interactive = True
+        self.confirm = confirm
+        self.shown_plan = False
+
+    async def ask(self, question):
+        return ""
+
+    def show_questions(self, questions):
+        pass
+
+    def show_plan(self, res):
+        self.shown_plan = True
+
+    async def confirm_plan(self) -> bool:
+        return self.confirm
+
+    def notify(self, message):
+        pass
+
+
+async def test_exec_turn_gets_update_plan_after_present(tmp_path):
+    """回归 M1.4+chat 修复：PLAN 模式 present_plan 并经（async）确认批准后，
+    EXEC 续跑轮次下发给模型的工具应包含 update_plan，且确认不触发
+    'asyncio.run() cannot be called from a running event loop'。"""
+    from agent.core.session import Session
+
+    plan_file = str(tmp_path / "plan.md")
+    settings = _settings(plan_mode=True, plan_file=plan_file)
+    model = FakeModel([
+        _pp("目标：写计划", [{"id": "S1", "title": "t"}]),   # run1：present_plan
+        Decision(tool_calls=[ToolCall(
+            id="u1", name=UPDATE_PLAN_TOOL_NAME,
+            arguments={"step_id": "S1", "status": "in_progress"})]),
+        Decision(text="完成"),                                 # run2 续跑：update_plan → final
+    ])
+    session = Session(model, _make_registry(), settings, plan_mode=True)
+    res, err = await session.step("做一个计划", _FakeUI(confirm=True),
+                                  yes=False, fatal_plan_decline=False)
+
+    assert err is None
+    assert res.text == "完成"
+    # present 后（批准前）即记录 plan_path，使 EXEC 轮次可按其下发 update_plan
+    assert session.plan_path is not None
+    # 第二次 act（EXEC 模式）下发给模型的工具应包含 update_plan
+    exec_tools = model.tools_seen[1]
+    names = [t["function"]["name"] for t in exec_tools]
+    assert UPDATE_PLAN_TOOL_NAME in names
+    # 计划步骤被 update_plan 改写为 in_progress
+    plan = PlanStore.read_plan(session.plan_path)
+    assert plan.steps[0].status == "in_progress"
+
+
+async def test_plan_present_records_path_even_if_declined(tmp_path):
+    """present_plan 后即便用户拒绝批准，也应记录 plan_path（不崩溃），
+    保持 PLAN 模式、不丢已知计划。"""
+    from agent.core.session import Session
+
+    plan_file = str(tmp_path / "plan.md")
+    settings = _settings(plan_mode=True, plan_file=plan_file)
+    model = FakeModel([_pp("目标：写计划", [{"id": "S1", "title": "t"}])])
+    session = Session(model, _make_registry(), settings, plan_mode=True)
+    res, err = await session.step("做一个计划", _FakeUI(confirm=False),
+                                  yes=False, fatal_plan_decline=False)
+
+    assert err is None
+    assert session.plan_path is not None            # 已记录，供后续 /exec 启用 update_plan
+    assert session.plan_mode is True                # 拒绝 → 保持 PLAN 模式
+    assert res.needs_plan_confirm is True

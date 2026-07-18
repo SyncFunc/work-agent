@@ -54,16 +54,25 @@ class Decision:
 
 @dataclass
 class StreamEvent:
-    """流式事件：逐片文本 (type="text")，或收尾 (type="done")。
+    """流式事件：逐片文本 (type="text")，工具调用增量 (type="tool_call_delta")，或收尾 (type="done")。
 
     ``kind`` 区分文本性质：``"reasoning"``=模型思考过程，``"content"``=正式输出。
     仅 type="text" 时有效；type="done" 时忽略。
+
+    ``tool_call_delta``：模型流式生成工具调用参数时的增量。``tc_index`` 区分同一次
+    Decision 里的多个并行工具调用；``tc_args`` 是该调用**累计**的原始 arguments JSON
+    字符串（可能不完整，仅供 UI 预览）；``tc_name``/``tc_id`` 已知时携带。
     """
 
-    type: str  # "text" | "done"
+    type: str  # "text" | "tool_call_delta" | "done"
     text: str | None = None
     decision: Decision | None = None
     kind: str | None = None  # "reasoning" | "content"（仅 text 事件）
+    # tool_call_delta 专用
+    tc_index: int | None = None
+    tc_id: str | None = None
+    tc_name: str | None = None
+    tc_args: str | None = None  # 该工具调用累计的原始 arguments JSON 字符串（可能不完整）
 
 
 # --------------------------------------------------------------------------- #
@@ -313,6 +322,15 @@ class OpenAICompatibleModel:
                         slot["name"] += tc.function.name
                     if tc.function and tc.function.arguments:
                         slot["arguments"] += tc.function.arguments
+                    # 工具调用参数随流式逐步产出：发出增量事件，供 UI 实时预览
+                    # （如 write/edit 的 content 在生成过程中即可显示，避免「大段写入时无输出」）。
+                    yield StreamEvent(
+                        type="tool_call_delta",
+                        tc_index=tc.index,
+                        tc_id=slot["id"] or None,
+                        tc_name=slot["name"] or None,
+                        tc_args=slot["arguments"] or None,
+                    )
         tool_calls = [
             ToolCall(
                 id=s["id"],

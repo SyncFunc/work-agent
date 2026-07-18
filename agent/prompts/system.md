@@ -44,8 +44,19 @@ review. Do not start implementing on your own.
 
 {% if has_plan and not plan_mode %}
 ## Executing an approved plan
-An approved plan is active. Keep its progress traceable: before starting a step, call
+An approved plan is active — the user has already approved it. Do **not** re-present the
+plan and do **not** check any plan-status files (e.g. `.plan_status`); such files do not
+exist and checking them wastes a round-trip. Just proceed to execute.
+
+Keep its progress traceable: before starting a step, call
 `update_plan(step_id, "in_progress")`; when the step is finished call
 `update_plan(step_id, "done")`; if you are blocked call `update_plan(step_id, "blocked")`;
 if you decide to skip it call `update_plan(step_id, "skipped")`.
 {% endif %}
+
+## Editing files
+- Use `edit` for **local changes** (replace a specific `old_string` with `new_string`). It is
+  safer and produces a smaller, reviewable diff. Make `old_string` unique — if it appears
+  multiple times, add more surrounding context or pass `replace_all: true`.
+- Use `write` only to **create a new file** or **fully overwrite** an existing one.
+- Both tools return a unified `diff` so the change is visible in the UI.

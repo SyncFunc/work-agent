@@ -20,11 +20,16 @@ RISK_LEVELS = ("read", "edit", "exec")
 
 @dataclass
 class ToolResult:
-    """工具执行结果。ok 标记成功/失败；output 为文本输出；error 为错误信息。"""
+    """工具执行结果。ok 标记成功/失败；output 为文本输出；error 为错误信息。
+
+    diff 为可选的 unified-diff 文本（写/改类工具回传，供 UI 展示改动），不计入
+    output 截断逻辑（仅用于展示，不影响模型上下文）。
+    """
 
     ok: bool
     output: str = ""
     error: str | None = None
+    diff: str | None = None
 
 
 @dataclass
@@ -65,7 +70,7 @@ def _cap_result(r: ToolResult, max_chars: int) -> ToolResult:
         changed = True
     if not changed:
         return r
-    return ToolResult(ok=r.ok, output=out, error=err)
+    return ToolResult(ok=r.ok, output=out, error=err, diff=r.diff)
 
 
 class ToolRegistry:

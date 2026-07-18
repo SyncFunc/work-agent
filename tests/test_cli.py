@@ -80,6 +80,64 @@ def test_run_clarification_non_interactive_errors(runner, monkeypatch):
     assert "用哪个框架" in result.output  # 问题被打印出来（合并输出）
 
 
+def test_parse_multi_selection_by_index_and_label():
+    """回归：多选解析支持「编号(逗号分隔)」与「标签(逗号分隔)」，并去重保序。
+
+    对应修复：_ptk_multi_choice 弃用 Application+CheckboxList（TTY 下不渲染选项且
+    卡死），改为编号列表 + PromptSession；本函数是其纯解析核心，可单测。
+    """
+    from agent.cli import _parse_multi_selection
+
+    opts = ["加", "减", "乘", "除"]
+    assert _parse_multi_selection("1,3", opts) == ["加", "乘"]
+    assert _parse_multi_selection("乘, 除", opts) == ["乘", "除"]
+    assert _parse_multi_selection("1, 1, 3", opts) == ["加", "乘"]        # 去重保序
+    assert _parse_multi_selection("0, 99, x", opts) == []                # 越界/无效忽略
+    assert _parse_multi_selection("", opts) == []                        # 直接回车=不选
+    assert _parse_multi_selection("2,减", opts) == ["减"]  # 编号与标签混用，末尾去重
+
+
+def test_extract_write_preview_from_partial_json():
+    """回归：write/edit 流式预览能从「可能不完整的」参数 JSON 中提取正文片段。
+
+    对应修复：模型流式生成 write 的 content 时，on_tool_call_delta 用本函数实时预览，
+    避免大段写入时终端长时间无输出。
+    """
+    from agent.cli import _extract_write_preview
+
+    assert _extract_write_preview('{"path":"a.py","content":"print(1)') == "print(1)"
+    # 模型流式产出的参数里换行是 JSON 转义的 \n（两字符），函数按原文返回字面量
+    assert _extract_write_preview('{"path":"a.py","content":"line1\\nline2"') == "line1\\nline2"
+    # 未完成值带尾随引号时被去掉
+    assert _extract_write_preview('{"content":"abc"') == "abc"
+    # edit 用 new_string
+    assert _extract_write_preview('{"path":"a.py","new_string":"hello"}') == "hello"
+    # 尚未流到正文 → 空
+    assert _extract_write_preview('{"path":"a.py"') == ""
+    assert _extract_write_preview("") == ""
+
+
+
+
+def test_on_tool_call_delta_skips_ask_clarification_live():
+    """回归：ask_clarification 是控制工具，其流式预览**不应**创建 tool-live。
+
+    对应修复：澄清闸门会提前返回，on_tool_call 永不被调用，若 on_tool_call_delta 为
+    ask_clarification 创建 Live，该 Live 不被收尾，残留面板会扰乱澄清面板渲染（表现：
+    重复 ask_clarification 面板、澄清选项不显示）。write 等真实工具仍应创建预览 Live。
+    """
+    from agent.cli import _RichPresenter, ASK_CLARIFICATION_TOOL_NAME
+
+    p = _RichPresenter()
+    try:
+        p.on_tool_call_delta(0, ASK_CLARIFICATION_TOOL_NAME, '{"questions": [{"question": "x"}]}')
+        assert p._tool_live is None  # 关键：ask_clarification 不创建预览 Live
+        p.on_tool_call_delta(0, "write", '{"path": "a.py", "content": "print(1)"}')
+        assert p._tool_live is not None  # 真实工具仍创建预览 Live
+    finally:
+        p.close()
+
+
 def test_trace_parent_child():
     """tool.exec 的 parent 必须是 agent.run（M1.6 验收：trace 体现父子关系）。"""
     tracer = Tracer()

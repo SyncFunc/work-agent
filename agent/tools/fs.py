@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import difflib
 import re
 from pathlib import Path
 from typing import Any
@@ -39,6 +40,24 @@ def _split_lines(text: str) -> list[str]:
     if text.endswith("\n") and lines and lines[-1] == "":
         lines.pop()
     return lines
+
+
+def _make_diff(path: str, old: str, new: str) -> str:
+    """生成 old→new 的 unified diff（供 UI 展示改动）。
+
+    - 旧文件不存在（写新建文件）时 old 传空串，diff 全为新增行；
+    - 用 keepends 保留换行，lineterm=\"\" 避免重复换行；缺失结尾换行也能正确比对。
+    """
+    old_lines = old.splitlines(keepends=True)
+    new_lines = new.splitlines(keepends=True)
+    diff = difflib.unified_diff(
+        old_lines,
+        new_lines,
+        fromfile=f"a/{path}",
+        tofile=f"b/{path}",
+        lineterm="",
+    )
+    return "".join(diff)
 
 
 @tool(
@@ -173,10 +192,14 @@ async def grep(args: dict[str, Any]) -> ToolResult:
     risk="edit",
     schema={
         "type": "object",
-        "description": "把文本写入文件（自动创建父目录）。",
+        "description": (
+            "把文本**整体写入/覆盖**文件（自动创建父目录）。"
+            "大段新建或全量重写时用它；只改文件局部请优先用 edit，改动更小、更安全。"
+            "返回 unified diff 供用户审阅。"
+        ),
         "properties": {
             "path": {"type": "string", "description": "相对于工作根的文件路径"},
-            "content": {"type": "string", "description": "要写入的文本"},
+            "content": {"type": "string", "description": "要写入的完整文本"},
         },
         "required": ["path", "content"],
     },
@@ -186,14 +209,80 @@ async def write(args: dict[str, Any]) -> ToolResult:
     content = args["content"]
     try:
         target = _resolve(Path.cwd(), path)
+        old = target.read_text(encoding="utf-8") if target.is_file() else ""
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
     except (ValueError, OSError) as e:
         return ToolResult(ok=False, error=str(e))
-    return ToolResult(ok=True, output=f"wrote {len(content)} chars to {path}")
+    diff = _make_diff(path, old, content)
+    return ToolResult(
+        ok=True, output=f"wrote {len(content)} chars to {path}", diff=diff
+    )
+
+
+@tool(
+    "edit",
+    risk="edit",
+    schema={
+        "type": "object",
+        "description": (
+            "在文件内做**局部替换**（不重写整文件）。提供 old_string 与 new_string；"
+            "old_string 必须唯一（出现多次又不传 replace_all 会报错，请补充上下文使其唯一）。"
+            "返回 unified diff 供用户审阅。"
+        ),
+        "properties": {
+            "path": {"type": "string", "description": "相对于工作根的文件路径"},
+            "old_string": {
+                "type": "string",
+                "description": "要被替换掉的原文本（需精确匹配文件中某一段；建议带足上下文）",
+            },
+            "new_string": {"type": "string", "description": "替换后的新文本"},
+            "replace_all": {
+                "type": "boolean",
+                "description": "true 则替换全部匹配；默认 false（仅替换首个，且要求唯一）",
+            },
+        },
+        "required": ["path", "old_string", "new_string"],
+    },
+)
+async def edit(args: dict[str, Any]) -> ToolResult:
+    path = args["path"]
+    old_string = args["old_string"]
+    new_string = args["new_string"]
+    replace_all = bool(args.get("replace_all", False))
+    try:
+        target = _resolve(Path.cwd(), path)
+        if not target.is_file():
+            return ToolResult(ok=False, error=f"not a file: {path}")
+        text = target.read_text(encoding="utf-8")
+    except (ValueError, OSError) as e:
+        return ToolResult(ok=False, error=str(e))
+
+    if old_string not in text:
+        return ToolResult(ok=False, error="old_string not found in file")
+    if not replace_all:
+        count = text.count(old_string)
+        if count > 1:
+            return ToolResult(
+                ok=False,
+                error=(
+                    f"old_string appears {count} times; "
+                    "pass replace_all=true or provide more context to make it unique"
+                ),
+            )
+    # str.replace(old, new, count) 中 count=0 表示「替换 0 次」，故不能用于「全部替换」；
+    # replace_all 时省略 count 即替换全部，否则用 count=1 仅替换首个。
+    new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+    try:
+        target.write_text(new_text, encoding="utf-8")
+    except (ValueError, OSError) as e:
+        return ToolResult(ok=False, error=str(e))
+    diff = _make_diff(path, text, new_text)
+    return ToolResult(ok=True, output=f"edited {path}", diff=diff)
 
 
 # 导入即登记到默认注册表（确定性，无副作用风险）。
 default_registry.register(read)
 default_registry.register(grep)
 default_registry.register(write)
+default_registry.register(edit)

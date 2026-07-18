@@ -4,7 +4,8 @@
 - 跑「决策 → 工具 → 观察」循环；同一次 Decision 内的多个 tool_calls 并发执行
   （asyncio.gather + Semaphore(max_tool_concurrency)），轮与轮之间串行。
 - 事件流（events.py）作为状态单一事实来源，每个决策/工具调用/结果都落成事件。
-- 两层防失控：max_iterations 硬上限（兜底）+ LoopStalled 语义检测（重复调用/卡死）。
+- 两层防失控：max_iterations 软上限（触顶不中断，返回提示并把累计上下文交还会话层接棒）
+  + LoopStalled 语义检测（重复调用/卡死，仍作硬中断，因其表示模型原地打转需人工介入）。
 - 工具侧异常（含 UnknownTool）降级为 ToolResult(ok=False)，不中断循环，让模型自纠。
 """
 
@@ -35,7 +36,12 @@ from agent.tools.bash import is_readonly_command
 
 
 class LoopMaxIteration(RuntimeError):
-    """超过 max_iterations 仍无 final 答案（最后兜底）。"""
+    """（历史）超过 max_iterations 的兜底异常。
+
+    M1.x 起已不再抛出：触顶改为软返回（见 ``run`` 末段）——返回带提示的 ``AgentResult``
+    并把累计对话 context 交还会话层，使 chat REPL 可自然进入下一轮、用户接棒续跑，
+    避免异常中断导致历史丢失、被迫从头重规划。本类保留仅为向后兼容（导出命名空间）。
+    """
 
 
 class LoopStalled(RuntimeError):
@@ -61,6 +67,11 @@ class AgentResult:
     needs_plan_confirm: bool = False
     # 本轮 ReAct 循环累计的 token 用量（逐次 model 调用的 usage 累加）。
     usage: dict[str, int] = field(default_factory=dict)
+    # 软上限命中标记（M1.x 修复）：max_iterations 触顶时不再抛异常中断，而是返回
+    # 一条「已达最大轮次」的提示结果，并把累计对话 context 一并返回，使会话可续。
+    # 上层 chat REPL 据此自然进入下一轮（用户说「继续」即可在现有上下文基础上接棒，
+    # 不会因异常丢失历史而被迫从头重规划）。
+    soft_limit_hit: bool = False
 
 
 def _canonical(args: dict) -> str:
@@ -134,6 +145,12 @@ class AgentLoop:
                 decision = await self._decide(
                     conv, stream, plan_mode=pm, plan_path=pp, presenter=presenter
                 )
+                # 一轮模型决策结束：通知 presenter 收尾（如工具参数流式预览 Live）。
+                # 关键：澄清/计划闸门会在此轮提前返回、on_tool_call 永不触发，若不在此
+                # 收尾，残留 Live 会扰乱随后的澄清面板渲染（重复面板、选项不显示）。
+                on_done = getattr(presenter, "on_decision_done", None)
+                if on_done is not None:
+                    on_done()
                 if decision.usage:
                     for k, v in decision.usage.items():
                         usage_total[k] = usage_total.get(k, 0) + v
@@ -245,8 +262,24 @@ class AgentLoop:
                         Message(role="tool", content=res.output or res.error, tool_call_id=tc.id)
                     )
 
-        raise LoopMaxIteration(
-            f"exceeded max_iterations={self.settings.max_iterations} without final answer"
+        # 触顶软处理（M1.x 修复）：不再抛 LoopMaxIteration 中断会话，而是返回一条
+        # 「已达最大轮次」的提示作为本轮结果，并把累计 conv 一并返回，使会话可续
+        # （上层 chat REPL 自然进入下一轮；用户说「继续」即可在现有上下文基础上接棒，
+        # 不必因异常丢失 N 轮历史而从头重规划）。conv 在此处已含本轮全部对话（含最后
+        # 一轮的 assistant(tool_calls) 与对应 tool 回执），上下文自洽、可直接作为下一轮输入。
+        notice = (
+            f"⚠️ 已到达最大轮次上限（{self.settings.max_iterations}），本轮未产出最终答案。"
+            "上下文已保留，可继续输入指令（如「继续」）在现有基础上接棒执行。"
+        )
+        stream.append(Event(type="final", text=notice))
+        return AgentResult(
+            text=notice,
+            events=stream,
+            iterations=self.settings.max_iterations,
+            messages=conv,
+            clarify_total=ct,
+            usage=usage_total,
+            soft_limit_hit=True,
         )
 
     async def _decide(
@@ -267,6 +300,7 @@ class AgentLoop:
         """
         full = [Message(role="system", content=self._system_prompt(plan_mode=plan_mode, plan_path=plan_path))] + conv
         decision: Decision | None = None
+        on_delta = getattr(presenter, "on_tool_call_delta", None) if presenter is not None else None
         with self._span("model.act", kind="model", parent=self._agent_span) as mspan:
             async for ev in self.model.stream(full, tools=self._model_tools(plan_mode=plan_mode, plan_path=plan_path)):
                 if ev.type == "text" and ev.text:
@@ -274,6 +308,10 @@ class AgentLoop:
                     stream.append(Event(type="text", text=ev.text, kind=kind))  # 实时 token，供 UI/可观测
                     if presenter is not None:
                         presenter.on_text(ev.text, kind)
+                elif ev.type == "tool_call_delta" and on_delta is not None:
+                    # 工具调用参数流式预览（write/edit 的内容在生成过程中即显示）。
+                    # 用增量事件里的累计信息，presenter 自行决定如何渲染，loop 不解析参数。
+                    on_delta(ev.tc_index, ev.tc_name, ev.tc_args)
                 elif ev.type == "done":
                     decision = ev.decision
                     # 模型调用 span 记录完整 usage 结构（供可观测 / 后续导出 Langfuse 等）
@@ -353,7 +391,7 @@ class AgentLoop:
                     if not step_id:
                         return ToolResult(ok=False, error="update_plan requires step_id")
                     try:
-                        PlanStore.update_step(
+                        updated = PlanStore.update_step(
                             self._run_pp or self.settings.plan_file, step_id, status, note
                         )
                     except (KeyError, ValueError) as e:
@@ -365,6 +403,11 @@ class AgentLoop:
                             plan_update={"step_id": step_id, "status": status, "note": note},
                         )
                     )
+                    # 进度可视化：把更新后的完整 Plan 推给 presenter 渲染步骤列表
+                    # （on_plan_progress 为可选协议方法，未实现则静默跳过）。
+                    hook = getattr(presenter, "on_plan_progress", None)
+                    if hook is not None:
+                        hook(updated)
                     return ToolResult(ok=True, output="progress updated")
 
                 # 未知工具 / 计划模式风险门控（确定性兜底，不依赖 prompt 软约束）

@@ -18,23 +18,30 @@
 from __future__ import annotations
 
 import asyncio
+import io
 import json
+import os
 import sys
 import time
+from typing import cast
 
 import typer
 from rich.console import Console
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.syntax import Syntax
+from rich.text import Text
 from rich.tree import Tree
 from prompt_toolkit import PromptSession
-from prompt_toolkit.application import Application
-from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import Layout
-from prompt_toolkit.widgets import CheckboxList
+
 
 from agent.config.settings import load_settings
+from agent.core.control_tools import ASK_CLARIFICATION_TOOL_NAME, UPDATE_PLAN_TOOL_NAME
+
+# 写/改类工具名（与 agent.tools.fs 对齐）；其 ToolResult.diff 以高亮面板展示改动。
+WRITE_TOOL_NAME = "write"
+EDIT_TOOL_NAME = "edit"
 from agent.core.intent import Question
 from agent.core.model import create_model
 from agent.core.presenter import LoopPresenter
@@ -44,14 +51,16 @@ from agent.runtime.registry import default_registry
 
 import agent.tools  # 导入即把 read/write/bash 登记到 default_registry（副作用）
 
+_ = agent.tools  # 显式引用，保留副作用导入，避免未使用告警
+
 
 # Windows 控制台/管道默认 GBK 编码，rich 输出 emoji（💭/💬/🔧 等）会抛 UnicodeEncodeError
 # 导致整个命令崩溃；强制 stdout/stderr 走 UTF-8，保证中文与 emoji 正常（已是 UTF-8 的环境无影响）。
 try:
     if sys.stdout.encoding and "utf-8" not in sys.stdout.encoding.lower():
-        sys.stdout.reconfigure(encoding="utf-8")
+        cast(io.TextIOWrapper, sys.stdout).reconfigure(encoding="utf-8")
     if sys.stderr.encoding and "utf-8" not in sys.stderr.encoding.lower():
-        sys.stderr.reconfigure(encoding="utf-8")
+        cast(io.TextIOWrapper, sys.stderr).reconfigure(encoding="utf-8")
 except (AttributeError, ValueError):
     pass
 
@@ -73,6 +82,55 @@ def _build_model(settings):
 # --------------------------------------------------------------------------- #
 # 渲染层（rich）：流式实时输出 + 思考/输出/工具调用分区 + Markdown
 # --------------------------------------------------------------------------- #
+# 计划步骤状态 → 展示标记 / 颜色（与 agent.core.plan 的状态对齐）
+_PLAN_STATUS_MARK = {
+    "pending": "[ ]", "in_progress": "[~]", "done": "[x]",
+    "blocked": "[!]", "skipped": "[-]",
+}
+_PLAN_STATUS_COLOR = {
+    "pending": "white", "in_progress": "yellow", "done": "green",
+    "blocked": "red", "skipped": "dim",
+}
+
+
+def _extract_write_preview(raw: str) -> str:
+    """从累计（可能不完整的）工具参数 JSON 中尽力提取 write/edit 的正文预览。
+
+    优先取 ``content``（write），其次 ``new_string``（edit）。返回已生成的正文片段；
+    参数尚未流到正文或 JSON 尚不可解析时返回空串。仅供流式预览，不做严格解析。
+    """
+    for key in ("content", "new_string"):
+        i = raw.find(f'"{key}"')
+        if i < 0:
+            continue
+        col = raw.find(":", i)
+        if col < 0:
+            return ""
+        q = raw.find('"', col)
+        if q < 0:
+            return ""
+        val = raw[q + 1:]
+        # 截到首个未转义的双引号（值的闭合引号），兼容流式中间态（尚未出现闭合引号时保留全部）。
+        for idx in range(len(val)):
+            if val[idx] == '"' and (idx == 0 or val[idx - 1] != "\\"):
+                val = val[:idx]
+                break
+        return val
+    return ""
+
+
+def _render_steps_panel(steps, *, title: str) -> Panel:
+    """把步骤列表渲染为带状态色的面板（共享给 plan 展示与进度更新）。"""
+    if not steps:
+        return Panel("(无步骤)", title=title, border_style="magenta", expand=False)
+    lines = []
+    for s in steps:
+        mark = _PLAN_STATUS_MARK.get(s.status, "[ ]")
+        color = _PLAN_STATUS_COLOR.get(s.status, "white")
+        lines.append(f"[{color}]{mark} {s.id} — {s.title}[/{color}]")
+    return Panel("\n".join(lines), title=title, border_style="magenta", expand=False)
+
+
 class _RichPresenter(LoopPresenter):
     """``LoopPresenter`` 的 rich 实现：把 ReAct 循环内部事件渲染成交互式终端输出。
 
@@ -97,6 +155,7 @@ class _RichPresenter(LoopPresenter):
         self._saw_reasoning = False   # 本思考段是否已打印过 "💭 思考:" 头
         self._live = None             # 当前内容段的 Live（流式 Markdown 面板）
         self._buf = ""                # 当前内容段累积文本
+        self._tool_live = None        # 工具调用参数流式预览的 Live（write/edit 内容实时显示）
 
     def _max_lines(self) -> int:
         # 给 Panel 边框/标题留 ~4 行余量，避免正好顶满屏幕触发滚动
@@ -162,10 +221,34 @@ class _RichPresenter(LoopPresenter):
             self._buf += text
             self._refresh_live()
 
+    def _stop_tool_live(self) -> None:
+        """收尾工具调用参数的流式预览 Live（若有）。"""
+        if self._tool_live is not None:
+            self._tool_live.stop()
+            self._tool_live = None
+
     def on_tool_call(self, tc) -> None:
+        self._stop_tool_live()  # 结束参数流式预览，改由最终面板定稿
         self._commit_live()
         self._end_reasoning_segment()
         self._console.print()  # 与上方模型输出分隔
+        # update_plan 控制工具：渲染专属「📋 计划更新」面板，清晰展示步骤状态变迁
+        if tc.name == UPDATE_PLAN_TOOL_NAME:
+            a = tc.arguments or {}
+            sid = a.get("step_id", "?")
+            st = a.get("status", "?")
+            color = _PLAN_STATUS_COLOR.get(st, "white")
+            note = a.get("note")
+            self._console.print(
+                Panel(
+                    f"[cyan]{sid}[/cyan] → [{color}]{st}[/{color}]"
+                    + (f"\n[dim]注: {note}[/dim]" if note else ""),
+                    title="📋 计划更新",
+                    border_style="magenta",
+                    expand=False,
+                )
+            )
+            return
         args = json.dumps(tc.arguments, ensure_ascii=False, indent=2)
         self._console.print(
             Panel(
@@ -176,9 +259,62 @@ class _RichPresenter(LoopPresenter):
             )
         )
 
+    def on_tool_call_delta(self, index, name, args_raw) -> None:
+        """工具调用参数流式预览：write/edit 在生成 content 时即显示，避免大段写入无输出。
+
+        ``args_raw`` 是该工具调用累计（可能不完整）的 arguments JSON 字符串；本方法只做
+        尽力预览，不依赖其完整可解析。最终结构仍由 ``on_tool_call`` 的定稿面板展示。
+        """
+        self._commit_live()  # 先定稿可能正在流式的内容面板，避免重叠
+        self._end_reasoning_segment()
+        # ask_clarification 是控制工具：其参数会立即由澄清面板（SessionUI.ask）呈现，
+        # 无需再展示「生成参数中…」占位面板——否则因澄清闸门提前返回、on_tool_call 永不
+        # 被调用，该 Live 不被收尾，残留面板会扰乱澄清面板渲染（表现：重复 ask_clarification
+        # 面板、澄清选项不显示）。直接跳过。
+        if name == ASK_CLARIFICATION_TOOL_NAME:
+            return
+        if name in (WRITE_TOOL_NAME, EDIT_TOOL_NAME):
+            preview = _extract_write_preview(args_raw or "")
+            title = f"✍️ {name} …"
+            body = Text(preview) if preview else Text("(等待内容…)", style="dim")
+            border = "cyan"
+        else:
+            title = f"🔧 {name} …" if name else f"🔧 工具调用 #{index} …"
+            body = Text("(生成参数中…)", style="dim")
+            border = "blue"
+        if self._tool_live is None:
+            self._tool_live = Live(
+                Panel(body, title=title, border_style=border, expand=False),
+                console=self._console,
+                auto_refresh=False,
+            )
+            self._tool_live.start()
+        else:
+            self._tool_live.update(Panel(body, title=title, border_style=border, expand=False))
+        self._tool_live.refresh()
+
     def on_tool_result(self, tc, res) -> None:
         self._commit_live()
         self._end_reasoning_segment()
+        # update_plan 结果不单独渲染：其步骤进度已由 on_plan_progress 以步骤列表展示
+        if tc.name == UPDATE_PLAN_TOOL_NAME:
+            return
+        # write / edit：以高亮 diff 面板流式展示实际改动（old→new），而非仅一句字符数
+        if tc.name in (WRITE_TOOL_NAME, EDIT_TOOL_NAME) and res.ok and res.diff:
+            diff = res.diff
+            dcap = 6000
+            truncated = len(diff) > dcap
+            if truncated:
+                diff = diff[:dcap] + "\n…(diff 已截断)"
+            self._console.print(
+                Panel(
+                    Syntax(diff, "diff", theme="ansi_dark", word_wrap=True),
+                    title=f"✅ {tc.name} — {res.output}",
+                    border_style="green",
+                    expand=False,
+                )
+            )
+            return
         style = "green" if res.ok else "red"
         body = res.output or res.error or ""
         if len(body) > 2000:
@@ -193,8 +329,28 @@ class _RichPresenter(LoopPresenter):
             )
         )
 
+    def on_plan_progress(self, plan) -> None:
+        """update_plan 回写后回调：展示最新步骤列表（含状态色），让进度可见。"""
+        self._commit_live()
+        self._end_reasoning_segment()
+        self._console.print()
+        self._console.print(_render_steps_panel(plan.steps, title="📋 计划进度"))
+
+    def on_decision_done(self) -> None:
+        """一轮模型决策结束的收尾钩子（loop 在 _decide 返回后调用，含提前返回的闸门轮）。
+
+        核心作用：澄清/计划闸门会提前返回、``on_tool_call`` 永不触发，若本轮 ``on_tool_call_delta``
+        为真实工具（write 等）创建了参数预览 Live，它不会被收掉，残留面板会扰乱随后的澄清
+        面板渲染（表现：重复工具面板、澄清选项不显示）。此钩子统一收尾工具预览 Live，并定稿
+        可能正在流式的内容段与思考段。
+        """
+        self._stop_tool_live()
+        self._commit_live()
+        self._end_reasoning_segment()
+
     def close(self) -> None:
         # 收尾任何未闭合的流式内容段（定稿为完整 Markdown 面板）
+        self._stop_tool_live()
         self._commit_live()
         self._end_reasoning_segment()
 
@@ -230,8 +386,9 @@ class _RichPresenter(LoopPresenter):
 # --------------------------------------------------------------------------- #
 # 会话交互层（typer）：澄清提问 / 计划确认 / 提示
 # --------------------------------------------------------------------------- #
-# 交互式选项选择：prompt_toolkit 提供「上下箭头移动 + 回车确认」（多选用空格勾选）。
-# 这些函数在交互式 TTY 下由 ``_TyperUI.ask`` 调用；非交互（run 无 TTY）不会进入。
+# 交互式选项选择：单选用 prompt_toolkit 下拉箭头确认；多选用编号列表 + 自由输入
+# （逗号分隔编号或标签），稳健不卡死。这些函数在交互式 TTY 下由 ``_TyperUI.ask`` 调用；
+# 非交互（run 无 TTY）不会进入。
 async def _ptk_single_choice(question: Question) -> str:
     """单选：prompt_toolkit 下拉箭头选择；任何异常/中断回退到自由输入。"""
     opts = question.options or []
@@ -244,30 +401,52 @@ async def _ptk_single_choice(question: Question) -> str:
         return typer.prompt(question.question)
 
 
+def _parse_multi_selection(line: str, opts: list[str]) -> list[str]:
+    """把用户自由输入的「编号(逗号分隔) 或 标签(逗号分隔)」解析为已选选项（去重保序）。"""
+    selected: list[str] = []
+    for part in line.split(","):
+        part = part.strip()
+        if not part:
+            continue
+        if part.isdigit():
+            idx = int(part)
+            if 1 <= idx <= len(opts):
+                selected.append(opts[idx - 1])
+        elif part in opts:
+            selected.append(part)
+    seen: set[str] = set()
+    return [s for s in selected if not (s in seen or seen.add(s))]
+
+
 async def _ptk_multi_choice(question: Question) -> str:
-    """多选：prompt_toolkit CheckboxList（↑↓ 移动、空格勾选、回车确认）。"""
+    """多选：编号列表 + prompt_toolkit 自由输入（逗号分隔编号或标签）。
+
+    不用 ``Application``+``CheckboxList``：后者在 rich 已占用 stdout 的 TTY 下会**不渲染
+    选项且卡死**（现象：只看到「↑↓ 移动 · 空格勾选 · 回车确认」提示、无选项、回车无反应，
+    且会把终端状态搞乱、残留空面板）。改为与单选下拉一致地复用 ``PromptSession`` 标准输入，
+    永远不卡死；选项以编号列表显式打印，始终可见。
+    """
     opts = question.options or []
-    cb = CheckboxList(values=[(o, o) for o in opts])
-    kb = KeyBindings()
-
-    @kb.add("c-c")
-    def _(event):
-        event.app.exit()
-
-    app = Application(layout=Layout(cb), key_bindings=kb, full_screen=False)
+    if not opts:
+        return typer.prompt(question.question)
+    for i, o in enumerate(opts, 1):
+        Console().print(f"  [cyan]{i}[/cyan]. {o}")
+    Console().print("[dim]可多选：输入编号(逗号分隔，如 1,3)或标签(逗号分隔)；直接回车=不选。[/dim]")
+    session = PromptSession()
     try:
-        await app.run_async()
+        line = await session.prompt_async("选择> ")
     except (EOFError, KeyboardInterrupt):
         return ""
     except Exception:
         return typer.prompt(question.question)
-    return ", ".join(cb.current_values)
+    return ", ".join(_parse_multi_selection(line, opts))
 
 
 class _TyperUI:
     """``SessionUI`` 的 typer 实现：把会话编排所需的人机交互落到终端。
 
-    澄清提问：有选项时用 prompt_toolkit 箭头选择（单选下拉 / 多选 CheckboxList），
+    澄清提问：有选项时，单选用 prompt_toolkit 下拉箭头确认、多选用编号列表 + 自由输入
+    （逗号分隔编号或标签，见 ``_ptk_multi_choice``）；选项同时显式打印进面板，始终可见。
     无选项时回退 ``typer.prompt`` 自由输入；计划展示走 rich Markdown（其余提示走 typer.echo）。
     """
 
@@ -283,8 +462,13 @@ class _TyperUI:
         # 先空一行：模型的流式思考/输出以 end="" 收尾、无换行，若不分隔会与澄清面板同行粘连。
         self._console.print()
         if question.options:
+            opts = question.options
+            body = question.question
+            if opts:
+                # 选项显式打进面板，确保始终可见（修复「澄清选项不显示」）。
+                body += "\n[dim]选项: " + "; ".join(opts) + "[/dim]"
             self._console.print(
-                Panel(question.question, title="❓ 澄清", border_style="yellow", expand=False)
+                Panel(body, title="❓ 澄清", border_style="yellow", expand=False)
             )
             if question.multiSelect:
                 return await _ptk_multi_choice(question)
@@ -304,15 +488,34 @@ class _TyperUI:
         self._console.print("[bold]── Plan ──[/bold]")
         if res.plan:
             self._console.print(Markdown(res.plan))
-        for s in res.plan_steps or []:
-            self._console.print(f"  [{s.status}] {s.id}: {s.title}")
+        if res.plan_steps:
+            self._console.print(_render_steps_panel(res.plan_steps, title="📋 计划步骤"))
         self._console.print(f"(plan file: {res.plan_path})")
 
-    def confirm_plan(self) -> bool:
-        return typer.confirm("是否执行该计划？", default=False)
+    async def confirm_plan(self) -> bool:
+        # 用 prompt_toolkit 的 async 接口：confirm_plan 在 session.step 的 asyncio.run()
+        # 事件循环内被 await 调用，必须用 prompt_async（协程），否则同步 prompt() 会在已有
+        # 事件循环里再次 asyncio.run()，抛 "asyncio.run() cannot be called from a running
+        # event loop"。与澄清 UI（prompt_async / app.run_async）保持一致。
+        try:
+            session = PromptSession()
+            ans = await session.prompt_async("是否执行该计划？ [y/N]: ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return ans.strip().lower() in {"y", "yes", "是"}
 
     def notify(self, message: str) -> None:
         typer.echo(message, err=True)
+
+
+def _render_soft_limit(res) -> None:
+    """max_iterations 软上限命中提示：不中断会话，仅告知用户上下文已保留、可接棒续跑。"""
+    if res is None:
+        return
+    if getattr(res, "soft_limit_hit", False):
+        Console().print(
+            Panel(res.text, title="⚠️ 轮次上限", border_style="yellow", expand=False)
+        )
 
 
 def _print_trace(tracer: Tracer) -> None:
@@ -365,6 +568,7 @@ def run(
     presenter.close()
     if res is not None:
         presenter.report_usage(res.usage, res.text)
+        _render_soft_limit(res)
         # 最终答案已通过流式 Live 实时渲染，无需重复打印 res.text
     typer.echo("")
     _print_trace(tracer)
@@ -404,9 +608,16 @@ def chat() -> None:
             continue
         if cmd in {"/exec"}:
             session.plan_mode = False
+            # 若尚无已知计划但计划文件已落盘（如刚 /plan 产出未显式批准），自动载人，
+            # 使 EXEC 模式能按 plan_path 下发 update_plan（推进步骤进度）。
+            if session.plan_path is None and os.path.isfile(settings.plan_file):
+                session.plan_path = settings.plan_file
             typer.echo("→ 已切换到 EXEC 模式（可执行）", err=True)
             continue
         if cmd in {"/approve"}:
+            # 同上：自动载人已落盘计划，避免「已展示未批准」状态下丢失 plan_path。
+            if session.plan_path is None and os.path.isfile(settings.plan_file):
+                session.plan_path = settings.plan_file
             if session.plan_path:
                 session.plan_mode = False
                 typer.echo(f"→ 已批准计划并切到 EXEC 模式：{session.plan_path}", err=True)
@@ -432,6 +643,7 @@ def chat() -> None:
             presenter.close()
         if res is not None:
             presenter.report_usage(res.usage, res.text)
+            _render_soft_limit(res)
             # 最终答案已通过流式 Live 实时渲染，无需重复打印 res.text
         if err == 2:
             typer.echo("（需要交互澄清但环境非交互，已退出）", err=True)

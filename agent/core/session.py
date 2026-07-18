@@ -15,11 +15,11 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from agent.core.loop import AgentLoop
+from agent.core.model import Message
 
 if TYPE_CHECKING:
     from agent.core.intent import Question
     from agent.core.loop import AgentResult
-    from agent.core.model import Message
     from agent.core.presenter import LoopPresenter
 
 
@@ -47,8 +47,8 @@ class SessionUI(Protocol):
         """展示模型产出的计划（正文 + 步骤 + 计划文件路径）。"""
         ...
 
-    def confirm_plan(self) -> bool:
-        """询问用户是否执行当前计划（仅交互环境调用）。"""
+    async def confirm_plan(self) -> bool:
+        """询问用户是否执行当前计划（仅交互环境调用；异步，因在事件循环内被 await）。"""
         ...
 
     def notify(self, message: str) -> None:
@@ -117,16 +117,30 @@ class Session:
             # ② 计划确认 / 模式切换（仅 PLAN 模式且模型产出计划时）
             if res.needs_plan_confirm:
                 ui.show_plan(res)
-                confirmed = yes or (ui.interactive and ui.confirm_plan())
+                # 立即记录已知计划（即便暂不批准），使随后的 EXEC 轮次能按 plan_path
+                # 下发 update_plan 控制工具（M1.4：update_plan 仅在「非 plan 模式 + 已知计划」时可用）。
+                self.plan_path = res.plan_path
+                confirmed = yes or (ui.interactive and await ui.confirm_plan())
                 if not confirmed:
                     if fatal_plan_decline:
                         ui.notify("计划未确认，已退出。")
                         return res, 1
                     ui.notify("计划未确认，保持 PLAN 模式。用 /exec 或 /approve 继续。")
                     return res, None
-                # 批准：记录计划、切 EXEC 模式，以原任务续跑（带已批准计划，启用 update_plan）
-                self.plan_path = res.plan_path
+                # 批准：切 EXEC 模式，以原任务续跑（带已批准计划，启用 update_plan）
                 self.plan_mode = False
+                # 明确把「计划已批准、进入执行」写入对话历史：模型在批准前只见过
+                # present_plan 的工具调用与回执，缺「用户已批准」信号会误以为仍在 PLAN
+                # 模式、去查不存在的 .plan_status 等状态文件、甚至再次呈现计划（表现即
+                # 「y/n 确认后仍没通过」）。此消息消除歧义，让模型直接进入执行。
+                self.messages.append(Message(
+                    role="user",
+                    content=(
+                        "[System] 上方的计划已经由用户确认通过，现在进入执行（EXEC）模式。"
+                        "请直接按计划执行，用 update_plan 跟踪每步进度（in_progress→done）。"
+                        "不要再次调用 present_plan，也不要去检查任何计划状态文件（如 .plan_status）。"
+                    ),
+                ))
                 current_task = task
                 continue
 

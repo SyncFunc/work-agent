@@ -20,6 +20,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from agent.core.model import ToolCall
+    from agent.core.plan import Plan
     from agent.runtime.registry import ToolResult
 
 
@@ -37,6 +38,10 @@ class LoopPresenter(Protocol):
 
     def on_tool_result(self, tc: "ToolCall", res: "ToolResult") -> None:
         """工具执行结果回执（含 ok / output / error）。"""
+        ...
+
+    def on_plan_progress(self, plan: "Plan") -> None:
+        """计划步骤进度更新后回调（展示最新步骤列表）。可选实现。"""
         ...
 
     def close(self) -> None:

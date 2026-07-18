@@ -89,6 +89,46 @@ async def test_write_creates_parent_dirs(tmp_root: Path):
     assert (tmp_root / "sub" / "dir" / "b.txt").exists()
 
 
+async def test_write_returns_diff(tmp_root: Path):
+    reg = default_registry
+    await reg.run("write", {"path": "a.txt", "content": "line1\nline2\n"})
+    w = await reg.run("write", {"path": "a.txt", "content": "line1\nline2-changed\n"})
+    assert w.ok, w.error
+    assert w.diff and "line2-changed" in w.diff and "+" in w.diff
+
+
+async def test_edit_replaces_single_occurrence(tmp_root: Path):
+    reg = default_registry
+    await reg.run("write", {"path": "a.txt", "content": "foo bar foo\n"})
+    e = await reg.run("edit", {"path": "a.txt", "old_string": "bar", "new_string": "BAZ"})
+    assert e.ok, e.error
+    assert (tmp_root / "a.txt").read_text(encoding="utf-8") == "foo BAZ foo\n"
+    # diff 应含有被替换行的 -/+ 行
+    assert e.diff and "-foo bar foo" in e.diff and "+foo BAZ foo" in e.diff
+
+
+async def test_edit_requires_unique_old_string(tmp_root: Path):
+    reg = default_registry
+    await reg.run("write", {"path": "a.txt", "content": "foo foo foo\n"})
+    e = await reg.run("edit", {"path": "a.txt", "old_string": "foo", "new_string": "bar"})
+    assert not e.ok and "appears 3 times" in e.error
+
+
+async def test_edit_replace_all(tmp_root: Path):
+    reg = default_registry
+    await reg.run("write", {"path": "a.txt", "content": "foo foo foo\n"})
+    e = await reg.run("edit", {"path": "a.txt", "old_string": "foo", "new_string": "bar", "replace_all": True})
+    assert e.ok, e.error
+    assert (tmp_root / "a.txt").read_text(encoding="utf-8") == "bar bar bar\n"
+
+
+async def test_edit_old_string_not_found(tmp_root: Path):
+    reg = default_registry
+    await reg.run("write", {"path": "a.txt", "content": "hello\n"})
+    e = await reg.run("edit", {"path": "a.txt", "old_string": "nope", "new_string": "x"})
+    assert not e.ok and "not found" in e.error
+
+
 async def test_read_missing_file_fails(tmp_root: Path):
     reg = default_registry
     r = await reg.run("read", {"path": "nope.txt"})
