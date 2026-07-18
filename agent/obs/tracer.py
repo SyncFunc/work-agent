@@ -1,7 +1,13 @@
-"""可观测层：占位 Tracer（M5 再接 OTel / Langfuse）。
+"""可观测层：Trace / Span / Log（M3.1 增强）。
 
-当前实现把 span 记录在内存，支持父子关系（parent_id）与树状渲染。
-每条 span：id / name / kind / parent_id / 起止时间 / meta。
+- ``Span.log()``：在 span 存活期内追加结构化日志（key-value + level + 时间戳）。
+- ``TraceStore``：SQLite 持久化，支持 session 级别的 save/load/list。
+- 渲染：``render()`` 树状展示父子 span + 日志摘要。
+
+设计要点：
+- 一个 span 可以记录多条 log，用于模型调用细节、工具参数/结果、错误详情。
+- 持久化按 session_id 分区，覆盖写保证幂等。
+- 与 ``Session`` 集成：每轮 step 结束自动保存。
 """
 
 from __future__ import annotations
@@ -9,9 +15,26 @@ from __future__ import annotations
 import time
 import uuid
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any
 
 
+# --------------------------------------------------------------------------- #
+# LogEntry：Span 内的一条结构化日志
+# --------------------------------------------------------------------------- #
+@dataclass
+class LogEntry:
+    """Span 内的一条结构化日志。"""
+
+    ts: float
+    key: str
+    value: Any
+    level: str = "info"  # info / warn / error
+
+
+# --------------------------------------------------------------------------- #
+# Span
+# --------------------------------------------------------------------------- #
 @dataclass
 class Span:
     id: str
@@ -21,8 +44,17 @@ class Span:
     started_at: float
     ended_at: float | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    logs: list[LogEntry] = field(default_factory=list)
+
+    def log(self, key: str, value: Any, level: str = "info") -> "Span":
+        """在 span 存活期内追加一条结构化日志（含时间戳）。"""
+        self.logs.append(LogEntry(ts=time.time(), key=key, value=value, level=level))
+        return self
 
 
+# --------------------------------------------------------------------------- #
+# _SpanCtx：上下文管理器
+# --------------------------------------------------------------------------- #
 class _SpanCtx:
     def __init__(self, tracer: "Tracer", span: Span) -> None:
         self._tracer = tracer
@@ -39,9 +71,15 @@ class _SpanCtx:
         return self
 
 
+# --------------------------------------------------------------------------- #
+# Tracer
+# --------------------------------------------------------------------------- #
 class Tracer:
-    def __init__(self) -> None:
+    """内存 trace 收集器。span 以父子树组织，可通过 ``render()`` 输出文本。"""
+
+    def __init__(self, session_id: str | None = None) -> None:
         self.spans: list[Span] = []
+        self.session_id: str = session_id or uuid.uuid4().hex[:12]
 
     def span(self, name: str, kind: str = "span", parent: Span | None = None) -> _SpanCtx:
         s = Span(
@@ -65,6 +103,15 @@ class Tracer:
                 f"{prefix}{connector}{s.name} [{s.kind}] "
                 f"{dur_ms * 1000:.1f}ms (id={s.id})"
             )
+            # 日志摘要：最多展示 3 条最近的 warn/error 日志
+            recent_logs = [lg for lg in s.logs if lg.level in ("warn", "error")][-3:]
+            if recent_logs:
+                child_prefix = prefix + ("   " if is_last else "│  ")
+                for lg in recent_logs:
+                    color = "yellow" if lg.level == "warn" else "red"
+                    lines.append(
+                        f"{child_prefix}└─ [{color}]{lg.key}[/{color}]: {lg.value}"
+                    )
             # 模型调用 span：仅展示 total token（完整 usage 已存于 meta，供导出 Langfuse 等）
             if "usage" in s.meta:
                 child_prefix = prefix + ("   " if is_last else "│  ")

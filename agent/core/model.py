@@ -249,8 +249,12 @@ class OpenAICompatibleModel:
         base_url: str,
         model: str,
         client: Any | None = None,
+        tracer: Any | None = None,
+        pipeline: Any | None = None,
     ) -> None:
         self.model: str = model
+        self._tracer = tracer
+        self._pipeline = pipeline
         if client is None:
             from openai import AsyncOpenAI
 
@@ -259,7 +263,7 @@ class OpenAICompatibleModel:
         self._client: Any = client
 
     @classmethod
-    def from_settings(cls, settings: Settings, client: Any | None = None) -> "OpenAICompatibleModel":
+    def from_settings(cls, settings: Settings, client: Any | None = None, tracer: Any | None = None, pipeline: Any | None = None) -> "OpenAICompatibleModel":
         api_key = (settings.llm.api_key or "").strip()
         if not api_key:
             raise ValueError(
@@ -271,9 +275,18 @@ class OpenAICompatibleModel:
             base_url=settings.llm.base_url,
             model=settings.llm.model,
             client=client,
+            tracer=tracer,
+            pipeline=pipeline,
         )
 
     async def act(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> Decision:
+        if self._pipeline is not None:
+            return await self._pipeline.execute(self._do_act, messages, tools=tools)
+        return await self._do_act(messages, tools=tools)
+
+    async def _do_act(
         self, messages: list[Message], tools: list[dict] | None = None
     ) -> Decision:
         kwargs: dict[str, Any] = {
@@ -290,6 +303,23 @@ class OpenAICompatibleModel:
         return Decision(text=msg.content, tool_calls=tool_calls, usage=_usage_to_dict(usage))
 
     async def stream(
+        self, messages: list[Message], tools: list[dict] | None = None
+    ) -> AsyncIterator[StreamEvent]:
+        """流式调用。经 ``Pipeline.execute_stream`` 保护「创建流」的动作。
+
+        创建流时受限流/熔断/retry 保护；一旦流开始 yield 数据，
+        中途失败不重试（已生成的内容不可幂等回退）。
+        """
+        if self._pipeline is not None:
+            async for ev in self._pipeline.execute_stream(
+                self._do_stream_iter, messages, tools=tools
+            ):
+                yield ev
+        else:
+            async for ev in self._do_stream_iter(messages, tools=tools):
+                yield ev
+
+    async def _do_stream_iter(
         self, messages: list[Message], tools: list[dict] | None = None
     ) -> AsyncIterator[StreamEvent]:
         kwargs: dict[str, Any] = {
@@ -353,6 +383,6 @@ class OpenAICompatibleModel:
         )
 
 
-def create_model(settings: Settings) -> Model:
+def create_model(settings: Settings, tracer: Any | None = None, pipeline: Any | None = None) -> Model:
     """工厂：按配置构建默认 provider（OpenAI 兼容）。"""
-    return OpenAICompatibleModel.from_settings(settings)
+    return OpenAICompatibleModel.from_settings(settings, tracer=tracer, pipeline=pipeline)

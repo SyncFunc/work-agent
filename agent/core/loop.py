@@ -125,6 +125,8 @@ class AgentLoop:
                 # ① 澄清闸门
                 if self.settings.clarify.enabled and (cq := extract_clarify(decision)) is not None:
                     ct += 1
+                    if self._agent_span is not None:
+                        self._agent_span.log("clarify", f"round {ct}: {len(cq)} questions")
                     stream.append(Event(type="clarify", questions=[q.to_dict() for q in cq]))
                     if ct <= self.settings.clarify.max_rounds:
                         clarify_calls = [
@@ -186,6 +188,8 @@ class AgentLoop:
                     repeat_count = 0
                 last_callset = callset
                 if repeat_count >= self.settings.loop.max_repeat_calls:
+                    if self._agent_span is not None:
+                        self._agent_span.log("stall", f"repeated {repeat_count + 1} times: {sorted(callset)}", level="error")
                     raise LoopStalled(
                         f"model repeated identical tool calls {repeat_count + 1} times; "
                         f"possible infinite loop on {sorted(callset)}"
@@ -202,6 +206,8 @@ class AgentLoop:
             f"⚠️ 已到达最大轮次上限（{self.settings.loop.max_iterations}），本轮未产出最终答案。"
             "上下文已保留，可继续输入指令（如「继续」）在现有基础上接棒执行。"
         )
+        if self._agent_span is not None:
+            self._agent_span.log("soft_limit", notice, level="warn")
         stream.append(Event(type="final", text=notice))
         return AgentResult(
             text=notice, events=stream, iterations=self.settings.loop.max_iterations,
@@ -215,6 +221,9 @@ class AgentLoop:
         full = [Message(role="system", content=self._system_prompt(plan_mode=plan_mode, plan_path=plan_path))] + conv
         decision: Decision | None = None
         with self._span("model.act", kind="model", parent=self._agent_span) as mspan:
+            if mspan is not None:
+                mspan.log("conv_len", len(conv))
+                mspan.log("plan_mode", plan_mode)
             async for ev in self.model.stream(full, tools=self._model_tools(plan_mode=plan_mode, plan_path=plan_path)):
                 if ev.type == "text" and ev.text:
                     stream.append(Event(type="text", text=ev.text, kind=ev.kind or "content"))
@@ -229,8 +238,14 @@ class AgentLoop:
                         mspan.meta["usage"] = decision.usage
         if decision is None:
             decision = Decision(text="")
+            if mspan is not None:
+                mspan.log("decision_empty", True, level="warn")
         else:
             decision.tool_calls = [tc for tc in decision.tool_calls if tc.name and tc.name.strip()]
+            if mspan is not None:
+                mspan.log("tool_calls", len(decision.tool_calls))
+                if decision.is_final and decision.text:
+                    mspan.log("final_text_len", len(decision.text))
         return decision
 
     def _model_tools(self, *, plan_mode: bool = False, plan_path: str | None = None) -> list[dict]:
@@ -277,7 +292,10 @@ class AgentLoop:
         sem = asyncio.Semaphore(self.settings.loop.max_tool_concurrency)
 
         async def _one(tc: ToolCall) -> ToolResult:
-            with self._span("tool.exec", kind="tool", parent=self._agent_span):
+            with self._span("tool.exec", kind="tool", parent=self._agent_span) as tool_span:
+                if tool_span is not None:
+                    tool_span.log("tool", tc.name)
+                    tool_span.log("args", json.dumps(tc.arguments, ensure_ascii=False)[:200])
                 # 控制/虚拟工具
                 if tc.name == UPDATE_PLAN_TOOL_NAME:
                     a = tc.arguments
@@ -303,6 +321,8 @@ class AgentLoop:
                 try:
                     spec = self.registry.get(tc.name)
                 except UnknownTool:
+                    if tool_span is not None:
+                        tool_span.log("unknown_tool", tc.name, level="warn")
                     return ToolResult(ok=False, error=f"unknown tool: {tc.name}")
 
                 # 审批门：执行前过 ApprovalGate
@@ -317,8 +337,12 @@ class AgentLoop:
                     )
                     d = self.gate.decide(action)
                     if d.verdict == "ask":
+                        if tool_span is not None:
+                            tool_span.log("approval_ask", d.reason)
                         ok = await self.gate.authorize(action, self._transport)
                         if not ok:
+                            if tool_span is not None:
+                                tool_span.log("approval_rejected", True, level="warn")
                             return ToolResult(ok=False, error="rejected by user approval")
                         # 批准后自动提权（若命令需联网且当前 profile 不允许）
                         elevated = d.elevated_profile
@@ -333,6 +357,8 @@ class AgentLoop:
                             tc.name, tc.arguments, self.settings.loop.max_tool_output_chars
                         )
                     except Exception as e:
+                        if tool_span is not None:
+                            tool_span.log("exec_error", f"{type(e).__name__}: {e}", level="error")
                         return ToolResult(ok=False, error=f"{type(e).__name__}: {e}")
 
         for tc in calls:

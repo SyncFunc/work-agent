@@ -25,7 +25,7 @@ import sys
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
-from typing import Callable, Protocol, runtime_checkable
+from typing import Any, Callable, Protocol, runtime_checkable
 
 _log = logging.getLogger(__name__)
 
@@ -317,6 +317,7 @@ class LocalExecutor:
         *,
         workspace: Path,
         profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE,
+        pipeline: Any | None = None,
     ) -> None:
         self._workspace = Path(workspace)
         self._profile = profile
@@ -324,6 +325,7 @@ class LocalExecutor:
         self._filter = CommandFilter(workspace=self._workspace)
         self._shell = _resolve_shell()
         self._isolation = self._choose_isolation()
+        self._pipeline = pipeline
 
     def _choose_isolation(self) -> str:
         if hasattr(os, "uname"):
@@ -349,6 +351,11 @@ class LocalExecutor:
             return False
 
     async def run(self, req: ExecRequest) -> ExecResult:
+        if self._pipeline is not None:
+            return await self._pipeline.execute(self._do_run, req)
+        return await self._do_run(req)
+
+    async def _do_run(self, req: ExecRequest) -> ExecResult:
         verdict = self._filter.check(req.cmd, req.profile, cwd=req.cwd)
         if verdict.blocked:
             return ExecResult(ok=False, output="", error=verdict.reason, returncode=-1, sandbox=self.name)
@@ -445,10 +452,11 @@ def build_executor(
     *,
     workspace: Path,
     profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE,
+    pipeline: Any | None = None,
 ) -> Executor:
     workspace = Path(workspace)
     if mode == "local":
-        return LocalExecutor(workspace=workspace, profile=profile)
+        return LocalExecutor(workspace=workspace, profile=profile, pipeline=pipeline)
     if mode == "docker":
         return DockerExecutor(workspace=workspace, profile=profile)
     if mode == "external":

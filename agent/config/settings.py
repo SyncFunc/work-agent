@@ -81,6 +81,41 @@ class BashConfig(BaseModel):
     shell: str | None = None
 
 
+class ObsConfig(BaseModel):
+    """可观测配置（M3.1）。"""
+
+    enabled: bool = True
+    db_path: str = ".agent/traces.db"
+
+
+class RateLimitConfigModel(BaseModel):
+    llm_max_calls: int = 60
+    llm_window_seconds: int = 60
+    sandbox_max_calls: int = 120
+    sandbox_window_seconds: int = 60
+
+
+class CircuitBreakerConfigModel(BaseModel):
+    llm_failure_threshold: int = 5
+    llm_recovery_timeout: float = 30.0
+    sandbox_failure_threshold: int = 10
+    sandbox_recovery_timeout: float = 60.0
+
+
+class FallbackConfigModel(BaseModel):
+    llm_strategy: str = "retry"
+    sandbox_strategy: str = "fail_fast"
+
+
+class ResilienceConfig(BaseModel):
+    """韧性层配置（M3.2）。"""
+
+    enabled: bool = True
+    rate_limit: RateLimitConfigModel = RateLimitConfigModel()
+    circuit_breaker: CircuitBreakerConfigModel = CircuitBreakerConfigModel()
+    fallback: FallbackConfigModel = FallbackConfigModel()
+
+
 # --------------------------------------------------------------------------- #
 # 主 Settings
 # --------------------------------------------------------------------------- #
@@ -94,6 +129,8 @@ class Settings(BaseSettings):
     plan: PlanConfig = PlanConfig()
     clarify: ClarifyConfig = ClarifyConfig()
     bash: BashConfig = BashConfig()
+    obs: ObsConfig = ObsConfig()
+    resilience: ResilienceConfig = ResilienceConfig()
 
     @classmethod
     def settings_customise_sources(

@@ -1,19 +1,9 @@
 """CLI 入口（M1.6）：typer 应用，run / chat 子命令。
 
-- ``run "<task>"``：一次性执行；``--plan`` 以 PLAN 模式起步（先产出计划、确认后才执行）；
-  ``--no-clarify`` 关闭意图澄清；``--yes`` 跳过计划确认直接执行。
-- ``chat``：交互式 REPL（多轮，单会话持续累积历史）。任意轮次可用命令自由切换模式：
-  ``/plan`` 进入 PLAN 探索模式、``/exec`` 进入执行模式、``/approve`` 批准当前计划并切执行、
-  ``/mode`` 查看当前模式；输入 ``exit``/``quit`` 退出。
-- 渲染（rich）与 HITL 交互统一由 ``TerminalTransport`` 实现，见
-  ``agent.runtime.terminal_transport``：``Session.step`` 接收 transport，loop 只往事件流
-  落事件，终端呈现完全订阅事件驱动，本文件只负责命令编排与 trace 打印。
-- 澄清（ask_clarification）：交互模式逐题收集答案回填；非交互（run 且无 TTY）报错退出。
-- run 结束打印最简 trace（agent.run → model.act / tool.exec 父子树），完整可观测见 M5。
-
-关键设计：plan/exec 模式是**会话级、按轮次可变**的状态，由 ``Session`` 持有并通过
-``AgentLoop.run(plan_mode=, plan_path=)`` 传入。loop 本身无模式状态（构造期缺省仅作回落），
-因此用户可在任意轮次切换，无需重建会话。
+M3.1 增强：
+- ``run`` / ``chat`` 自动持久化 trace 到 SQLite。
+- ``--no-trace`` 关闭 trace（不创建 tracer / trace_store）。
+- 退出前持久化最终 trace。
 """
 
 from __future__ import annotations
@@ -35,6 +25,7 @@ from agent.config.settings import load_settings
 from agent.core.model import create_model
 from agent.core.session import Session
 from agent.obs.tracer import Tracer
+from agent.obs.store import TraceStore
 from agent.runtime.registry import default_registry
 from agent.runtime.terminal_transport import TerminalTransport
 
@@ -54,9 +45,9 @@ except (AttributeError, ValueError):
     pass
 
 
-def _build_model(settings):
+def _build_model(settings, tracer=None, pipeline=None):
     """构建模型。测试可 monkeypatch 本函数注入 FakeModel。"""
-    return create_model(settings)
+    return create_model(settings, tracer=tracer, pipeline=pipeline)
 
 
 def _render_soft_limit(res) -> None:
@@ -71,6 +62,8 @@ def _render_soft_limit(res) -> None:
 
 def _print_trace(tracer: Tracer) -> None:
     """用 rich Tree 美化 trace（保留父子关系），模型调用节点展示 total token。"""
+    if tracer is None:
+        return
     tree = Tree("[bold cyan]agent trace[/bold cyan]")
     nodes: dict[str | None, Tree] = {None: tree}
     # 按开始时间排序，保证父子/兄弟顺序稳定
@@ -83,6 +76,11 @@ def _print_trace(tracer: Tracer) -> None:
         # 模型调用 span：仅展示 total token
         if "usage" in s.meta:
             label += f" [green]· total={s.meta['usage'].get('total_tokens', 0)} tok[/green]"
+        # 展示最近的 warn/error log
+        recent_logs = [lg for lg in s.logs if lg.level in ("warn", "error")][-2:]
+        for lg in recent_logs:
+            color = "yellow" if lg.level == "warn" else "red"
+            label += f" [{color}]⚠ {lg.key}[/{color}]"
         nodes[s.id] = parent.add(label)
     console = Console()
     console.print(Panel(tree, title="🔍 Trace", border_style="blue", expand=False))
@@ -97,12 +95,14 @@ def run(
     plan: bool = typer.Option(False, "--plan", "--no-plan", help="以 PLAN 模式起步：先产出计划、确认后再执行"),
     yes: bool = typer.Option(False, "--yes", help="跳过计划确认，直接进入执行"),
     no_clarify: bool = typer.Option(False, "--no-clarify", help="关闭意图澄清"),
+    no_trace: bool = typer.Option(False, "--no-trace", help="关闭 trace 记录"),
 ) -> None:
     settings = load_settings(clarify_enabled=not no_clarify, plan_mode=plan)
-    model = _build_model(settings)
-    tracer = Tracer()
+    tracer = None if no_trace else Tracer()
+    model = _build_model(settings, tracer=tracer)
+    trace_store = None if no_trace else TraceStore(settings.obs.db_path)
     reg = default_registry
-    session = Session(model, reg, settings, tracer, plan_mode=plan)
+    session = Session(model, reg, settings, tracer, plan_mode=plan, trace_store=trace_store)
 
     transport = TerminalTransport(interactive=sys.stdin.isatty())
     try:
@@ -121,6 +121,9 @@ def run(
         _render_soft_limit(res)
         # 最终答案已通过流式 Live 实时渲染，无需重复打印 res.text
     typer.echo("")
+    # 退出前持久化最终 trace
+    if tracer is not None and trace_store is not None:
+        trace_store.save_trace(tracer)
     _print_trace(tracer)
     raise typer.Exit(code=err if err is not None else 0)
 
@@ -134,13 +137,16 @@ def chat() -> None:
     """
     settings = load_settings()
     try:
-        model = _build_model(settings)
+        tracer = Tracer() if settings.obs.enabled else None
+        from agent.resilience.pipeline import build_llm_pipeline
+        llm_pipeline = build_llm_pipeline(settings)
+        model = _build_model(settings, tracer=tracer, pipeline=llm_pipeline)
     except Exception as e:  # 配置错误（如缺 API key）优雅退出，不吐底层栈
         typer.echo(f"error: {type(e).__name__}: {e}", err=True)
         raise typer.Exit(code=1)
-    tracer = Tracer()
+    trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
     reg = default_registry
-    session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode)
+    session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store)
     transport = TerminalTransport(interactive=True)
 
     typer.echo("进入 chat 模式（/plan /exec 切换模式；exit/quit 退出）。")
@@ -199,7 +205,77 @@ def chat() -> None:
             break
 
     typer.echo("")
+    # 退出前持久化最终 trace
+    if tracer is not None and trace_store is not None:
+        trace_store.save_trace(tracer)
     _print_trace(tracer)
+
+
+@app.command()
+def health(
+    watch: bool = typer.Option(False, "--watch", "-w", help="持续轮询（每 5 秒刷新）"),
+    port: int = typer.Option(0, "--port", "-p", help="启动 HTTP 健康端点（端口号，如 9090）"),
+) -> None:
+    """检查 Agent 各组件健康状态。
+
+    不带参数：一次性检查并输出。
+    --watch：持续轮询，Live 实时刷新。
+    --port 9090：启动 HTTP /health 端点。
+    """
+    import asyncio
+    from http.server import HTTPServer
+
+    from rich.console import Console
+    from rich.live import Live
+    from rich.panel import Panel
+    from rich.table import Table
+
+    from agent.config.settings import load_settings as _ls
+    import agent.resilience.health as _health_mod
+
+    settings = _ls()
+    checker = _health_mod.build_default_health_checks(settings)
+    console = Console()
+
+    # HTTP 端点启动（可选）
+    http_server: HTTPServer | None = None
+    if port:
+        _health_mod._HTTP_CHECKER = checker  # 注入到模块级变量供 handler 使用
+        http_server = HTTPServer(("127.0.0.1", port), _health_mod.HealthHTTPHandler)
+        typer.echo(f"HTTP 健康端点已启动：http://127.0.0.1:{port}/health", err=True)
+
+    def _render_health(status) -> Panel:
+        table = Table(show_header=True, header_style="bold")
+        table.add_column("组件", style="cyan")
+        table.add_column("状态", width=10)
+        table.add_column("详情")
+        for name, cr in status.checks.items():
+            color = {"ok": "green", "degraded": "yellow", "fail": "red"}.get(cr.status, "white")
+            marker = {"ok": "✅", "degraded": "⚠️", "fail": "❌"}.get(cr.status, "?")
+            table.add_row(name, f"[{color}]{marker} {cr.status}[/{color}]", cr.detail)
+        title = "✅ 全部正常" if status.healthy else "⚠️ 存在异常"
+        border = "green" if status.healthy else "yellow"
+        return Panel(table, title=f"🔍 健康检查 — {title}", border_style=border, expand=False)
+
+    if watch:
+        with Live(_render_health(_health_mod.HealthStatus(healthy=True)), console=console, refresh_per_second=0.2, auto_refresh=False) as live:
+            while True:
+                status = asyncio.run(checker.check_all())
+                live.update(_render_health(status))
+                live.refresh()
+                if http_server:
+                    http_server.handle_request()
+                asyncio.run(asyncio.sleep(5))
+    else:
+        status = asyncio.run(checker.check_all())
+        console.print(_render_health(status))
+        has_fail = any(cr.status == "fail" for cr in status.checks.values())
+        has_degraded = any(cr.status == "degraded" for cr in status.checks.values())
+        if has_fail:
+            raise typer.Exit(code=2)
+        if has_degraded:
+            raise typer.Exit(code=1)
+        raise typer.Exit(code=0)
 
 
 if __name__ == "__main__":

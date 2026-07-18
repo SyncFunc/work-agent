@@ -1,4 +1,8 @@
-"""会话层（M1.6）：在多次 ``run`` 之间持有会话状态并编排一轮交互。"""
+"""会话层（M1.6）：在多次 ``run`` 之间持有会话状态并编排一轮交互。
+
+M3.1 增强：集成 ``TraceStore`` 实现 trace 持久化，每轮 step 结束自动保存。
+M3.3 增强：集成 Pipeline 保护 Sandbox 调用。
+"""
 
 from __future__ import annotations
 
@@ -7,6 +11,7 @@ from typing import TYPE_CHECKING
 from agent.core.loop import AgentLoop
 from agent.core.model import Message
 from agent.core.transport import AgentTransport
+from agent.obs.store import TraceStore
 
 if TYPE_CHECKING:
     from agent.core.intent import Question
@@ -14,18 +19,22 @@ if TYPE_CHECKING:
 
 
 class Session:
-    def __init__(self, model, reg, settings, tracer=None, *, plan_mode: bool = False, plan_path=None):
+    def __init__(self, model, reg, settings, tracer=None, *, plan_mode: bool = False, plan_path=None, trace_store=None):
         from pathlib import Path
 
+        from agent.resilience.pipeline import build_sandbox_pipeline
         from agent.runtime.approval import ApprovalGate
         from agent.runtime.sandbox import SandboxProfile, build_executor
 
         self.settings = settings
         self.tracer = tracer
+        self.trace_store: TraceStore | None = trace_store
+        sandbox_pipeline = build_sandbox_pipeline(settings)
         sandbox = build_executor(
             settings.sandbox.mode,
             workspace=Path.cwd(),
             profile=SandboxProfile(settings.sandbox.profile),
+            pipeline=sandbox_pipeline,
         )
         gate = ApprovalGate(
             settings.approval.mode,
@@ -60,6 +69,9 @@ class Session:
             )
             self.messages = list(res.messages or self.messages)
             self.clarify_total = res.clarify_total
+
+            # 每轮 step 结束自动持久化 trace（若有 trace_store）
+            self._save_trace()
 
             # ① 澄清回填
             if res.needs_clarification:
@@ -98,3 +110,7 @@ class Session:
 
             # ③ 最终答案
             return res, None
+
+    def _save_trace(self) -> None:
+        if self.tracer is not None and self.trace_store is not None:
+            self.trace_store.save_trace(self.tracer)

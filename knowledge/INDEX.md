@@ -9,22 +9,22 @@
 
 - **98/1.6 法则**：AI 只做决策，循环/权限/路由/压缩/持久化全部确定性实现且可独立测试。
 - **安全在 OS 层**：沙箱是独立可插拔执行层（Local seccomp / Docker），prompt 仅软约束。→ 影响 M2；**完整设计见 `knowledge/sandbox-approval-design.md`**（Codex 模式：local/docker/external + 三档 profile + 网络默认拒绝 + AskForApproval 四模式）。
-- **上下文稀缺**：静态(系统提示/规则) 与 动态(对话/工具结果) 分离；稳定前缀走 prompt caching；超阈值递归摘要。→ 影响 M3。
-- **上下文管理设计文档**：`knowledge/context-management.md`（独立文档）。核心结论：**工具结果 = 对话历史，既保存也注入**（伪二选一）；本项目双轨映射——`EventStream` 全量不可变（保存/审计/压缩派生源）vs `conv`/`Session.messages` 可压缩投影（注入）；压缩只作用于 `conv`，绝不碰 `EventStream`；配对铁律（tool_use+tool_result 成对）；借鉴 Claude Code Microcompact/AutoCompact + Codex ContextManager；大输出走子代理隔离（M4）。详见该文档。
-- **能力正交**：Tool(原子) / Skill(按需包) / Subagent(隔离上下文) 三层。→ 影响 M4。
-- **两条全局主线**：事件流（状态单一事实来源）+ Trace/Span（OTel 语义，父子 parent_id）。→ 事件流在 M1.3 落地，trace 在 M1.6（原 M1.4）占位，M5 完善。
-- **可恢复**：检查点用 `session_id` + sqlite，路径 `<project>/.agent/sessions/<id>/`。→ 影响 M5 与项目隔离 M?（项目隔离贯穿）。
+- **上下文稀缺**：静态(系统提示/规则) 与 动态(对话/工具结果) 分离；稳定前缀走 prompt caching；超阈值递归摘要。→ 影响 M4。
+- **上下文管理设计文档**：`knowledge/context-management.md`（独立文档）。核心结论：**工具结果 = 对话历史，既保存也注入**（伪二选一）；本项目双轨映射——`EventStream` 全量不可变（保存/审计/压缩派生源）vs `conv`/`Session.messages` 可压缩投影（注入）；压缩只作用于 `conv`，绝不碰 `EventStream`；配对铁律（tool_use+tool_result 成对）；借鉴 Claude Code Microcompact/AutoCompact + Codex ContextManager；大输出走子代理隔离（M5）。详见该文档。
+- **能力正交**：Tool(原子) / Skill(按需包) / Subagent(隔离上下文) 三层。→ 影响 M5。
+- **两条全局主线**：事件流（状态单一事实来源）+ Trace/Span（OTel 语义，父子 parent_id）。→ 事件流在 M1.3 落地，trace 在 M1.6 占位，M3 完善。
+- **可恢复**：检查点用 `session_id` + sqlite，路径 `<project>/.agent/sessions/<id>/`。→ 影响 M6 与项目隔离 M?（项目隔离贯穿）。
 
 ## 设计文档（standalone，跨里程碑）
 
-- **上下文管理设计**：`knowledge/context-management.md` —— 工具结果「保存 vs 注入」伪二选一的结论、双轨映射、压缩策略（Claude Code/Codex 调研）、配对铁律、子代理隔离、M3 规划。（被「架构决策·上下文稀缺」引用）
+- **上下文管理设计**：`knowledge/context-management.md` —— 工具结果「保存 vs 注入」伪二选一的结论、双轨映射、压缩策略（Claude Code/Codex 调研）、配对铁律、子代理隔离、M4 规划。（被「架构决策·上下文稀缺」引用）
 - **沙盒与审批设计（M2 依据）**：`knowledge/sandbox-approval-design.md` —— **采用 Codex 模式**：① 原理（P2 安全在 OS 层、P3 最小权限+纵深、与 PLAN 正交）；② 沙盒=可插拔执行层（`local` Linux landlock+seccomp / macOS Seatbelt / Windows 进程级+告警 · `docker` · `external` 直通），三档 profile `read-only`/`workspace-write`/`danger-full`，**网络默认拒绝**；③ 审批=AskForApproval 四模式 `untrusted`/`on-request`/`on-failure`/`never` + `allow`/`deny` 规则（**deny 永远优先**）+ HITL 回调 `AgentTransport.approve`（gate 经窄协议 `ApprovalUI` 消费）；④ 决策流（loop→gate→sandbox）、决策矩阵、与既有设施边界。**落地步骤见 `milestones/M2-安全与确认/`（2.1~2.6）。**
 
 ## 工程约定
 
 - 语言 Python 3.12+；CLI 用 typer；异步 asyncio；配置 pydantic-settings + YAML 分层。
 - LLM 一律可 Mock：`Model` 抽象 + `FakeModel`/`RecordingModel`，测试不依赖真实 API。
-- 目录：`agent/core`(循环/意图/模型)、`agent/runtime`(注册/审批/沙箱)、`agent/context`、`agent/skills`、`agent/subagent.py`、`agent/resilience`、`agent/obs`、`agent/config`、`tools/`、`skills/`、`tests/`。
+- 目录：`agent/core`(循环/意图/模型)、`agent/runtime`(注册/审批/沙箱)、`agent/context`、`agent/skills`、`agent/subagent.py`、`agent/resilience`(韧性层)、`agent/obs`(可观测)、`agent/config`、`tools/`、`skills/`、`tests/`。
 
 ---
 
@@ -213,5 +213,58 @@ flowchart TD
 - **与 PLAN 模式关系**：`ApprovalGate` 仅 EXEC 模式介入；PLAN 的 `_risk_blocked` 不动。纵深两道独立闸门（设计文档 §1）。
 - **对 M2.4 约束**：`loop._exec_tools` 执行每工具前构造 `Action` 并 `await gate.authorize`；拒绝/失败返回既有 `ToolResult(ok=False)` 落事件流、不崩循环。`on-failure` 模式 `authorize` 先 ALLOW，失败后再调 `ui.approve`（M2.4 实现）。
 - **落地验证**：`tests/test_approval.py` 30 passed；全量 `pytest` 129 passed。覆盖四模式矩阵(12)、deny 优先(含盖过 allow 短路)、allow 短路、escalated 无视模式、on-request 仅 `approval_request` 时 ASK、非交互默认 allow/deny、假 ui 真假、纯函数可重复、`sudo rm` 归一化、正则 `/^curl .*example\.com/`、路径 `/etc/` 匹配、接受 mode 字符串。
+
+## M3.1 沉淀（Tracer 增强与持久化）
+
+> 来源：`milestones/M3-可观测与韧性层/3.1-Tracer增强与持久化.md`。落地 `agent/obs/tracer.py` + `agent/obs/store.py`。
+
+- **接口签名**：`Span.log(key, value, level="info") -> Span` — 非异步，直接追加到 `self.logs`（列表），支持链式调用。`TraceStore(db_path)` — SQLite 持久化，`save_trace(tracer)` 覆盖写，`load_trace(session_id) -> Tracer | None`。`Tracer(session_id=None)` — 不传则自动 `uuid4().hex[:12]`。`Session.__init__(..., trace_store=None)` — 可选注入，自动在 `step()` 结尾调用 `_save_trace()`。
+- **表结构**：`spans(session_id, span_id, name, kind, parent_id, started_at, ended_at, meta_json)` + `logs(session_id, span_id, ts, key, value, level)`。`save_trace` 幂等策略：`DELETE WHERE session_id` → 批量 INSERT。
+- **关键决策**：① `Span.log()` 是同步方法，不 await，直接在内存列表追加——log 是高频轻量操作；② TraceStore 在 `Session.step()` 结束时自动保存，非每轮 iteration；③ `--no-trace` 完全跳过 Tracer/TraceStore 创建，零开销。
+- **埋点位置**：`loop.run`(task/clarify/plan/stall/soft_limit)、`loop._decide`(conv_len/plan_mode/tool_calls/final_text_len)、`loop._exec_tools`(tool/args/unknown_tool/approval_ask/approval_rejected/exec_error)、`model.stream/act`(provider/status)。
+- **测试**：`tests/test_obs.py` 11 用例覆盖 Span.log / 持久化 / 恢复 / 覆盖写幂等 / session 列表。
+- **全量测试**：`pytest -q` 147 passed（含 M1/M2 回归）。
+
+## M3.2 沉淀（韧性层核心）
+
+> 来源：`milestones/M3-可观测与韧性层/3.2-韧性层核心.md`。落地 `agent/resilience/` 包。
+
+- **组件与接口**：
+  - `RateLimiter(config)`：`acquire(key) -> bool` — 非阻塞滑动窗口（`deque[float]`），key 隔离。`remaining(key) -> float`，`reset()`。
+  - `CircuitBreaker(config, *, name)`：`call(fn) -> Any` — 三态状态机（CLOSED→OPEN→HALF_OPEN），`asyncio.Lock` 保护。`state() -> CircuitState`，`failure_count() -> int`。`record_success/failure()` 是 async 方法。
+  - `Fallback(config)`：`call(fn) -> Any` — 四种策略：`fail_fast`(直抛) / `retry`(指数退避+jitter) / `cache`(TTL+stale fallback) / `mock`(预设值)。`clear_cache()`。
+  - `Pipeline(*, rate_limiter, circuit_breaker, fallback, name, rate_limit_key)`：`execute(fn) -> Any` — 按 RateLimiter→CircuitBreaker→Fallback→fn 顺序执行。
+  - `Settings.resilience`：嵌套 `RateLimitConfigModel` / `CircuitBreakerConfigModel` / `FallbackConfigModel`。
+- **关键决策**：① 非阻塞限流——`acquire` 立刻返回，不等待窗口滑动；② CircuitBreaker 释放锁后执行 fn，避免锁持有期间做 IO；③ Fallback 策略模式字典分发，新增策略只需加一个分支；④ Cache stale fallback——过期缓存不立即删除，留作调用失败的兜底返回。
+- **测试**：`tests/test_resilience.py` 32 用例覆盖 RateLimiter(6) + CircuitBreaker(9) + Fallback(9) + Pipeline(8)。`asyncio_mode="auto"` 下无需手动管理事件循环。
+- **全量测试**：`pytest -q` 179 passed（含 M1/M2/M3.1 回归）。
+
+## M3.3 沉淀（韧性层 Pipeline 与集成）
+
+> 来源：`milestones/M3-可观测与韧性层/3.3-韧性层Pipeline与集成.md`。落地 `agent/resilience/pipeline.py` + 集成到 Model/Sandbox/Session/CLI。
+
+- **接口签名**：`Pipeline(rate_limiter, circuit_breaker, fallback, name, rate_limit_key).execute(fn, *args, **kwargs) -> Any`。`build_pipeline(name, rate_limiter, circuit_breaker, fallback, rate_limit_key) -> Pipeline | None`（全部 None→返回 None，零开销）。`build_llm_pipeline(settings) -> Pipeline | None`。`build_sandbox_pipeline(settings) -> Pipeline | None`。
+- **集成点**：① `OpenAICompatibleModel.__init__(pipeline)` + `act()` 内 `pipeline.execute(_do_act)`；② `LocalExecutor.__init__(pipeline)` + `run()` 内 `pipeline.execute(_do_run)`；③ `Session.__init__` 调用 `build_sandbox_pipeline` 传入 executor；④ `cli.py` run/chat 调用 `build_llm_pipeline` 传入 model。
+- **关键决策**：① 限流只检查入口，重试不重新经过限流器；② 流式调用经 `execute_stream` 保护「创建流」动作——预读第一项检测创建失败，通过 `_prepend` 放回流中；一旦开始 yield 不重试（业界共识：流建立前可重试，数据到达后不重试）；③ retry 消化瞬时抖动——CB 看到的是 retry 的最终结果，不因一次抖动触发熔断；④ build_executor 只对 LocalExecutor 注入 pipeline，Docker/External 暂不接入。
+- **测试**：`tests/test_resilience.py` 48 用例（原 32 + 集成测试 11 + execute_stream 5）。`asyncio_mode="auto"`。
+- **全量测试**：`pytest -q` 195 passed（含 M1/M2/M3.1/M3.2 回归）。
+
+## M3.4 沉淀（健康检查与 CLI）
+
+> 来源：`milestones/M3-可观测与韧性层/3.4-健康检查与CLI.md`。落地 `agent/resilience/health.py` + `agent/cli.py`。
+
+- **接口签名**：`HealthChecker().register(name, async_fn) / check_all() -> HealthStatus`。`HealthStatus(healthy, checks, timestamp)`。`CheckResult(name, status, detail, duration_ms)`，`status ∈ {ok, degraded, fail}`。`build_default_health_checks(settings) -> HealthChecker`（注册 registry/sqlite/sandbox 三项）。`HealthHTTPHandler` — `BaseHTTPRequestHandler` 子类，从模块级 `_HTTP_CHECKER` 取 checker。
+- **关键决策**：① 检查结果分级——`ok`/`degraded`（非致命）/`fail`（关键）；② `check_all` 用 `asyncio.gather` 并发执行，异常自动捕获为 `fail`；③ HTTP 零依赖——标准库 `http.server` + 模块级 `_HTTP_CHECKER` 注入；④ CLI `--watch` 复用 `rich.live.Live`，`--port` 启动 HTTP 端点。
+- **踩坑**：① monkeypatch 路径必须用 `"agent.resilience.health.build_default_health_checks"`（CLI 通过模块引用调用）；② 内联类 HTTP handler 在 CliRunner 下 `NameError`——改为模块级类 + 全局变量注入。
+- **测试**：`tests/test_health.py` 14 用例（HealthChecker 7 + 默认检查 2 + CLI 5）。
+- **全量测试**：`pytest -q` 209 passed。
+
+## M3.5 沉淀（测试与验收）
+
+> 来源：`milestones/M3-可观测与韧性层/3.5-测试与验收.md`。全量测试验收。
+
+- **测试统计**：M3 合计 73 用例（test_obs 11 + test_resilience 48 + test_health 14），全量 209 passed in 9.31s。
+- **测试策略**：韧性层用 FakeModel + Pipeline(mock) 模拟限流/熔断；TraceStore 用 `tmp_path` 隔离 SQLite；CLI health 用 `CliRunner` + monkeypatch 注入 `HealthChecker`。
+- **全量测试 209 passed**：覆盖 13 个测试文件，M1/M2 零回归。
 
 

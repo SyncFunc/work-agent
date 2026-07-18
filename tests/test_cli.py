@@ -41,7 +41,7 @@ def runner():
 
 
 def _patch_model(monkeypatch, model: FakeModel):
-    monkeypatch.setattr("agent.cli._build_model", lambda settings: model)
+    monkeypatch.setattr("agent.cli._build_model", lambda settings, tracer=None, pipeline=None: model)
 
 
 def test_run_basic_prints_final_and_trace(runner, monkeypatch):
