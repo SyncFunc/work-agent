@@ -1,0 +1,20 @@
+# 密钥与环境
+.env
+
+# 项目运行时数据（会话/记忆/事件流）
+.agent/
+
+# 临时/调试产物
+a.txt
+tmp_out.txt
+tmp_pytest.txt
+
+# Python
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.coverage
+htmlcov/
+dist/
+build/

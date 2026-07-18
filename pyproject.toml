@@ -1,0 +1,38 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "work-agent"
+version = "0.1.0"
+description = "通用编码 Agent（类 Claude Code / Codex）"
+requires-python = ">=3.12"
+dependencies = [
+    "typer>=0.12",
+    "pydantic-settings>=2.2",
+    "pyyaml>=6.0",
+    "openai>=1.30",
+    "jinja2>=3.1",
+    "rich>=13.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["agent"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[tool.basedpyright]
+# 采用业界通行的 standard 模式：保留有价值的类型检查（未定义、参数不匹配、返回类型等），
+# 关闭针对第三方未完全标注 SDK（如 openai 流式响应）的过度严格噪音（reportAny/reportExplicitAny/
+# reportUnknownMemberType 等）。如需更严格，可改为 "strict" 并逐项标注。
+typeCheckingMode = "standard"
+pythonVersion = "3.12"
