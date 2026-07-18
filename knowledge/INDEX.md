@@ -140,3 +140,17 @@
 - **回归保障**：`tests/test_loop.py` 的 presenter 录制测试改为事件订阅式 `_EventRecordingTransport`；`_Spy` 改为订阅 `tool_call_delta` 事件；`tests/test_cli.py` 用 `TerminalTransport`；`tests/test_plan.py` 的 `_FakeUI` 补 `bind`（loop.run 会订阅）。全量 `pytest` 85 passed。
 - **对 M2 约束**：M2 的 `SessionUI.approve`（M2.5 文档）应加到 `AgentTransport`（统一协议），而非新建第三个协议；审批/沙箱门控接入 `loop` 时直接读 `ToolSpec.risk`/事件，不依赖任何 presenter。
 
+## M2.1 沉淀（沙盒执行层 SandboxExecutor）
+
+> 来源：`milestones/M2-安全与确认/2.1-沙盒执行层.md` + `knowledge/sandbox-approval-design.md`。落地 `agent/runtime/sandbox.py`。
+
+- **接口签名**：`SandboxProfile(str,Enum)` 三值 `read-only`/`workspace-write`/`danger-full`；`ExecRequest(cmd,cwd,env,timeout=30,profile=WORKSPACE_WRITE)`；`ExecResult(ok,output,error,returncode,sandbox)`（形态对齐 `ToolResult` 的 `ok/output/error`，多 `sandbox` 名）；`Executor` Protocol（`name:str` + `async run(req)->ExecResult`，`runtime_checkable`）；`FilterVerdict(blocked,reason)`；`CommandFilter(workspace).check(cmd,profile,*,cwd)->FilterVerdict`；`LocalExecutor`/`DockerExecutor`/`ExternalExecutor`/`FakeExecutor`；`build_executor(mode,*,workspace,profile)`（mode∈local/docker/external）；模块级 `get_executor()`/`set_executor(ex)` 注入点。
+- **设计铁律（对齐设计文档 §2.2）**：`LocalExecutor` 按**运行时内核**选隔离，而非"是否 Windows 机器"——`os.uname().sysname=="Linux"`（含 WSL2，内核≥5.13）走 `unshare -n` 无网命名空间（断网，零依赖）；原生 Windows / macOS 无 Landlock/seccomp 内核原语，**走 `CommandFilter` 应用层主动拦截**（越界写/联网/破坏性→`ok=False`，**不打印告警**）。`unshare` 不可用（旧内核/无权限）时**降级为进程级 + ⚠️ 告警**（`_log.warning`），**绝不抛异常中断 Agent**。
+- **诚实边界（M2.1 范围）**：Linux 强隔离 = `unshare -n`（真实断网）+ `CommandFilter`（写/破坏性，应用层纵深防御）；内核级 Landlock/seccomp 的 Python 绑定（`landlock`/`seccomp` 包）留作**后续可选增强**（import 失败即跳过，不影响本模块）。macOS/WSL 之外：原生 Windows + `local` 是应用层强制（可被混淆绕过），真隔离靠 `docker`/`external`。`danger-full` **跳过 `CommandFilter`**——网络与写全部放行（用户显式接受风险）。
+- **`CommandFilter` 静默拦截规则**：`read-only` 任意写→拦；`workspace-write` 写目标解析后不在 `cwd` 内→拦（越界写）；`curl`/`wget`/`ssh`/`git clone`/`pip install` 等联网命令→拦（断网 profile）；`rm -rf /`/`dd of=/dev/*`/`mkfs`/fork bomb/重启等破坏性→拦。归一化 `/dev/null` 黑洞重定向与 `2>&1` fd 合并**不计入写目标**（避免误拦 `echo x > /dev/null`）。重定向正则**禁止变长 lookbehind**（`(?<!&\d*)` 会抛 `re.error: look-behind requires fixed-width pattern`）——用 `(?<!&)` + 先把 `&>` 归一为 `>` 处理。
+- **`build_executor` 实测映射**：`docker` → `docker run --rm -w /work -v <ws>:/work:<ro|rw> --network <none|host> <image> /bin/sh -c <cmd>`（profile 映射：read-only→`:ro --network none`；workspace-write→`:rw --network none`；danger-full→`:rw --network host`）；`external` → 直通（不隔离，外层负责）；`local` → 见上。
+- **可注入（M2.4 衔接）**：`bash` 工具**不直接 `subprocess`**，经 `get_executor().run(ExecRequest(...))`；测试用 `set_executor(FakeExecutor(...))` 替换，确定性、不依赖 root/网络。`get_executor()` 当前按默认 `local + cwd + workspace-write` 构造工厂；**M2.3/2.4 会改为读取 `Settings.sandbox_mode`/`sandbox_profile`**（本步自包含，不依赖尚未落地的配置字段）。
+- **不破坏既有**：`bash` 工具本体**本步未改**（仍自管 subprocess，M2.4 才切换执行器）；PLAN 风险门控、`ToolResult` 失败降级、`_cap_result` 截断全部不变。`FakeExecutor` 记 `requests:list[ExecRequest]`，可在测试中断言 `ExecRequest.profile` 形态。
+- **落地验证**：`tests/test_sandbox.py`（14 用例）全绿——`build_executor` 按 mode 返回正确实例、四执行器满足 `Executor` 协议、`FakeExecutor` 记录请求+脚本化返回、`ExternalExecutor` 直通 `echo` 成功、`LocalExecutor` 在 CI(Linux/原生Windows/macOS) 跑通 `echo`（不强依赖 root）、`CommandFilter` 拦截网络/越界写/破坏性且静默（断言无 "未隔离" 告警）、`danger-full` 放行网络、注入点 `set/get_executor`。全量 `pytest` 99 passed。
+
+

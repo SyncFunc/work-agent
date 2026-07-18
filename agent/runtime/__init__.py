@@ -9,6 +9,21 @@ from agent.runtime.registry import (
     default_registry,
     tool,
 )
+from agent.runtime.sandbox import (
+    CommandFilter,
+    DockerExecutor,
+    ExecRequest,
+    ExecResult,
+    Executor,
+    ExternalExecutor,
+    FakeExecutor,
+    FilterVerdict,
+    LocalExecutor,
+    SandboxProfile,
+    build_executor,
+    get_executor,
+    set_executor,
+)
 
 __all__ = [
     "RISK_LEVELS",
@@ -18,4 +33,17 @@ __all__ = [
     "UnknownTool",
     "default_registry",
     "tool",
+    "CommandFilter",
+    "DockerExecutor",
+    "ExecRequest",
+    "ExecResult",
+    "Executor",
+    "ExternalExecutor",
+    "FakeExecutor",
+    "FilterVerdict",
+    "LocalExecutor",
+    "SandboxProfile",
+    "build_executor",
+    "get_executor",
+    "set_executor",
 ]
