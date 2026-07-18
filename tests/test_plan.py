@@ -254,12 +254,17 @@ def test_plan_events_roundtrip():
 
 
 class _FakeUI:
-    """最小 SessionUI 替身：confirm_plan 为 async（复现修复前嵌套事件循环崩溃点）。"""
+    """最小 AgentTransport 替身：confirm_plan 为 async（复现修复前嵌套事件循环崩溃点）。
+    仅实现 loop / session 实际调用的方法（含 bind，loop.run 会订阅事件流）。"""
 
     def __init__(self, confirm: bool = True) -> None:
         self.interactive = True
         self.confirm = confirm
         self.shown_plan = False
+
+    def bind(self, stream):
+        # 测试不消费事件流；真实渲染由 CLI 的 TerminalTransport 订阅（见 cli.py）。
+        pass
 
     async def ask(self, question):
         return ""

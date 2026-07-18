@@ -126,9 +126,9 @@ def test_on_tool_call_delta_skips_ask_clarification_live():
     ask_clarification 创建 Live，该 Live 不被收尾，残留面板会扰乱澄清面板渲染（表现：
     重复 ask_clarification 面板、澄清选项不显示）。write 等真实工具仍应创建预览 Live。
     """
-    from agent.cli import _RichPresenter, ASK_CLARIFICATION_TOOL_NAME
+    from agent.cli import TerminalTransport, ASK_CLARIFICATION_TOOL_NAME
 
-    p = _RichPresenter()
+    p = TerminalTransport(interactive=False)
     try:
         p.on_tool_call_delta(0, ASK_CLARIFICATION_TOOL_NAME, '{"questions": [{"question": "x"}]}')
         assert p._tool_live is None  # 关键：ask_clarification 不创建预览 Live

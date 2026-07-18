@@ -8,7 +8,7 @@
 ## 架构决策（来源：调研报告，M1 启动前沉淀，防止遗忘）
 
 - **98/1.6 法则**：AI 只做决策，循环/权限/路由/压缩/持久化全部确定性实现且可独立测试。
-- **安全在 OS 层**：沙箱是独立可插拔执行层（Local seccomp / Docker），prompt 仅软约束。→ 影响 M2。
+- **安全在 OS 层**：沙箱是独立可插拔执行层（Local seccomp / Docker），prompt 仅软约束。→ 影响 M2；**完整设计见 `knowledge/sandbox-approval-design.md`**（Codex 模式：local/docker/external + 三档 profile + 网络默认拒绝 + AskForApproval 四模式）。
 - **上下文稀缺**：静态(系统提示/规则) 与 动态(对话/工具结果) 分离；稳定前缀走 prompt caching；超阈值递归摘要。→ 影响 M3。
 - **上下文管理设计文档**：`knowledge/context-management.md`（独立文档）。核心结论：**工具结果 = 对话历史，既保存也注入**（伪二选一）；本项目双轨映射——`EventStream` 全量不可变（保存/审计/压缩派生源）vs `conv`/`Session.messages` 可压缩投影（注入）；压缩只作用于 `conv`，绝不碰 `EventStream`；配对铁律（tool_use+tool_result 成对）；借鉴 Claude Code Microcompact/AutoCompact + Codex ContextManager；大输出走子代理隔离（M4）。详见该文档。
 - **能力正交**：Tool(原子) / Skill(按需包) / Subagent(隔离上下文) 三层。→ 影响 M4。
@@ -18,6 +18,7 @@
 ## 设计文档（standalone，跨里程碑）
 
 - **上下文管理设计**：`knowledge/context-management.md` —— 工具结果「保存 vs 注入」伪二选一的结论、双轨映射、压缩策略（Claude Code/Codex 调研）、配对铁律、子代理隔离、M3 规划。（被「架构决策·上下文稀缺」引用）
+- **沙盒与审批设计（M2 依据）**：`knowledge/sandbox-approval-design.md` —— **采用 Codex 模式**：① 原理（P2 安全在 OS 层、P3 最小权限+纵深、与 PLAN 正交）；② 沙盒=可插拔执行层（`local` Linux landlock+seccomp / macOS Seatbelt / Windows 进程级+告警 · `docker` · `external` 直通），三档 profile `read-only`/`workspace-write`/`danger-full`，**网络默认拒绝**；③ 审批=AskForApproval 四模式 `untrusted`/`on-request`/`on-failure`/`never` + `allow`/`deny` 规则（**deny 永远优先**）+ HITL 回调 `SessionUI.approve`；④ 决策流（loop→gate→sandbox）、决策矩阵、与既有设施边界。**落地步骤见 `milestones/M2-安全与确认/`（2.1~2.6）。**
 
 ## 工程约定
 
@@ -125,4 +126,17 @@
 - **踩坑⑧（plan 批准后模型仍查 .plan_status / 反复确认）**：确认计划（`confirm_plan` 返回 True→`plan_mode=False`→续跑）后，模型在 EXEC 续跑里只见过 `present_plan` 的工具调用与回执，**缺「用户已批准」信号**，于是误以为仍在 PLAN 模式，去 `bash` 查不存在的 `.plan_status`、甚至再次 `present_plan`——现象即「y/n 确认后仍没通过」。**修复**：`session.step` 批准分支在向 `loop.run` 续跑前，向 `self.messages` 追加一条 `role="user"` 的批准说明（`[System] 计划已批准，进入 EXEC…不要查状态文件、不要再次 present_plan`）；同时 `system.md` 执行段明确「plan 已批准，不要查 .plan_status 等状态文件」。回归思路：`tests/test_plan.py` 的批准续跑用例 + 该批准消息须在 `self.messages` 中。判据：批准后续跑模型仍调用 `bash cat .plan_status` 或再次 `present_plan` → 即此问题。
 - **踩坑⑨（write/edit 过程无流式输出）**：`model.stream` 原只把工具调用的 `arguments` 累积到收尾 `done` 事件一次性给出，循环只流式 `kind="content"` 文本 → 大段 `write` 的 `content` 在生成期间终端长时间无输出。**修复**：`StreamEvent` 新增 `type="tool_call_delta"`（携带 `tc_index/tc_name/tc_args` 累计原始 arguments），`OpenAICompatibleModel.stream` 在每个参数片段到达时增量产出；`loop._decide` 把增量回调给 presenter 的 `on_tool_call_delta`（可选方法）；`_RichPresenter.on_tool_call_delta` 用独立 `Live` 实时预览 write/edit 正文（经 `_extract_write_preview` 从可能不完整的 JSON 提取 `content`/`new_string`），`on_tool_call`/`close` 收尾该 Live。FakeModel/RecordingModel 不产 delta→测试零影响。回归：`tests/test_loop.py::test_tool_call_delta_streamed_to_presenter`、`tests/test_cli.py::test_extract_write_preview_from_partial_json`。
 - **踩坑⑩（澄清面板选项不显示 / 重复 ask_clarification 面板）**：`ask_clarification` 是**控制工具**，走 loop 的澄清闸门**提前返回**（`loop.py` ① 澄清闸门 `return`，不进 `_exec_tools`）。但 `_RichPresenter.on_tool_call_delta` 在流式阶段已为 `ask_clarification` 创建了参数预览 `Live`；该 Live 正常由 `on_tool_call` 收尾，而澄清闸门下 `on_tool_call` **永不触发** → 残留 Live 把随后的 `❓ 澄清` 面板渲染搞乱（选项被覆盖/不显示、重复出现 `🔧 ask_clarification …` 面板）。**修复**：① `on_tool_call_delta` 对 `ASK_CLARIFICATION_TOOL_NAME` 直接 `return`（不创建预览 Live，因其会立即被澄清面板取代，且避免冗余面板）；② loop `run` 在 `_decide` 返回后调用可选钩子 `presenter.on_decision_done()`，`_RichPresenter.on_decision_done` 统一收尾工具预览 Live + 定稿流式内容段（覆盖「同轮先 write 后 ask_clarification」等边界）。注意：`ask`/`show_questions` 在 **`_TyperUI`**（SessionUI 实现），而 `_tool_live`/`on_decision_done` 在 **`_RichPresenter`**（LoopPresenter 实现）——二者是**不同对象**，不能在 `_TyperUI.ask` 里调 `_stop_tool_live`。回归：`tests/test_cli.py::test_on_tool_call_delta_skips_ask_clarification_live`。
+
+## 重构沉淀（统一传输层 AgentTransport + 事件线格式 + ToolRisk 枚举）
+
+> 来源：与 M2 设计比对后的架构对齐重构（不落地 M2 安全层）。消除「UI/交互耦合」与「同一概念多套表示」，为网页版铺路。详细步骤见 `milestones/M-refactor-统一传输层与事件线格式.md`。
+
+- **双协议合并为单一 `AgentTransport`**（`agent/core/transport.py`，新增；`agent/core/presenter.py` 已删除）：原 `SessionUI`（HITL：interactive/ask/show_questions/show_plan/confirm_plan/notify）与 `LoopPresenter`（`on_text/on_tool_call/on_tool_result/on_plan_progress/on_decision_done/on_tool_call_delta`）分裂为两套接口，且 `LoopPresenter` 部分方法靠 `getattr` 容错（接口漏风）。现统一为 `AgentTransport` 协议：`HITL` 方法 + `bind(stream)`（订阅 `EventStream` 自行渲染）+ `close()` + `report_usage()`。CLI 的 `TerminalTransport` 实现同一协议（rich 终端）。**未来网页版只需再实现一套 `WebTransport` 订阅事件转发 websocket，无需改动 loop/session。**
+- **`EventStream` 升级为唯一实时线格式**（`agent/core/events.py`）：新增 `subscribe(sink)`/`unsubscribe(sink)`，`append` 时**同步分发**给所有订阅者；新增 `emit(ev)` 仅分发**不入档**（用于瞬时 `tool_call_delta` 预览，不污染持久化事件序列与 `to_json` 重放）。`loop.run` 创建流后立即 `transport.bind(stream)`，渲染完全由订阅驱动。**铁律：不要再给 loop 加 `presenter` 回调参数**——新增实时渲染请走事件（持久化用 `append`、瞬时预览用 `emit`）。`tool_call_delta` 事件携带 `tc_index/tc_name/tc_args`。
+- **事件驱动渲染映射**（CLI `TerminalTransport._on_event`）：`text→on_text`、`tool_use→on_tool_call`（同时把 `tc` 按 `id` 记到 `_tc_by_id`，供 `tool_result` 取工具名）、`tool_call_delta→on_tool_call_delta`、`tool_result→on_tool_result`（`tc` 从 `_tc_by_id` 取）、`plan_progress→on_plan_progress`（增量更新本地 `_plan_steps` 后渲染）、`decision→_on_decision_done`（收尾流式段）。`plan`/`clarify`/`final` 由 HITL（show_plan/show_questions）或已流式文本覆盖，sink 忽略。
+- **`ToolRisk(str, Enum)` 取代裸 risk 串**（`agent/runtime/registry.py`）：`ToolRisk.READ/EDIT/EXEC`；`RISK_LEVELS = tuple(r.value for r in ToolRisk)`（register 校验/loop 风险门控仍用该元组比较，向后兼容字符串）。工具用 `risk=ToolRisk.*`（`tools/fs.py`/`tools/bash.py`）。**M2 审批门可直接消费 `ToolSpec.risk` 枚举，无需再做字符串映射。**
+- **`fs.py` 去重**：新增 `_load_file(path) -> (Path, str)`（resolve→is_file 校验→read_text），供 `read`/`grep`/`edit` 复用；`edit` 必须保留返回的 `target` 用于写回（`target.write_text(...)`），不要丢弃。原 `write` 的「不存在即空」语义单独保留、不复用 `_load_file`。
+- **bash / fs 模块拆分不冗余（评估结论）**：shell 执行 vs 文件系统操作是正交关注点，保留分文件；二者功能重叠（bash 可 cat/grep/echo>）是「逃生舱 vs 路径受限安全工具」的有意设计，非重复实现。**真正冗余只在 `fs.py` 内部样板**，已用 `_load_file` 消除。
+- **回归保障**：`tests/test_loop.py` 的 presenter 录制测试改为事件订阅式 `_EventRecordingTransport`；`_Spy` 改为订阅 `tool_call_delta` 事件；`tests/test_cli.py` 用 `TerminalTransport`；`tests/test_plan.py` 的 `_FakeUI` 补 `bind`（loop.run 会订阅）。全量 `pytest` 85 passed。
+- **对 M2 约束**：M2 的 `SessionUI.approve`（M2.5 文档）应加到 `AgentTransport`（统一协议），而非新建第三个协议；审批/沙箱门控接入 `loop` 时直接读 `ToolSpec.risk`/事件，不依赖任何 presenter。
 

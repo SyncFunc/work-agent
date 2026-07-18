@@ -27,8 +27,8 @@ from agent.core.control_tools import (
 from agent.core.events import Event, EventStream
 from agent.core.intent import Question, extract_clarify
 from agent.core.model import Decision, Message, Model, ToolCall
-from agent.core.presenter import LoopPresenter
 from agent.core.plan import Plan, PlanStep, PlanStore
+from agent.core.transport import AgentTransport
 from agent.core.prompts import load_prompt
 from agent.obs.tracer import Tracer
 from agent.runtime.registry import RISK_LEVELS, ToolRegistry, ToolResult, UnknownTool
@@ -107,7 +107,7 @@ class AgentLoop:
         clarify_total: int = 0,
         plan_mode: bool | None = None,
         plan_path: str | None = None,
-        presenter: "LoopPresenter | None" = None,
+        transport: "AgentTransport | None" = None,
     ) -> AgentResult:
         """执行一次 ReAct 循环。
 
@@ -133,6 +133,9 @@ class AgentLoop:
         conv = list(messages) if messages else []
         conv.append(Message(role="user", content=task))
         stream = EventStream()
+        # 传输方（终端 / 未来 web）订阅事件流自行渲染/转发；为 None 时无 UI，零回归。
+        if transport is not None:
+            transport.bind(stream)
         usage_total: dict[str, int] = {}  # 逐次 model 调用的 token 用量累加
 
         last_callset: frozenset[tuple[str, str]] | None = None
@@ -142,15 +145,9 @@ class AgentLoop:
         # 包裹 agent.run span（可观测，M1.6）：tool.exec / model.act 作为其子 span。
         with self._span("agent.run", parent=None) as self._agent_span:
             for i in range(self.settings.max_iterations):
-                decision = await self._decide(
-                    conv, stream, plan_mode=pm, plan_path=pp, presenter=presenter
-                )
-                # 一轮模型决策结束：通知 presenter 收尾（如工具参数流式预览 Live）。
-                # 关键：澄清/计划闸门会在此轮提前返回、on_tool_call 永不触发，若不在此
-                # 收尾，残留 Live 会扰乱随后的澄清面板渲染（重复面板、选项不显示）。
-                on_done = getattr(presenter, "on_decision_done", None)
-                if on_done is not None:
-                    on_done()
+                decision = await self._decide(conv, stream, plan_mode=pm, plan_path=pp)
+                # 一轮模型决策结束的渲染收尾（定稿流式内容段、关闭工具参数预览 Live 等）
+                # 由订阅方在收到下方 ``decision`` 事件时统一处理（见 AgentTransport.bind 的 sink）。
                 if decision.usage:
                     for k, v in decision.usage.items():
                         usage_total[k] = usage_total.get(k, 0) + v
@@ -237,7 +234,7 @@ class AgentLoop:
                         messages=conv, clarify_total=ct, usage=usage_total,
                     )
 
-                results = await self._exec_tools(decision.tool_calls, stream, presenter)
+                results = await self._exec_tools(decision.tool_calls, stream)
 
                 # 卡死检测：本轮调用签名集合 vs 上一轮
                 callset = frozenset(
@@ -289,29 +286,34 @@ class AgentLoop:
         *,
         plan_mode: bool = False,
         plan_path: str | None = None,
-        presenter: "LoopPresenter | None" = None,
     ) -> Decision:
         """调用模型的**流式**接口，逐片回传文本事件，收尾返回完整 Decision。
 
         ``conv`` 为本次会话对话历史（不含 system）；system 提示由 loop 临时拼接到
         模型调用前，不写入会话历史。整体包在 ``model.act`` span 下（可观测）。
         ``plan_mode`` / ``plan_path`` 为本轮模式（支持任意轮次切换）。
-        ``presenter`` 非空时，逐片文本（区分 reasoning/content）实时回调渲染。
+
+        实时渲染完全由 ``EventStream`` 订阅驱动：文本落 ``text`` 事件、工具调用参数
+        增量落瞬时 ``tool_call_delta`` 事件（``emit``，不入档），订阅方（终端 / 未来
+        web）据此渲染，loop 不再直接回调任何 presenter。
         """
         full = [Message(role="system", content=self._system_prompt(plan_mode=plan_mode, plan_path=plan_path))] + conv
         decision: Decision | None = None
-        on_delta = getattr(presenter, "on_tool_call_delta", None) if presenter is not None else None
         with self._span("model.act", kind="model", parent=self._agent_span) as mspan:
             async for ev in self.model.stream(full, tools=self._model_tools(plan_mode=plan_mode, plan_path=plan_path)):
                 if ev.type == "text" and ev.text:
                     kind = ev.kind or "content"
-                    stream.append(Event(type="text", text=ev.text, kind=kind))  # 实时 token，供 UI/可观测
-                    if presenter is not None:
-                        presenter.on_text(ev.text, kind)
-                elif ev.type == "tool_call_delta" and on_delta is not None:
+                    # 实时 token：落事件即分发订阅方（终端渲染 / web 转发）；同时供可观测。
+                    stream.append(Event(type="text", text=ev.text, kind=kind))
+                elif ev.type == "tool_call_delta":
                     # 工具调用参数流式预览（write/edit 的内容在生成过程中即显示）。
-                    # 用增量事件里的累计信息，presenter 自行决定如何渲染，loop 不解析参数。
-                    on_delta(ev.tc_index, ev.tc_name, ev.tc_args)
+                    # 用增量事件里的累计信息；瞬时事件、不入档，订阅方自行决定如何渲染。
+                    stream.emit(Event(
+                        type="tool_call_delta",
+                        tc_index=ev.tc_index,
+                        tc_name=ev.tc_name,
+                        tc_args=ev.tc_args,
+                    ))
                 elif ev.type == "done":
                     decision = ev.decision
                     # 模型调用 span 记录完整 usage 结构（供可观测 / 后续导出 Langfuse 等）
@@ -374,7 +376,7 @@ class AgentLoop:
             return True
 
     async def _exec_tools(
-        self, calls: list[ToolCall], stream: EventStream, presenter: "LoopPresenter | None" = None
+        self, calls: list[ToolCall], stream: EventStream
     ) -> list[ToolResult]:
         if not calls:
             return []
@@ -391,7 +393,7 @@ class AgentLoop:
                     if not step_id:
                         return ToolResult(ok=False, error="update_plan requires step_id")
                     try:
-                        updated = PlanStore.update_step(
+                        PlanStore.update_step(
                             self._run_pp or self.settings.plan_file, step_id, status, note
                         )
                     except (KeyError, ValueError) as e:
@@ -403,11 +405,7 @@ class AgentLoop:
                             plan_update={"step_id": step_id, "status": status, "note": note},
                         )
                     )
-                    # 进度可视化：把更新后的完整 Plan 推给 presenter 渲染步骤列表
-                    # （on_plan_progress 为可选协议方法，未实现则静默跳过）。
-                    hook = getattr(presenter, "on_plan_progress", None)
-                    if hook is not None:
-                        hook(updated)
+                    # 进度可视化由订阅方在收到 plan_progress 事件时渲染（终端 WebTransport 同理）。
                     return ToolResult(ok=True, output="progress updated")
 
                 # 未知工具 / 计划模式风险门控（确定性兜底，不依赖 prompt 软约束）
@@ -440,15 +438,9 @@ class AgentLoop:
                     except Exception as e:  # 工具内部未捕获异常同样降级
                         return ToolResult(ok=False, error=f"{type(e).__name__}: {e}")
 
-        # 顺序即时展示调用（执行前），再并发执行，最后顺序展示结果（保序、清晰区分工具调用）。
-        # 注意：tool_result *事件* 由 run 的回填循环统一 append（与 conv 回填配对），
-        # 此处仅触发 presenter 回调，避免事件重复。
+        # 顺序即时展示调用（执行前），再并发执行。
+        # tool_use / tool_result 事件由订阅方渲染（落事件即分发）；此处仅负责落事件本身。
         for tc in calls:
             stream.append(Event(type="tool_use", tool_use=tc))
-            if presenter is not None:
-                presenter.on_tool_call(tc)
         results = list(await asyncio.gather(*(_one(tc) for tc in calls)))
-        for tc, res in zip(calls, results):
-            if presenter is not None:
-                presenter.on_tool_result(tc, res)
         return results

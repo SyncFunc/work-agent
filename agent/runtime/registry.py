@@ -12,10 +12,19 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
+from enum import Enum
 from typing import Any
 
-# 风险分级：read=只读、edit=改文件、exec=执行命令；枚举保真以便后续 M2 审批。
-RISK_LEVELS = ("read", "edit", "exec")
+# 风险分级：read=只读、edit=改文件、exec=执行命令。
+# 用 str 枚举（而非裸串）：类型安全、防拼错，并直接供未来 M2 审批门消费 ToolSpec.risk。
+class ToolRisk(str, Enum):
+    READ = "read"
+    EDIT = "edit"
+    EXEC = "exec"
+
+
+# 由枚举导出，供 register 校验 / loop 风险门控比较（保持字符串序语义）。
+RISK_LEVELS = tuple(r.value for r in ToolRisk)
 
 
 @dataclass
@@ -108,7 +117,7 @@ class ToolRegistry:
         return [spec.to_openai() for spec in self._tools.values()]
 
 
-def tool(name: str, risk: str = "read", schema: dict[str, Any] | None = None) -> Callable[
+def tool(name: str, risk: ToolRisk = ToolRisk.READ, schema: dict[str, Any] | None = None) -> Callable[
     [Callable[[dict[str, Any]], Awaitable[ToolResult]]],
     ToolSpec,
 ]:

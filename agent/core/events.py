@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
@@ -61,6 +62,10 @@ class Event:
     tool_use: ToolCall | None = None
     tool_result: ToolResult | None = None
     tool_call_id: str | None = None
+    # 工具调用参数流式增量（tool_call_delta）：实时预览用，瞬时事件、不入档持久化。
+    tc_index: int | None = None
+    tc_name: str | None = None
+    tc_args: str | None = None
     text: str | None = None
     kind: str | None = None  # text 事件：区分 "reasoning"（思考）/ "content"（输出）
     error: str | None = None
@@ -79,6 +84,12 @@ class Event:
             d["tool_result"] = _tool_result_to_dict(self.tool_result)
         if self.tool_call_id is not None:
             d["tool_call_id"] = self.tool_call_id
+        if self.tc_index is not None:
+            d["tc_index"] = self.tc_index
+        if self.tc_name is not None:
+            d["tc_name"] = self.tc_name
+        if self.tc_args is not None:
+            d["tc_args"] = self.tc_args
         if self.text is not None:
             d["text"] = self.text
         if self.kind is not None:
@@ -103,6 +114,9 @@ class Event:
             tool_use=_tool_call_from_dict(d["tool_use"]) if "tool_use" in d else None,
             tool_result=_tool_result_from_dict(d["tool_result"]) if "tool_result" in d else None,
             tool_call_id=d.get("tool_call_id"),
+            tc_index=d.get("tc_index"),
+            tc_name=d.get("tc_name"),
+            tc_args=d.get("tc_args"),
             text=d.get("text"),
             kind=d.get("kind"),
             error=d.get("error"),
@@ -112,11 +126,32 @@ class Event:
         )
 
 
+# 事件处理器：订阅后由 append 同步分发（handler 自行决定是否需要异步）。
+EventSink = Callable[["Event"], None]
+
+
 class EventStream:
-    """追加式事件流；序列即因果顺序。"""
+    """追加式事件流；序列即因果顺序。
+
+    同时是**实时线格式**：``append`` 时同步把事件分发给订阅者（``subscribe``），
+    使执行期间外部即可消费（终端渲染 / 未来 web 序列化 ``Event.to_dict()`` 发
+    websocket），无需等到 ``run`` 结束才随 ``AgentResult`` 返回。
+    """
 
     def __init__(self) -> None:
         self._events: list[Event] = []
+        self._sinks: list[EventSink] = []
+
+    def subscribe(self, sink: EventSink) -> None:
+        """注册一个实时事件处理器（渲染/转发）。无去重，多次订阅多次分发。"""
+        self._sinks.append(sink)
+
+    def unsubscribe(self, sink: EventSink) -> None:
+        """移除已注册的处理器。"""
+        try:
+            self._sinks.remove(sink)
+        except ValueError:
+            pass
 
     def append(self, ev: Event) -> Event:
         # 写入时自动分配 seq（同步、无 await，单线程下原子，并发调工具也安全）。
@@ -124,7 +159,19 @@ class EventStream:
         if ev.ts == 0.0:
             ev.ts = time.time()
         self._events.append(ev)
+        # 实时分发：订阅者（终端渲染 / web 转发）在事件落盘后立即收到，无需等待 run 结束。
+        for sink in self._sinks:
+            sink(ev)
         return ev
+
+    def emit(self, ev: Event) -> None:
+        """瞬时分发（**不入档**）：用于实时预览等无需持久化的事件（如 ``tool_call_delta``）。
+
+        与 ``append`` 不同，``emit`` 只把事件推给订阅者，不写入 ``_events``，因此不影响
+        ``to_json`` / 重放，也不改变「持久化事件序列」的既有不变量（测试据此断言 type 顺序）。
+        """
+        for sink in self._sinks:
+            sink(ev)
 
     def all(self) -> list[Event]:
         return list(self._events)

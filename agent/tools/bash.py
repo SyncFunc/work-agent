@@ -20,7 +20,7 @@ import shutil
 import sys
 from typing import Any
 
-from agent.runtime.registry import ToolResult, default_registry, tool
+from agent.runtime.registry import ToolResult, ToolRisk, default_registry, tool
 
 
 # 按 ; && || | 切分命令为多段（每段独立判定是否只读）
@@ -148,7 +148,7 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
 
 @tool(
     "bash",
-    risk="exec",
+    risk=ToolRisk.EXEC,
     schema={
         "type": "object",
         "description": "在 shell 中执行命令，返回 stdout/stderr/返回码。",

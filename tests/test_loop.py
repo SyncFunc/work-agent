@@ -207,42 +207,40 @@ async def test_usage_accumulates_across_iterations():
     assert result.usage == {"prompt_tokens": 30, "completion_tokens": 13, "total_tokens": 43}
 
 
-class _RecordingPresenter:
-    """验证 loop 把流式文本/工具事件回调给 presenter（不涉及真实 IO）。"""
+class _EventRecordingTransport:
+    """验证 loop 把流式文本/工具事件经 EventStream 分发（订阅驱动，不涉及真实 IO）。"""
 
     def __init__(self) -> None:
         self.texts: list[tuple[str, str]] = []
         self.calls: list[str] = []
         self.results: list[tuple[str, bool]] = []
 
-    def on_text(self, text: str, kind: str) -> None:
-        self.texts.append((text, kind))
-
-    def on_tool_call(self, tc) -> None:
-        self.calls.append(tc.name)
-
-    def on_tool_result(self, tc, res) -> None:
-        self.results.append((tc.name, res.ok))
-
-    def close(self) -> None:
-        pass
+    def bind(self, stream):
+        def sink(ev):
+            if ev.type == "text":
+                self.texts.append((ev.text, ev.kind))
+            elif ev.type == "tool_use":
+                self.calls.append(ev.tool_use.name)
+            elif ev.type == "tool_result":
+                self.results.append((ev.tool_call_id, ev.tool_result.ok))
+        stream.subscribe(sink)
 
 
-async def test_presenter_receives_streaming_and_tool_events():
+async def test_transport_receives_streaming_and_tool_events():
     registry = _make_registry()
     model = FakeModel([
         Decision(tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 1})]),
         Decision(text="final answer"),
     ])
-    presenter = _RecordingPresenter()
+    transport = _EventRecordingTransport()
     loop = AgentLoop(model, registry, _settings())
-    result = await loop.run("task", presenter=presenter)
+    result = await loop.run("task", transport=transport)
 
-    # 流式文本（content）回调收到最终答案
-    assert presenter.texts == [("final answer", "content")]
-    # 工具调用 / 结果回调（按调用顺序）
-    assert presenter.calls == ["echo"]
-    assert presenter.results == [("echo", True)]
+    # 流式文本（content）经事件分发收到最终答案
+    assert transport.texts == [("final answer", "content")]
+    # 工具调用 / 结果经 tool_use / tool_result 事件分发（按调用顺序）
+    assert transport.calls == ["echo"]
+    assert transport.results == [("c1", True)]
     # 循环内部不调用 close（生命周期由 CLI 控制）
     assert result.usage == {}
 
@@ -270,9 +268,9 @@ async def test_empty_name_toolcall_treated_as_final():
     assert result.iterations == 1  # 关键：只迭代一次，未陷入刷屏
 
 
-async def test_tool_call_delta_streamed_to_presenter():
+async def test_tool_call_delta_streamed_to_transport():
     """回归（write 流式输出）：模型流式产出工具调用参数（tool_call_delta）时，loop 把
-    增量逐个回调给 presenter.on_tool_call_delta，使 UI 能在参数生成过程中实时预览
+    增量作为瞬时事件（emit，不入档）分发给订阅方，使 UI 能在参数生成过程中实时预览
     （如 write/edit 的 content），而非等到决策收尾才一次性出现。"""
     from agent.core.model import StreamEvent
 
@@ -294,21 +292,15 @@ async def test_tool_call_delta_streamed_to_presenter():
 
     deltas = []
 
-    class _Spy:
-        def on_tool_call_delta(self, index, name, args_raw):
-            deltas.append((index, name, args_raw))
-
-        def on_text(self, text, kind):
-            pass
-
-        def on_tool_call(self, tc):
-            pass
-
-        def on_tool_result(self, tc, res):
-            pass
+    class _EventSpy:
+        def bind(self, stream):
+            def sink(ev):
+                if ev.type == "tool_call_delta":
+                    deltas.append((ev.tc_index, ev.tc_name, ev.tc_args))
+            stream.subscribe(sink)
 
     loop = AgentLoop(_DeltaModel(), _make_registry(), _settings())
-    await loop.run("use a tool", presenter=_Spy())
+    await loop.run("use a tool", transport=_EventSpy())
 
     assert len(deltas) == 2
     assert deltas[0][1] == "echo"

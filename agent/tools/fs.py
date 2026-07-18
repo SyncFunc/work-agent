@@ -18,7 +18,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from agent.runtime.registry import ToolResult, default_registry, tool
+from agent.runtime.registry import ToolResult, ToolRisk, default_registry, tool
 
 
 def _resolve(root: Path, path: str) -> Path:
@@ -42,6 +42,19 @@ def _split_lines(text: str) -> list[str]:
     return lines
 
 
+def _load_file(path: str) -> tuple[Path, str]:
+    """解析路径 → 校验是文件 → 读取全文。
+
+    把 read/grep/edit 共同重复的「``_resolve`` → ``is_file`` 校验 → ``read_text``」
+    样板收敛到一处。越界/非文件/IO 错误抛 ``ValueError``/``OSError``，由调用方转
+    为 ``ToolResult(ok=False)``。write 的「不存在即空」语义不同，不复用本函数。
+    """
+    target = _resolve(Path.cwd(), path)
+    if not target.is_file():
+        raise ValueError(f"not a file: {path}")
+    return target, target.read_text(encoding="utf-8")
+
+
 def _make_diff(path: str, old: str, new: str) -> str:
     """生成 old→new 的 unified diff（供 UI 展示改动）。
 
@@ -62,7 +75,7 @@ def _make_diff(path: str, old: str, new: str) -> str:
 
 @tool(
     "read",
-    risk="read",
+    risk=ToolRisk.READ,
     schema={
         "type": "object",
         "description": (
@@ -94,10 +107,7 @@ async def read(args: dict[str, Any]) -> ToolResult:
         if limit < 0:
             limit = 0
     try:
-        target = _resolve(Path.cwd(), path)
-        if not target.is_file():
-            return ToolResult(ok=False, error=f"not a file: {path}")
-        text = target.read_text(encoding="utf-8")
+        _, text = _load_file(path)
     except (ValueError, OSError) as e:
         return ToolResult(ok=False, error=str(e))
 
@@ -118,7 +128,7 @@ async def read(args: dict[str, Any]) -> ToolResult:
 
 @tool(
     "grep",
-    risk="read",
+    risk=ToolRisk.READ,
     schema={
         "type": "object",
         "description": (
@@ -150,10 +160,7 @@ async def grep(args: dict[str, Any]) -> ToolResult:
     if max_matches < 1:
         max_matches = 1
     try:
-        target = _resolve(Path.cwd(), path)
-        if not target.is_file():
-            return ToolResult(ok=False, error=f"not a file: {path}")
-        text = target.read_text(encoding="utf-8")
+        _, text = _load_file(path)
     except (ValueError, OSError) as e:
         return ToolResult(ok=False, error=str(e))
 
@@ -189,7 +196,7 @@ async def grep(args: dict[str, Any]) -> ToolResult:
 
 @tool(
     "write",
-    risk="edit",
+    risk=ToolRisk.EDIT,
     schema={
         "type": "object",
         "description": (
@@ -222,7 +229,7 @@ async def write(args: dict[str, Any]) -> ToolResult:
 
 @tool(
     "edit",
-    risk="edit",
+    risk=ToolRisk.EDIT,
     schema={
         "type": "object",
         "description": (
@@ -251,10 +258,7 @@ async def edit(args: dict[str, Any]) -> ToolResult:
     new_string = args["new_string"]
     replace_all = bool(args.get("replace_all", False))
     try:
-        target = _resolve(Path.cwd(), path)
-        if not target.is_file():
-            return ToolResult(ok=False, error=f"not a file: {path}")
-        text = target.read_text(encoding="utf-8")
+        target, text = _load_file(path)
     except (ValueError, OSError) as e:
         return ToolResult(ok=False, error=str(e))
 

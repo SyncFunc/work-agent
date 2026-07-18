@@ -7,53 +7,21 @@
 - 在一轮 ``step`` 内编排：澄清回填、计划确认与模式切换。
 
 **分层约束**：本模块位于 core，不依赖任何 CLI 框架（typer 等）。所有人机交互（提问、
-确认、提示输出）通过注入的 ``SessionUI`` 协议完成，CLI 层提供其具体实现。
+确认、提示输出）与实时渲染通过注入的 ``AgentTransport`` 协议完成，CLI 层提供其具体实现
+（``TerminalTransport``）；测试可注入假实现，无需真实 IO。
 """
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol, runtime_checkable
+from typing import TYPE_CHECKING
 
 from agent.core.loop import AgentLoop
 from agent.core.model import Message
+from agent.core.transport import AgentTransport
 
 if TYPE_CHECKING:
     from agent.core.intent import Question
     from agent.core.loop import AgentResult
-    from agent.core.presenter import LoopPresenter
-
-
-@runtime_checkable
-class SessionUI(Protocol):
-    """会话交互协议：把人机交互（IO）与会话编排逻辑解耦。
-
-    CLI 层实现本协议（typer 封装）；测试可注入假实现驱动分支，无需真实 IO。
-    """
-
-    @property
-    def interactive(self) -> bool:
-        """当前是否处于可交互环境（可向用户提问/确认）。"""
-        ...
-
-    async def ask(self, question: "Question") -> str:
-        """向用户提出一条澄清问题并返回其答案（仅交互环境调用）。"""
-        ...
-
-    def show_questions(self, questions: list["Question"]) -> None:
-        """非交互环境下，展示无法回填的澄清问题（随后会以 err_code=2 退出）。"""
-        ...
-
-    def show_plan(self, res: "AgentResult") -> None:
-        """展示模型产出的计划（正文 + 步骤 + 计划文件路径）。"""
-        ...
-
-    async def confirm_plan(self) -> bool:
-        """询问用户是否执行当前计划（仅交互环境调用；异步，因在事件循环内被 await）。"""
-        ...
-
-    def notify(self, message: str) -> None:
-        """输出一条提示/状态信息（非最终答案，如模式切换、计划未确认等）。"""
-        ...
 
 
 class Session:
@@ -75,11 +43,10 @@ class Session:
     async def step(
         self,
         task: str,
-        ui: SessionUI,
+        transport: AgentTransport,
         *,
         yes: bool = False,
         fatal_plan_decline: bool = False,
-        presenter: "LoopPresenter | None" = None,
     ) -> tuple["AgentResult", int | None]:
         """执行一轮（含澄清回填、plan 确认/切换）。返回 ``(res, err_code)``。
 
@@ -87,7 +54,8 @@ class Session:
         - 计划未确认：``fatal_plan_decline=True``（run）返回 err_code=1；否则（chat）留在 PLAN 模式继续。
         - 计划被确认 → 记录 plan_path、切 EXEC 模式、以原任务续跑（带已批准计划）。
         - 否则返回最终 res，err_code=None。
-        - ``presenter``：ReAct 循环内部实时事件的渲染器（流式文本/思考/工具调用）；为 None 则静默。
+        - ``transport``：``AgentTransport`` 实例，承担 HITL 交互与实时事件渲染
+          （``bind`` 订阅 ``EventStream``）；为 None 则无 UI、零渲染。
         """
         current_task = task
         while True:
@@ -97,7 +65,7 @@ class Session:
                 clarify_total=self.clarify_total,
                 plan_mode=self.plan_mode,
                 plan_path=self.plan_path,
-                presenter=presenter,
+                transport=transport,
             )
             self.messages = list(res.messages or self.messages)
             self.clarify_total = res.clarify_total
@@ -105,10 +73,10 @@ class Session:
             # ① 澄清回填（保持当前模式，用答案作为新任务再跑一轮）
             if res.needs_clarification:
                 questions = res.questions or []
-                if not ui.interactive:
-                    ui.show_questions(questions)
+                if not transport.interactive:
+                    transport.show_questions(questions)
                     return res, 2
-                answers = [await ui.ask(q) for q in questions]
+                answers = [await transport.ask(q) for q in questions]
                 current_task = "; ".join(
                     f"{q.question}: {a}" for q, a in zip(questions, answers)
                 )
@@ -116,16 +84,16 @@ class Session:
 
             # ② 计划确认 / 模式切换（仅 PLAN 模式且模型产出计划时）
             if res.needs_plan_confirm:
-                ui.show_plan(res)
+                transport.show_plan(res)
                 # 立即记录已知计划（即便暂不批准），使随后的 EXEC 轮次能按 plan_path
                 # 下发 update_plan 控制工具（M1.4：update_plan 仅在「非 plan 模式 + 已知计划」时可用）。
                 self.plan_path = res.plan_path
-                confirmed = yes or (ui.interactive and await ui.confirm_plan())
+                confirmed = yes or (transport.interactive and await transport.confirm_plan())
                 if not confirmed:
                     if fatal_plan_decline:
-                        ui.notify("计划未确认，已退出。")
+                        transport.notify("计划未确认，已退出。")
                         return res, 1
-                    ui.notify("计划未确认，保持 PLAN 模式。用 /exec 或 /approve 继续。")
+                    transport.notify("计划未确认，保持 PLAN 模式。用 /exec 或 /approve 继续。")
                     return res, None
                 # 批准：切 EXEC 模式，以原任务续跑（带已批准计划，启用 update_plan）
                 self.plan_mode = False

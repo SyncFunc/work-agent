@@ -42,10 +42,11 @@ from agent.core.control_tools import ASK_CLARIFICATION_TOOL_NAME, UPDATE_PLAN_TO
 # 写/改类工具名（与 agent.tools.fs 对齐）；其 ToolResult.diff 以高亮面板展示改动。
 WRITE_TOOL_NAME = "write"
 EDIT_TOOL_NAME = "edit"
+from agent.core.events import Event, EventStream
 from agent.core.intent import Question
 from agent.core.model import create_model
-from agent.core.presenter import LoopPresenter
 from agent.core.session import Session
+from agent.core.transport import AgentTransport
 from agent.obs.tracer import Tracer
 from agent.runtime.registry import default_registry
 
@@ -131,31 +132,71 @@ def _render_steps_panel(steps, *, title: str) -> Panel:
     return Panel("\n".join(lines), title=title, border_style="magenta", expand=False)
 
 
-class _RichPresenter(LoopPresenter):
-    """``LoopPresenter`` 的 rich 实现：把 ReAct 循环内部事件渲染成交互式终端输出。
+class TerminalTransport:
+    """``AgentTransport`` 的 rich 终端实现：把 HITL 交互与事件流渲染统一到单一契约。
+
+    渲染完全由 ``EventStream`` 订阅驱动（``bind`` 注册 ``_on_event`` sink）：loop 不再
+    回调任何 presenter，只落事件；本类在 sink 内把 ``text`` / ``tool_use`` /
+    ``tool_call_delta`` / ``tool_result`` / ``plan_progress`` / ``decision`` 等事件
+    翻译成 rich 终端输出。未来做网页版只需另实现一套 ``AgentTransport``（订阅事件转发
+    websocket），无需改动 loop / session。
 
     - 思考（reasoning）：暗色增量实时打印（``💭 思考:`` 头 + 逐片文本），不进框。
-    - 输出（content）：用单个 ``Live`` 渲染**带框的 Markdown 面板**
-      （``💬 模型输出``），流式过程中把面板裁剪到屏幕高度内（只显示最近内容），
-      避免内容超高时整块重发刷屏；一个内容段结束（工具调用 / 整轮结束）时
-      ``stop()`` 把**完整** Markdown 面板定稿打印一次。
+    - 输出（content）：用单个 ``Live`` 渲染**带框的 Markdown 面板**（``💬 模型输出``），
+      流式过程中把面板裁剪到屏幕高度内，杜绝内容超高整块重发刷屏；段结束 ``stop()`` 定稿。
     - 工具调用 / 结果：用 Panel 即时展示（清晰区分「工具调用」类别）。
     - ``report_usage`` 打印 token 用量。
 
-    **为什么不重新引入历史刷屏 bug**：旧实现把所有轮次文本累积进同一个 ``_buf``
-    且跨模型轮次不清空，导致 ``Live`` 每帧渲染的面板越来越长、最终超过屏幕，
-    每次 ``refresh()`` 整块重发 → 十几份相同面板。本实现：① 每个内容段用独立的
-    ``_buf``，``Live`` 实例在段开始时创建、段结束时 ``stop()`` 后丢弃，绝不跨段
-    累积；② 流式时用 ``_render_content(cap=True)`` 把面板高度裁到屏幕内，就地刷新
-    （同高 → 不滚动、不重发）；③ 段结束才 ``stop()`` 渲染一次完整面板（仅一次滚动）。
+    **为什么不重新引入历史刷屏 bug**：每个内容段用独立的 ``_buf``，``Live`` 实例在段开始
+    时创建、段结束时 ``stop()`` 后丢弃，绝不跨段累积；流式时把面板高度裁到屏幕内，就地
+    刷新（同高 → 不滚动、不重发）；段结束才 ``stop()`` 渲染一次完整面板（仅一次滚动）。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, *, interactive: bool) -> None:
+        self._interactive = interactive
         self._console = Console()
         self._saw_reasoning = False   # 本思考段是否已打印过 "💭 思考:" 头
         self._live = None             # 当前内容段的 Live（流式 Markdown 面板）
         self._buf = ""                # 当前内容段累积文本
         self._tool_live = None        # 工具调用参数流式预览的 Live（write/edit 内容实时显示）
+        self._tc_by_id: dict[str, Any] = {}   # tool_use 事件收集，供 tool_result 取工具名
+        self._plan_steps: list[Any] | None = None  # 计划步骤（show_plan 时记录，progress 增量更新）
+
+    @property
+    def interactive(self) -> bool:
+        return self._interactive
+
+    # ------------------------------------------------------------------ #
+    # 渲染：由 bind 订阅的事件流驱动（取代原 LoopPresenter 回调）
+    # ------------------------------------------------------------------ #
+    def bind(self, stream: EventStream) -> None:
+        """订阅 EventStream：loop 创建流后即调用，执行期事件实时到达本 sink。"""
+        self._tc_by_id = {}
+        stream.subscribe(self._on_event)
+
+    def _on_event(self, ev: Event) -> None:
+        t = ev.type
+        if t == "text":
+            self.on_text(ev.text or "", ev.kind or "content")
+        elif t == "tool_use":
+            if ev.tool_use is not None:
+                self._tc_by_id[ev.tool_use.id] = ev.tool_use
+                self.on_tool_call(ev.tool_use)
+        elif t == "tool_call_delta":
+            # 瞬时事件（不入档）：write/edit 参数生成中实时预览
+            self.on_tool_call_delta(ev.tc_index or 0, ev.tc_name or "", ev.tc_args or "")
+        elif t == "tool_result":
+            # tool_result 事件只带 tool_call_id + ToolResult；工具名从 tool_use 收集而来
+            if ev.tool_call_id is not None:
+                tc = self._tc_by_id.get(ev.tool_call_id)
+                if tc is not None and ev.tool_result is not None:
+                    self.on_tool_result(tc, ev.tool_result)
+        elif t == "plan_progress":
+            self.on_plan_progress(ev)
+        elif t == "decision":
+            # 一轮模型决策结束收尾（澄清/计划闸门提前返回时工具回调不触发，统一在此定稿）
+            self._on_decision_done()
+        # clarify / plan / final 等由 HITL（show_questions/show_plan）或已流式文本覆盖，忽略
 
     def _max_lines(self) -> int:
         # 给 Panel 边框/标题留 ~4 行余量，避免正好顶满屏幕触发滚动
@@ -267,10 +308,9 @@ class _RichPresenter(LoopPresenter):
         """
         self._commit_live()  # 先定稿可能正在流式的内容面板，避免重叠
         self._end_reasoning_segment()
-        # ask_clarification 是控制工具：其参数会立即由澄清面板（SessionUI.ask）呈现，
-        # 无需再展示「生成参数中…」占位面板——否则因澄清闸门提前返回、on_tool_call 永不
-        # 被调用，该 Live 不被收尾，残留面板会扰乱澄清面板渲染（表现：重复 ask_clarification
-        # 面板、澄清选项不显示）。直接跳过。
+        # ask_clarification 是控制工具：其参数会立即由澄清面板（ask）呈现，无需再展示
+        # 「生成参数中…」占位面板——否则因澄清闸门提前返回、on_tool_call 永不触发，该
+        # Live 不被收尾，残留面板会扰乱澄清面板渲染。直接跳过。
         if name == ASK_CLARIFICATION_TOOL_NAME:
             return
         if name in (WRITE_TOOL_NAME, EDIT_TOOL_NAME):
@@ -329,21 +369,23 @@ class _RichPresenter(LoopPresenter):
             )
         )
 
-    def on_plan_progress(self, plan) -> None:
-        """update_plan 回写后回调：展示最新步骤列表（含状态色），让进度可见。"""
+    def on_plan_progress(self, ev: Event) -> None:
+        """plan_progress 事件：增量更新本地步骤状态并渲染最新步骤列表（含状态色）。"""
         self._commit_live()
         self._end_reasoning_segment()
+        upd = ev.plan_update or {}
+        if self._plan_steps:
+            for s in self._plan_steps:
+                if s.id == upd.get("step_id"):
+                    s.status = upd.get("status", s.status)
+                    if upd.get("note"):
+                        s.note = upd["note"]
+                    break
         self._console.print()
-        self._console.print(_render_steps_panel(plan.steps, title="📋 计划进度"))
+        self._console.print(_render_steps_panel(self._plan_steps or [], title="📋 计划进度"))
 
-    def on_decision_done(self) -> None:
-        """一轮模型决策结束的收尾钩子（loop 在 _decide 返回后调用，含提前返回的闸门轮）。
-
-        核心作用：澄清/计划闸门会提前返回、``on_tool_call`` 永不触发，若本轮 ``on_tool_call_delta``
-        为真实工具（write 等）创建了参数预览 Live，它不会被收掉，残留面板会扰乱随后的澄清
-        面板渲染（表现：重复工具面板、澄清选项不显示）。此钩子统一收尾工具预览 Live，并定稿
-        可能正在流式的内容段与思考段。
-        """
+    def _on_decision_done(self) -> None:
+        """一轮模型决策结束的收尾：澄清/计划闸门提前返回时工具回调不触发，统一在此定稿。"""
         self._stop_tool_live()
         self._commit_live()
         self._end_reasoning_segment()
@@ -381,6 +423,59 @@ class _RichPresenter(LoopPresenter):
                     expand=False,
                 )
             )
+
+    # ------------------------------------------------------------------ #
+    # HITL：会话编排所需的人机交互（原 SessionUI 部分）
+    # ------------------------------------------------------------------ #
+    async def ask(self, question: Question) -> str:
+        # 先空一行：模型的流式思考/输出以 end="" 收尾、无换行，若不分隔会与澄清面板同行粘连。
+        self._console.print()
+        if question.options:
+            opts = question.options
+            body = question.question
+            if opts:
+                # 选项显式打进面板，确保始终可见（修复「澄清选项不显示」）。
+                body += "\n[dim]选项: " + "; ".join(opts) + "[/dim]"
+            self._console.print(
+                Panel(body, title="❓ 澄清", border_style="yellow", expand=False)
+            )
+            if question.multiSelect:
+                return await _ptk_multi_choice(question)
+            return await _ptk_single_choice(question)
+        return typer.prompt("\n" + question.question)
+
+    def show_questions(self, questions: list[Question]) -> None:
+        # 同 ask：先空一行与上方流式输出分隔。
+        self._console.print()
+        for q in questions:
+            extra = f"\n[dim]选项: {', '.join(q.options)}[/dim]" if q.options else ""
+            self._console.print(
+                Panel(q.question + extra, title="❓ 澄清", border_style="yellow", expand=False)
+            )
+
+    def show_plan(self, res) -> None:
+        self._console.print("[bold]── Plan ──[/bold]")
+        if res.plan:
+            self._console.print(Markdown(res.plan))
+        if res.plan_steps:
+            self._plan_steps = list(res.plan_steps)  # 记录基线步骤，供 progress 增量更新
+            self._console.print(_render_steps_panel(res.plan_steps, title="📋 计划步骤"))
+        self._console.print(f"(plan file: {res.plan_path})")
+
+    async def confirm_plan(self) -> bool:
+        # 用 prompt_toolkit 的 async 接口：confirm_plan 在 session.step 的 asyncio.run()
+        # 事件循环内被 await 调用，必须用 prompt_async（协程），否则同步 prompt() 会在已有
+        # 事件循环里再次 asyncio.run()，抛 "asyncio.run() cannot be called from a running
+        # event loop"。与澄清 UI（prompt_async）保持一致。
+        try:
+            session = PromptSession()
+            ans = await session.prompt_async("是否执行该计划？ [y/N]: ")
+        except (EOFError, KeyboardInterrupt):
+            return False
+        return ans.strip().lower() in {"y", "yes", "是"}
+
+    def notify(self, message: str) -> None:
+        typer.echo(message, err=True)
 
 
 # --------------------------------------------------------------------------- #
@@ -442,72 +537,6 @@ async def _ptk_multi_choice(question: Question) -> str:
     return ", ".join(_parse_multi_selection(line, opts))
 
 
-class _TyperUI:
-    """``SessionUI`` 的 typer 实现：把会话编排所需的人机交互落到终端。
-
-    澄清提问：有选项时，单选用 prompt_toolkit 下拉箭头确认、多选用编号列表 + 自由输入
-    （逗号分隔编号或标签，见 ``_ptk_multi_choice``）；选项同时显式打印进面板，始终可见。
-    无选项时回退 ``typer.prompt`` 自由输入；计划展示走 rich Markdown（其余提示走 typer.echo）。
-    """
-
-    def __init__(self, *, interactive: bool):
-        self._interactive = interactive
-        self._console = Console()
-
-    @property
-    def interactive(self) -> bool:
-        return self._interactive
-
-    async def ask(self, question: Question) -> str:
-        # 先空一行：模型的流式思考/输出以 end="" 收尾、无换行，若不分隔会与澄清面板同行粘连。
-        self._console.print()
-        if question.options:
-            opts = question.options
-            body = question.question
-            if opts:
-                # 选项显式打进面板，确保始终可见（修复「澄清选项不显示」）。
-                body += "\n[dim]选项: " + "; ".join(opts) + "[/dim]"
-            self._console.print(
-                Panel(body, title="❓ 澄清", border_style="yellow", expand=False)
-            )
-            if question.multiSelect:
-                return await _ptk_multi_choice(question)
-            return await _ptk_single_choice(question)
-        return typer.prompt("\n" + question.question)
-
-    def show_questions(self, questions: list[Question]) -> None:
-        # 同 ask：先空一行与上方流式输出分隔。
-        self._console.print()
-        for q in questions:
-            extra = f"\n[dim]选项: {', '.join(q.options)}[/dim]" if q.options else ""
-            self._console.print(
-                Panel(q.question + extra, title="❓ 澄清", border_style="yellow", expand=False)
-            )
-
-    def show_plan(self, res) -> None:
-        self._console.print("[bold]── Plan ──[/bold]")
-        if res.plan:
-            self._console.print(Markdown(res.plan))
-        if res.plan_steps:
-            self._console.print(_render_steps_panel(res.plan_steps, title="📋 计划步骤"))
-        self._console.print(f"(plan file: {res.plan_path})")
-
-    async def confirm_plan(self) -> bool:
-        # 用 prompt_toolkit 的 async 接口：confirm_plan 在 session.step 的 asyncio.run()
-        # 事件循环内被 await 调用，必须用 prompt_async（协程），否则同步 prompt() 会在已有
-        # 事件循环里再次 asyncio.run()，抛 "asyncio.run() cannot be called from a running
-        # event loop"。与澄清 UI（prompt_async / app.run_async）保持一致。
-        try:
-            session = PromptSession()
-            ans = await session.prompt_async("是否执行该计划？ [y/N]: ")
-        except (EOFError, KeyboardInterrupt):
-            return False
-        return ans.strip().lower() in {"y", "yes", "是"}
-
-    def notify(self, message: str) -> None:
-        typer.echo(message, err=True)
-
-
 def _render_soft_limit(res) -> None:
     """max_iterations 软上限命中提示：不中断会话，仅告知用户上下文已保留、可接棒续跑。"""
     if res is None:
@@ -553,11 +582,10 @@ def run(
     reg = default_registry
     session = Session(model, reg, settings, tracer, plan_mode=plan)
 
-    ui = _TyperUI(interactive=sys.stdin.isatty())
-    presenter = _RichPresenter()
+    transport = TerminalTransport(interactive=sys.stdin.isatty())
     try:
         res, err = asyncio.run(
-            session.step(task, ui, yes=yes, fatal_plan_decline=True, presenter=presenter)
+            session.step(task, transport, yes=yes, fatal_plan_decline=True)
         )
     except Exception as e:  # 任何未捕获异常（含 LoopStalled / 真实 API 错误）都优雅退出
         typer.echo(f"error: {type(e).__name__}: {e}", err=True)
@@ -565,9 +593,9 @@ def run(
         res = None
 
     # 一轮 ReAct 循环结束：停止 Live（保留最终答案），打印 token 用量
-    presenter.close()
+    transport.close()
     if res is not None:
-        presenter.report_usage(res.usage, res.text)
+        transport.report_usage(res.usage, res.text)
         _render_soft_limit(res)
         # 最终答案已通过流式 Live 实时渲染，无需重复打印 res.text
     typer.echo("")
@@ -591,7 +619,7 @@ def chat() -> None:
     tracer = Tracer()
     reg = default_registry
     session = Session(model, reg, settings, tracer, plan_mode=settings.plan_mode)
-    ui = _TyperUI(interactive=True)
+    transport = TerminalTransport(interactive=True)
 
     typer.echo("进入 chat 模式（/plan /exec 切换模式；exit/quit 退出）。")
     while True:
@@ -629,20 +657,19 @@ def chat() -> None:
                        + (f"，计划：{session.plan_path}" if session.plan_path else ""), err=True)
             continue
 
-        presenter = _RichPresenter()
         try:
             res, err = asyncio.run(
-                session.step(task, ui, yes=False, fatal_plan_decline=False, presenter=presenter)
+                session.step(task, transport, yes=False, fatal_plan_decline=False)
             )
         except Exception as e:  # 任何未捕获异常（真实 API 错误等）优雅退出
-            presenter.close()
+            transport.close()
             typer.echo(f"error: {type(e).__name__}: {e}", err=True)
             err = 1
             res = None
         else:
-            presenter.close()
+            transport.close()
         if res is not None:
-            presenter.report_usage(res.usage, res.text)
+            transport.report_usage(res.usage, res.text)
             _render_soft_limit(res)
             # 最终答案已通过流式 Live 实时渲染，无需重复打印 res.text
         if err == 2:
