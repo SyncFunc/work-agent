@@ -6,7 +6,7 @@
 
 ## 前置依赖
 
-- **M1 全部完成**：`AgentLoop`（`agent/core/loop.py`）、`ToolRegistry`（`agent/runtime/registry.py`，含 `RISK_LEVELS`/`ToolResult`/`ToolSpec`）、内置 `bash`/`read`/`write`/`edit`/`grep` 工具、`Settings` 分层配置、`Session`/`SessionUI`（`agent/core/session.py`）、`_TyperUI`（`agent/cli.py`）。
+- **M1 全部完成**：`AgentLoop`（`agent/core/loop.py`）、`ToolRegistry`（`agent/runtime/registry.py`，含 `RISK_LEVELS`/`ToolResult`/`ToolSpec`）、内置 `bash`/`read`/`write`/`edit`/`grep` 工具、`Settings` 分层配置、`Session`（`agent/core/session.py`，持有状态/编排）、`AgentTransport`（`agent/core/transport.py`）由 `TerminalTransport`（`agent/runtime/terminal_transport.py`）实现（注：原 `SessionUI`/`_TyperUI` 经 M-refactor 合并为统一 `AgentTransport`，见该里程碑）。
 - 既有**不可破坏**约束：`PLAN` 模式风险门控（`loop._risk_blocked`）保持不动；`ToolResult` 失败降级不崩循环机制保留；输出截断 `_cap_result` 保留；测试不依赖真实 LLM/root/网络。
 
 ## 步骤索引
@@ -17,7 +17,7 @@
 | M2.2 | [2.2-审批门.md](./2.2-审批门.md) | `ApprovalGate`：四模式 + allow/deny 规则 + HITL 回调 |
 | M2.3 | [2.3-分层权限配置.md](./2.3-分层权限配置.md) | `Settings` 增 sandbox/approval 字段 + YAML 声明式 |
 | M2.4 | [2.4-工具与循环集成.md](./2.4-工具与循环集成.md) | `bash`→`SandboxExecutor`；`loop` 接入 `ApprovalGate`；`session` 构建 gate |
-| M2.5 | [2.5-CLI与HITL交互.md](./2.5-CLI与HITL交互.md) | `SessionUI.approve` + `_TyperUI` 实现 + `run`/`chat` 接入 |
+| M2.5 | [2.5-CLI与HITL交互.md](./2.5-CLI与HITL交互.md) | `AgentTransport.approve` + `TerminalTransport` 实现 + `run`/`chat` 接入 |
 | M2.6 | [2.6-测试与验收.md](./2.6-测试与验收.md) | `test_sandbox` / `test_approval` / 集成回归 |
 
 ## 里程碑级知识沉淀
@@ -27,5 +27,5 @@
 ## 设计取舍速记（来自设计文档）
 
   - **沙箱 = 可插拔执行层（Codex 模式）**：`local`（Linux landlock+seccomp / macOS Seatbelt / 原生 Windows 应用层 `CommandFilter` 主动拦截·不打印告警）· `docker` · `external`（直通）。三档 profile：`read-only` / `workspace-write` / `danger-full`，**网络默认拒绝**。
-  - **审批 = AskForApproval 四模式**：`untrusted`（exec/edit 每步问）· `on-request`（自动跑，模型对单条命令标 `approval_request` 才问）· `on-failure`（失败才问）· `never`（全自动，deny 仍生效）。**`deny` 规则永远优先**于模式（安全不变量）。
+  - **审批 = AskForApproval 四模式**：`untrusted`（exec/edit 每步问）· `on-request`（自动跑，模型对单条命令标 `approval_request` 才问）· `on-failure`（自动跑；执行后若失败才问**补救**）· `never`（全自动，deny 仍生效）。**`deny` 规则永远优先**于模式（安全不变量）。
 - **不破坏 PLAN**：`ApprovalGate` 仅 EXEC 模式介入；PLAN 仍只放行 `read`。

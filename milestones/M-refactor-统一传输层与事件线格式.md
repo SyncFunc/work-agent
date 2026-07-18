@@ -53,4 +53,4 @@
 ## 四、知识沉淀（已追加至 `knowledge/INDEX.md`）
 
 - 双协议合并为 `AgentTransport`；`EventStream` 为唯一实时线格式（`subscribe`/`emit`）；`ToolRisk` 枚举；`fs._load_file` 去重；bash/fs 拆分不冗余；回归保障（测试改用事件订阅式假 transport）。**铁律：不要给 loop 重新加 `presenter` 回调参数**——新增实时渲染请走事件。
-- 对 M2 约束：M2 的 `SessionUI.approve` 应加到 `AgentTransport`（统一协议），审批/沙箱门控接入 `loop` 时直接读 `ToolSpec.risk`/事件，不依赖任何 presenter。
+- 对 M2 约束：M2 的审批 HITL 回调（原 M2.5 文档称 `SessionUI.approve`）应加在统一协议 `AgentTransport`（而非新建第三协议）；gate 经窄协议 `ApprovalUI` 消费（`AgentTransport` 结构满足）；审批/沙箱门控接入 `loop` 时直接读 `ToolSpec.risk`/事件，不依赖任何 presenter。

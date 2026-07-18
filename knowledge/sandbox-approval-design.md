@@ -224,7 +224,7 @@ Codex 的 `approvalMode`（`--approval-mode` / 配置）是 HITL 的总开关；
 |---|---|---|
 | `untrusted` | 每条命令都问 | 默认安全档。**`exec`/`edit` 一律 ASK**；`read` 自动 ALLOW（只读不危险）。非交互无回调时按 `noninteractive_default`（默认 `allow`，因你已委派任务）放行 |
 | `on-request` | 自动跑；模型可在单条命令标 `approval_request` 才问 | 默认 ALLOW（全自动）；**仅命中 `deny` 才 DENY**；模型对"这条我想让你确认"的命令附 `approval_request=true` → 触发 ASK（**LLM 决定问哪条**，区别于 `untrusted` 的确定性问） |
-| `on-failure` | 自动跑，失败才问 | 先 ALLOW 执行；若 `ToolResult.ok=False`（命令失败），把错误回呈用户询问是否重试/继续（HITL 兜底） |
+| `on-failure` | 自动跑；执行后若失败才问**补救** | 先 ALLOW 执行（不事前问）；若 `ToolResult.ok=False`（命令失败），把错误回呈用户询问**补救方案**（重试/换参数/跳过）——是「失败后问怎么补救」，不是「重问同一条是否该跑」（HITL 兜底） |
 | `never` | 永远不问 | 全自动 ALLOW；**但 `deny` 规则仍生效**（安全不变量）。CI/已 external 沙箱时用 |
 
 - 模式是**低风险偏好旋钮**，不替代 `deny` 安全网。
@@ -237,11 +237,11 @@ Codex 的 `approvalMode`（`--approval-mode` / 配置）是 HITL 的总开关；
 - 匹配对象：对 `bash` 是命令文本（复用 `bash.is_readonly_command` 的分段归一化思路）；对 `read/write/edit` 是路径参数。
 - 配置分层（与既有 settings 一致）：内置默认 → 用户级 → 项目级 → CLI，项目级可覆盖。
 
-### 3.3 HITL 回调（SessionUI.approve）
+### 3.3 HITL 回调（AgentTransport.approve）
 
 单步 ASK 时调用 `ui.approve(action) -> bool`：
 
-- `SessionUI` 协议新增 `approve(action: Action) -> bool`（异步，因 `_TyperUI` 走 prompt_toolkit 异步）。
+- `AgentTransport` 协议新增 `async approve(action: Action) -> bool`（异步，因 `TerminalTransport` 走 prompt_toolkit 异步）。gate 经窄协议 `ApprovalUI` 消费（`AgentTransport` 结构满足）。
 - 交互式（`chat`）：弹出「🔒 是否允许执行？」面板，展示 `action.description`（工具 + 风险 + 命令预览），`y` 放行 / `n` 拒绝。
 - 非交互（`run`/测试）：无回调或 `interactive=False` → 依 `noninteractive_default` 决定（默认 allow，不阻塞 CI）。
 - 拒绝后返回 `ToolResult(ok=False, error="rejected by user")`，落入循环让模型自纠（复用既有"工具失败不崩循环"机制）。
@@ -284,7 +284,7 @@ class ApprovalGate:
         # 5) 按 mode：
         #    untrusted → (exec/edit)ASK / (read)ALLOW
         #    on-request → 命令带 approval_request? ASK : ALLOW   # ← LLM 决定
-        #    on-failure → ALLOW（失败才问）
+        #    on-failure → ALLOW（执行后才可能问；失败才交 HITL 问补救）
         #    never     → ALLOW（仍受 deny 约束）
         # 注：sandbox_profile 作为"包含程度"信号参与风险判定（感知沙箱）
     async def authorize(self, action: Action) -> bool:
@@ -325,7 +325,7 @@ flowchart TD
     Gate -- "DENY" --> DX["ToolResult(ok=False)<br/>命中 deny 规则"]
     Gate -- "ASK" --> HITL{"有 HITL ui?"}
     HITL -- "否（非交互 / CI）" --> NID["noninteractive_default<br/>默认 allow → 执行"]
-    HITL -- "是" --> Ask{"ui.approve(action)?"}
+    HITL -- "是" --> Ask{"transport.approve(action)?"}
     Ask -- "yes" --> Exec
     Ask -- "no" --> RX["ToolResult(ok=False)<br/>用户拒绝"]
     Gate -- "ALLOW" --> Exec["② 沙箱执行层：命令套 profile 跑"]
@@ -339,7 +339,7 @@ flowchart TD
     FS --> Res
     Res --> End["回填 tool_result → conv / EventStream"]
 
-    Exec -. "mode=on-failure 且 ok=False" .-> OF["ui.approve(失败 + 错误)<br/>问是否重试 / 继续"]
+    Exec -. "mode=on-failure 且 ok=False" .-> OF["transport.approve(失败 + 错误)<br/>问补救：重试 / 继续"]
     OF -- "拒绝" --> OFX["维持 ok=False 让模型自纠"]
 ```
 
@@ -366,7 +366,7 @@ flowchart TD
     Q4 -- "on-request" --> Q6{"命令带模型<br/>approval_request 标记?"}
     Q6 -- "是" --> S2["ASK<br/>(LLM 决定问此条)"]
     Q6 -- "否" --> A4["ALLOW<br/>(全自动, 仅 deny 能拦)"]
-    Q4 -- "on-failure" --> A5["ALLOW<br/>(失败才交 ui.approve)"]
+    Q4 -- "on-failure" --> A5["ALLOW<br/>(执行后若失败，再交 transport.approve 问补救)"]
     Q4 -- "never" --> A6["ALLOW<br/>(仍受 deny 约束)"]
 ```
 
@@ -374,7 +374,7 @@ flowchart TD
 > 关键：**哪两种情形会 ASK？** ① `untrusted` 模式下的 `edit/exec`（确定性地每步问）；② `on-request` 模式下**模型显式标记 `approval_request` 的单条命令**（LLM 决定问这条）。其余组合一律 ALLOW（除非命中 deny / escalated 提权）。`read` 命令任意模式都 ALLOW，故 `untrusted` 确认疲劳很低；`on-request` 默认零打扰、只在模型主动要求时才问。
 > 非交互（如 `run` 无 TTY / 测试）无 HITL 回调时，ASK 按 `noninteractive_default=allow` 自动放行，不阻塞 CI。
 
-- **on-failure 特殊处理**：先 ALLOW 执行；若 `ok=False`，再把"失败 + 错误"交 `ui.approve`（问是否重试/继续），仍被拒则维持 `ok=False` 让模型自纠。
+- **on-failure 特殊处理**：先 ALLOW 执行（不事前问）；若 `ok=False`，再把"失败 + 错误"交 `transport.approve` 问**补救方案**（重试/换参数/跳过）——注意是「失败后问怎么补救」，不是「重问同一条是否该跑」；仍被拒则维持 `ok=False` 让模型自纠。
 
 ### 4.2 sandbox profile 应用流（执行阶段套哪档）
 
@@ -402,7 +402,7 @@ flowchart LR
 |---|---|---|---|
 | `untrusted`（默认，交互） | ALLOW | ASK | ASK |
 | `on-request` | ALLOW | ALLOW* | ALLOW* |
-| `on-failure` | ALLOW | ALLOW | ALLOW（失败才 ASK） |
+| `on-failure` | ALLOW | ALLOW | ALLOW（执行后若失败才 ASK 补救） |
 | `never` | ALLOW | ALLOW | ALLOW |
 
 `*` = 命中 `deny` 规则时仍 DENY（安全不变量）。`untrusted` 的 ASK 在非交互下按 `noninteractive_default=allow` 自动放行。
@@ -443,7 +443,7 @@ flowchart LR
 | M2.2 | [2.2-审批门.md](./../milestones/M2-安全与确认/2.2-审批门.md) | `ApprovalGate`：四模式 + allow/deny 规则 + HITL 回调 |
 | M2.3 | [2.3-分层权限配置.md](./../milestones/M2-安全与确认/2.3-分层权限配置.md) | `Settings` 增 sandbox/approval 字段 + YAML 声明式 |
 | M2.4 | [2.4-工具与循环集成.md](./../milestones/M2-安全与确认/2.4-工具与循环集成.md) | `bash`→`SandboxExecutor`；`loop` 接入 `ApprovalGate`；`session` 构建 gate |
-| M2.5 | [2.5-CLI与HITL交互.md](./../milestones/M2-安全与确认/2.5-CLI与HITL交互.md) | `SessionUI.approve` + `_TyperUI` 实现 + `run`/`chat` 接入 |
+| M2.5 | [2.5-CLI与HITL交互.md](./../milestones/M2-安全与确认/2.5-CLI与HITL交互.md) | `AgentTransport.approve` + `TerminalTransport` 实现 + `run`/`chat` 接入 |
 | M2.6 | [2.6-测试与验收.md](./../milestones/M2-安全与确认/2.6-测试与验收.md) | `test_sandbox` / `test_approval` / 集成回归 |
 
 ---
