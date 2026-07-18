@@ -4,10 +4,14 @@
 # 项目运行时数据（会话/记忆/事件流）
 .agent/
 
+# CodeBuddy 项目数据（非代码，AI 工作区状态）
+.codebuddy/
+
 # 临时/调试产物
 a.txt
 tmp_out.txt
 tmp_pytest.txt
+pytest_out.txt
 
 # Python
 __pycache__/
