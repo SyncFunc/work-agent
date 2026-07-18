@@ -86,7 +86,7 @@ def test_parse_multi_selection_by_index_and_label():
     对应修复：_ptk_multi_choice 弃用 Application+CheckboxList（TTY 下不渲染选项且
     卡死），改为编号列表 + PromptSession；本函数是其纯解析核心，可单测。
     """
-    from agent.cli import _parse_multi_selection
+    from agent.runtime.terminal_transport import _parse_multi_selection
 
     opts = ["加", "减", "乘", "除"]
     assert _parse_multi_selection("1,3", opts) == ["加", "乘"]
@@ -103,7 +103,7 @@ def test_extract_write_preview_from_partial_json():
     对应修复：模型流式生成 write 的 content 时，on_tool_call_delta 用本函数实时预览，
     避免大段写入时终端长时间无输出。
     """
-    from agent.cli import _extract_write_preview
+    from agent.runtime.terminal_transport import _extract_write_preview
 
     assert _extract_write_preview('{"path":"a.py","content":"print(1)') == "print(1)"
     # 模型流式产出的参数里换行是 JSON 转义的 \n（两字符），函数按原文返回字面量
@@ -126,7 +126,7 @@ def test_on_tool_call_delta_skips_ask_clarification_live():
     ask_clarification 创建 Live，该 Live 不被收尾，残留面板会扰乱澄清面板渲染（表现：
     重复 ask_clarification 面板、澄清选项不显示）。write 等真实工具仍应创建预览 Live。
     """
-    from agent.cli import TerminalTransport, ASK_CLARIFICATION_TOOL_NAME
+    from agent.runtime.terminal_transport import TerminalTransport, ASK_CLARIFICATION_TOOL_NAME
 
     p = TerminalTransport(interactive=False)
     try:
