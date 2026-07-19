@@ -3,6 +3,8 @@
 - ``Span.log()``：在 span 存活期内追加结构化日志（key-value + level + 时间戳）。
 - ``TraceStore``：SQLite 持久化，支持 session 级别的 save/load/list。
 - 渲染：``render()`` 树状展示父子 span + 日志摘要。
+- **隐式 parent**：用 ``contextvars.ContextVar`` 实现当前 span 的隐式传递，
+  ``_SpanCtx.__enter__``/``__exit__`` 自动 push/pop，消除手动传参扩散。
 
 设计要点：
 - 一个 span 可以记录多条 log，用于模型调用细节、工具参数/结果、错误详情。
@@ -12,11 +14,19 @@
 
 from __future__ import annotations
 
+import contextvars
 import time
 import uuid
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+
+# 存储当前活跃 span（隐式 parent 传递）
+_CURRENT_SPAN: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
+    "_current_span", default=None
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -56,19 +66,60 @@ class Span:
 # _SpanCtx：上下文管理器
 # --------------------------------------------------------------------------- #
 class _SpanCtx:
-    def __init__(self, tracer: "Tracer", span: Span) -> None:
+    def __init__(
+        self,
+        tracer: "Tracer",
+        span: Span,
+        parent_override: Span | None | None = None,
+    ) -> None:
         self._tracer = tracer
         self.span = span
+        # parent_override: None=从 contextvar 读, 具体 span=显式指定
+        self._parent_override = parent_override
+        self._token: contextvars.Token[Span | None] | None = None
 
     def __enter__(self) -> Span:
+        # parent 决策：显式 parent > contextvar 隐式 > None（根）
+        if self._parent_override is not None:
+            parent = self._parent_override
+        else:
+            parent = _CURRENT_SPAN.get()
+        if parent is not None:
+            self.span.parent_id = parent.id
+        self._token = _CURRENT_SPAN.set(self.span)
         return self.span
 
     def __exit__(self, *exc: object) -> None:
         self.span.ended_at = time.time()
+        if self._token is not None:
+            _CURRENT_SPAN.reset(self._token)
+            self._token = None
 
     def set(self, **meta: Any) -> "_SpanCtx":
         self.span.meta.update(meta)
         return self
+
+
+# --------------------------------------------------------------------------- #
+# _span：统一 span 上下文管理器（从 ContextManager / AutoCompact 抽出）
+# --------------------------------------------------------------------------- #
+@contextmanager
+def _span(
+    tracer: "Tracer | None",
+    name: str,
+    *,
+    kind: str = "span",
+    parent: "Span | None" = None,
+):
+    """统一 span 包装：tracer 为 None 时降级为 no-op（yield None）。
+
+    从 ``ContextManager`` / ``AutoCompact`` 抽出到统一位置，避免重复定义。
+    """
+    if tracer is None:
+        yield None
+    else:
+        with tracer.span(name, kind=kind, parent=parent) as s:
+            yield s
 
 
 # --------------------------------------------------------------------------- #
@@ -81,16 +132,21 @@ class Tracer:
         self.spans: list[Span] = []
         self.session_id: str = session_id or uuid.uuid4().hex[:12]
 
+    @classmethod
+    def reset_current_span(cls) -> None:
+        """重置隐式当前 span 为 None（在根 span 创建前调用）。"""
+        _CURRENT_SPAN.set(None)
+
     def span(self, name: str, kind: str = "span", parent: Span | None = None) -> _SpanCtx:
         s = Span(
             id=uuid.uuid4().hex[:8],
             name=name,
             kind=kind,
-            parent_id=parent.id if parent else None,
+            parent_id=None,
             started_at=time.time(),
         )
         self.spans.append(s)
-        return _SpanCtx(self, s)
+        return _SpanCtx(self, s, parent_override=parent)
 
     def render(self) -> str:
         """树状文本渲染（含 box 连接符）；模型调用 span 仅展示 total token。"""

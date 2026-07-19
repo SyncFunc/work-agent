@@ -177,3 +177,74 @@ def test_trace_store_created_at(tmp_path: Path):
         pass
     store.save_trace(t)
     assert db.stat().st_size > 0
+
+
+# --------------------------------------------------------------------------- #
+# contextvars 隐式 parent 传递
+# --------------------------------------------------------------------------- #
+def test_span_implicit_parent():
+    """在 span A 内创建 span B 不传 parent → B.parent_id == A.id。"""
+    t = Tracer()
+    with t.span("parent") as parent:
+        with t.span("child") as child:
+            pass
+    assert child.parent_id == parent.id
+
+
+def test_span_explicit_parent_overrides():
+    """显式传 parent 覆盖 contextvar 隐式继承。"""
+    t = Tracer()
+    with t.span("outer") as outer:
+        with t.span("explicit_parent", parent=outer) as explicit:
+            with t.span("implicit_child") as implicit:
+                pass
+    # explicit 显式指定 outer 为 parent
+    assert explicit.parent_id == outer.id
+    # implicit 在 explicit 内创建，隐式继承 explicit
+    assert implicit.parent_id == explicit.id
+
+
+def test_span_nested_restore():
+    """A→B→C，退出 C 后当前 span 恢复为 B，退出 B 后恢复为 A。"""
+    t = Tracer()
+    spans: list = []
+    with t.span("A") as a:
+        spans.append(a)
+        with t.span("B") as b:
+            spans.append(b)
+            with t.span("C") as c:
+                spans.append(c)
+    # 三个 span 构成 A→B→C 链
+    assert a.parent_id is None
+    assert b.parent_id == a.id
+    assert c.parent_id == b.id
+
+
+def test_span_root_after_reset():
+    """Tracer.reset_current_span() 后创建的 span 父为 None。"""
+    t = Tracer()
+    # 先在一个 span 内设置 contextvar
+    with t.span("old_root") as old:
+        pass
+    # 重置后创建新 span，应为根
+    Tracer.reset_current_span()
+    with t.span("new_root") as new:
+        pass
+    assert old.parent_id is None
+    assert new.parent_id is None
+
+
+def test_span_exception_safety():
+    """with 块抛出异常后 contextvar 正确恢复。"""
+    t = Tracer()
+    with t.span("root") as root:
+        try:
+            with t.span("failing") as failing:
+                raise ValueError("boom")
+        except ValueError:
+            pass
+        # 异常退出后，contextvar 应恢复为 root
+        with t.span("after_exception") as after:
+            pass
+    assert after.parent_id == root.id
+    assert failing.parent_id == root.id

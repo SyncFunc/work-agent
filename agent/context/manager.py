@@ -16,10 +16,13 @@ from __future__ import annotations
 import json
 import time
 from dataclasses import dataclass
+from pathlib import Path
 
-from agent.context.compactors.microcompact import Microcompact
+from agent.context.compactors.auto_compact import AutoCompact
+from agent.context.compactors.microcompact import Microcompact, PLACEHOLDER
 from agent.context.tokens import _estimate_tokens
 from agent.core.model import Message
+from agent.obs.tracer import Tracer, _span
 
 
 @dataclass
@@ -61,6 +64,8 @@ class ContextManager:
         tools_tokens: int = 15_000,
         microcompact_keep_recent: int = 5,
         microcompact: Microcompact | None = None,
+        auto_compact: AutoCompact | None = None,
+        tracer: Tracer | None = None,
     ):
         self.conv: list[Message] = []
         self.context_window = context_window
@@ -74,6 +79,9 @@ class ContextManager:
         self._system_dynamic = system_dynamic_tokens
         self._tools = tools_tokens
         self.microcompact = microcompact or Microcompact(keep_recent=microcompact_keep_recent)
+        self.auto_compact: AutoCompact | None = auto_compact
+        self.tracer = tracer
+        self.recent_files: list[str] = []  # 最近操作的文件路径（防漂移用）
 
     def estimate_usage(self) -> ContextUsage:
         """估算当前上下文占用分类明细。"""
@@ -105,7 +113,12 @@ class ContextManager:
         """
         if not self.conv:
             return self.conv
-        return await self.microcompact.compact(self.conv, len(self.conv))
+        with _span(self.tracer, "compact.microcompact", kind="compact") as mc_span:
+            out = await self.microcompact.compact(self.conv, len(self.conv))
+            if mc_span is not None:
+                repl = sum(1 for m in out if m.role == "tool" and m.content == PLACEHOLDER)
+                mc_span.log("tool_results_replaced", repl)
+            return out
 
     def record_compact(
         self,
@@ -122,6 +135,73 @@ class ContextManager:
         )
         self.history.append(rec)
         return rec
+
+    def track_file_access(self, path: str) -> None:
+        """记录最近访问的文件（由 loop._exec_tools 回调，或 transport 事件驱动）。"""
+        self.recent_files.append(path)
+        if len(self.recent_files) > 10:
+            self.recent_files = self.recent_files[-10:]
+
+    async def compact(self) -> bool:
+        """执行完整压缩流程：Microcompact → (若仍超) Auto Compact → 防漂移。"""
+        with _span(self.tracer, "context.compact", kind="compact") as cspan:
+            if cspan is not None:
+                cspan.log("trigger_pct", round(self.estimate_usage().used_pct, 4))
+            # ① Microcompact（零成本）
+            await self.apply_microcompact()
+
+            # ② 检查是否需要进一步压缩
+            if not self.should_compact():
+                if cspan is not None:
+                    cspan.log("shortcut", "microcompact 后未超阈值，跳过 auto_compact")
+                return True
+
+            # ③ Auto Compact（1 次调用）
+            if self.auto_compact is not None:
+                before_tokens = self.estimate_usage().total
+                new_conv = await self.auto_compact.compact(self.conv, self.compact_boundary)
+                if new_conv is not self.conv:
+                    self.conv = new_conv
+                    after_tokens = self.estimate_usage().total
+                    self.record_compact("auto_compact", before_tokens, after_tokens)
+                    if cspan is not None:
+                        cspan.log("auto_compact", f"{before_tokens} -> {after_tokens} tok")
+
+            # ④ 标记边界（压缩后 conv 的尾部）
+            self.mark_boundary()
+
+            # ⑤ 防漂移：重读最近文件
+            await self._anti_drift()
+        return True
+
+    async def _anti_drift(self) -> None:
+        """防漂移：重读最近操作的 N 个文件（预算 ~50K tokens）。
+
+        从 ``recent_files`` 去重取前 5 个，每个文件 ≤10K 字符，
+        然后追加一条 ``[Anti-Drift]`` 消息到 conv 末尾，确保模型不丢失当前工作上下文。
+        """
+        read_files: list[str] = []
+        seen: set[str] = set()
+        for f in self.recent_files:
+            if f not in seen and len(seen) < 5:
+                seen.add(f)
+                try:
+                    content = Path(f).read_text(encoding="utf-8", errors="replace")
+                    read_files.append(f"=== {f} ===\n{content[:10000]}")
+                except Exception:
+                    pass
+
+        if read_files:
+            note = (
+                "\n\n[Anti-Drift] 以下为最近操作的文件最新内容，"
+                "确保你不会丢失当前工作上下文：\n"
+                + "\n".join(read_files)
+            )
+            self.conv.append(Message(role="user", content=note))
+            if self.tracer is not None:
+                with _span(self.tracer, "compact.anti_drift", kind="compact") as ad_span:
+                    if ad_span is not None:
+                        ad_span.log("files_reread", len(read_files))
 
     def _estimate_conv_tokens(self) -> int:
         """估算 conv 中 boundary 之后的 token 数。"""

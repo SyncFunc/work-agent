@@ -6,6 +6,7 @@
 from __future__ import annotations
 
 from agent.context.compactors import Compactor
+from agent.context.compactors.auto_compact import AutoCompact
 from agent.context.compactors.microcompact import (
     COMPACTABLE_TOOLS,
     PLACEHOLDER,
@@ -19,6 +20,7 @@ __all__ = [
     "CompactRecord",
     "Compactor",
     "Microcompact",
+    "AutoCompact",
     "COMPACTABLE_TOOLS",
     "PLACEHOLDER",
 ]

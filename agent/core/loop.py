@@ -13,7 +13,6 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -31,7 +30,7 @@ from agent.core.model import Decision, Message, Model, ToolCall
 from agent.core.plan import Plan, PlanStep, PlanStore
 from agent.core.transport import AgentTransport
 from agent.core.prompts import load_prompt
-from agent.obs.tracer import Tracer
+from agent.obs.tracer import Tracer, _span
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, UnknownTool
 from agent.runtime.sandbox import ExecRequest, Executor, SandboxProfile
@@ -114,7 +113,10 @@ class AgentLoop:
         repeat_count = 0
         ct = clarify_total
 
-        with self._span("agent.run", parent=None) as self._agent_span:
+        # 重置隐式 parent，确保 agent.run 为根 span（不受外部 contextvar 影响）
+        Tracer.reset_current_span()
+
+        with _span(self.tracer, "agent.run", kind="agent") as self._agent_span:
             for i in range(self.settings.loop.max_iterations):
                 decision = await self._decide(conv, stream, plan_mode=pm, plan_path=pp)
                 if decision.usage:
@@ -220,7 +222,7 @@ class AgentLoop:
     ) -> Decision:
         full = [Message(role="system", content=self._system_prompt(plan_mode=plan_mode, plan_path=plan_path))] + conv
         decision: Decision | None = None
-        with self._span("model.act", kind="model", parent=self._agent_span) as mspan:
+        with _span(self.tracer, "model.act", kind="model") as mspan:
             if mspan is not None:
                 mspan.log("conv_len", len(conv))
                 mspan.log("plan_mode", plan_mode)
@@ -269,14 +271,6 @@ class AgentLoop:
             sandbox_exec_policy=list(self.settings.approval.exec_policy),
         )
 
-    @contextmanager
-    def _span(self, name: str, *, kind: str = "span", parent: Any | None = None):
-        if self.tracer is None:
-            yield None
-        else:
-            with self.tracer.span(name, kind=kind, parent=parent) as s:
-                yield s
-
     @staticmethod
     def _find_tool_args(decision: Decision, name: str) -> dict[str, Any] | None:
         for tc in decision.tool_calls:
@@ -292,7 +286,7 @@ class AgentLoop:
         sem = asyncio.Semaphore(self.settings.loop.max_tool_concurrency)
 
         async def _one(tc: ToolCall) -> ToolResult:
-            with self._span("tool.exec", kind="tool", parent=self._agent_span) as tool_span:
+            with _span(self.tracer, "tool.exec", kind="tool") as tool_span:
                 if tool_span is not None:
                     tool_span.log("tool", tc.name)
                     tool_span.log("args", json.dumps(tc.arguments, ensure_ascii=False)[:200])

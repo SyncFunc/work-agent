@@ -9,6 +9,7 @@ import pytest
 
 from agent.config.settings import ContextConfig, Settings
 from agent.context import (
+    AutoCompact,
     CompactRecord,
     Compactor,
     ContextManager,
@@ -17,7 +18,8 @@ from agent.context import (
     PLACEHOLDER,
 )
 from agent.context.compactors import Compactor as CompactorAlias
-from agent.core.model import Message, ToolCall
+from agent.core.model import Decision, Message, ToolCall
+from agent.obs.tracer import Tracer
 
 
 # --------------------------------------------------------------------------- #
@@ -336,3 +338,279 @@ async def test_context_manager_apply_microcompact_empty():
     m = ContextManager()
     out = await m.apply_microcompact()
     assert out == []
+
+
+# --------------------------------------------------------------------------- #
+# M4.3 AutoCompact
+# --------------------------------------------------------------------------- #
+def _fake_model(script: list[Decision]) -> object:
+    """返回一个具有 act 方法的假模型。"""
+    class _Fake:
+        def __init__(self, s: list[Decision]):
+            self._script = list(s)
+
+        async def act(self, messages, tools=None):
+            if not self._script:
+                return Decision(text="<script exhausted>")
+            return self._script.pop(0)
+
+    return _Fake(script)
+
+
+async def test_auto_compact_boundary_zero_noop():
+    model = _fake_model([Decision(text="<summary>test</summary>")])
+    ac = AutoCompact(model)
+    out = await ac.compact([], 0)
+    assert out == []
+
+
+async def test_auto_compact_summary_tag_parsed():
+    model = _fake_model([Decision(text="<summary>压缩后的摘要内容</summary>")])
+    ac = AutoCompact(model)
+    conv = [
+        Message(role="user", content="第一段长历史" * 200),
+        Message(role="assistant", content="回复" * 50),
+    ]
+    out = await ac.compact(conv, len(conv))
+    assert len(out) == 1  # 摘要替换了全部历史
+    assert "[Compact Summary]" in (out[0].content or "")
+    assert "压缩后的摘要内容" in (out[0].content or "")
+
+
+async def test_auto_compact_no_tag_fallback():
+    model = _fake_model([Decision(text="纯文本摘要，没有标签")])
+    ac = AutoCompact(model)
+    conv = [Message(role="user", content="历史")]
+    out = await ac.compact(conv, len(conv))
+    assert len(out) == 1
+    assert "纯文本摘要" in (out[0].content or "")
+
+
+async def test_auto_compact_preserves_active_messages():
+    model = _fake_model([Decision(text="<summary>摘要</summary>")])
+    ac = AutoCompact(model)
+    conv = [
+        Message(role="user", content="旧历史"),
+        Message(role="user", content="新活跃消息"),
+    ]
+    out = await ac.compact(conv, 1)  # boundary=1：只压缩第 1 条
+    assert len(out) == 2  # 摘要 + 第 2 条
+    assert "[Compact Summary]" in (out[0].content or "")
+    assert out[1].content == "新活跃消息"
+
+
+async def test_auto_compact_failure_breaker():
+    # 连续返回 None → 3 次后放弃
+    class _AlwaysFail:
+        async def act(self, messages, tools=None):
+            raise ValueError("模型挂了")
+
+    ac = AutoCompact(_AlwaysFail(), max_failures=3)
+    conv = [Message(role="user", content="历史")]
+    # 第一次
+    out1 = await ac.compact(conv, len(conv))
+    assert out1 is conv  # 原样返回
+    assert ac.failure_count == 1
+    # 第二次
+    out2 = await ac.compact(conv, len(conv))
+    assert out2 is conv
+    assert ac.failure_count == 2
+    # 第三次
+    out3 = await ac.compact(conv, len(conv))
+    assert out3 is conv
+    assert ac.failure_count == 3
+    # 第四次（已超 max_failures，直接跳过不增加）
+    out4 = await ac.compact(conv, len(conv))
+    assert out4 is conv
+    assert ac.failure_count == 3  # 不增加，直接跳过
+
+
+async def test_auto_compact_success_resets_failure_count():
+    model = _fake_model([Decision(text="<summary>ok</summary>")])
+    ac = AutoCompact(model, max_failures=3)
+    ac.failure_count = 2
+    conv = [Message(role="user", content="历史")]
+    out = await ac.compact(conv, len(conv))
+    assert out is not conv  # 成功压缩
+    assert ac.failure_count == 0  # 重置
+
+
+async def test_auto_compact_is_compactor():
+    model = _fake_model([])
+    assert isinstance(AutoCompact(model), Compactor)
+
+
+async def test_auto_compact_empty_history():
+    model = _fake_model([Decision(text="<summary>摘要</summary>")])
+    ac = AutoCompact(model)
+    out = await ac.compact([], len([]))
+    assert out == []
+
+
+async def test_auto_compact_format_history_includes_tool_calls():
+    model = _fake_model([Decision(text="<summary>摘要</summary>")])
+    ac = AutoCompact(model)
+    conv = [
+        Message(role="assistant", tool_calls=[ToolCall(id="t1", name="bash", arguments={"cmd": "ls"})]),
+        Message(role="tool", content="file1\nfile2", tool_call_id="t1"),
+    ]
+    out = await ac.compact(conv, len(conv))
+    assert len(out) == 1
+    assert "[Compact Summary]" in (out[0].content or "")
+
+
+# --------------------------------------------------------------------------- #
+# M4.3 ContextManager compact() 集成
+# --------------------------------------------------------------------------- #
+async def test_context_manager_compact_with_auto_compact():
+    model = _fake_model([Decision(text="<summary>摘要</summary>")])
+    ac = AutoCompact(model)
+    m = ContextManager(auto_compact=ac)
+    conv = [
+        Message(role="user", content="旧历史（将被压缩）" * 1000),
+        Message(role="user", content="大段消息" * 150_000),  # boundary 后的大消息触发阈值
+    ]
+    m.set_conv(conv)
+    # 标记边界：压缩第 1 条，保留第 2 条活跃消息
+    m.compact_boundary = 1
+    result = await m.compact()
+    assert result is True
+    # 压缩后 conv 发生了变化（摘要替换旧历史）
+    assert len(m.history) == 1
+    assert m.history[0].method == "auto_compact"
+    # 摘要替换了边界前的历史
+    assert "[Compact Summary]" in (m.conv[0].content or "")
+    # 活跃消息仍保留（anti_drift 追加了，所以可能是第 3 条）
+    assert any("大段消息" in (x.content or "") for x in m.conv)
+
+
+async def test_context_manager_compact_microcompact_only():
+    # 不设 auto_compact，只执行 microcompact
+    m = ContextManager()
+    conv = _many_bash_tool_pairs(8)
+    m.set_conv(conv)
+    result = await m.compact()
+    assert result is True
+    # 只执行了 microcompact，没有 auto_compact
+    tool_msgs = [x for x in m.conv if x.role == "tool"]
+    assert sum(1 for x in tool_msgs if x.content == PLACEHOLDER) == 3
+
+
+async def test_context_manager_track_file_access():
+    m = ContextManager()
+    m.track_file_access("a.py")
+    m.track_file_access("b.py")
+    m.track_file_access("a.py")
+    assert m.recent_files == ["a.py", "b.py", "a.py"]
+
+
+async def test_context_manager_track_file_access_max_10():
+    m = ContextManager()
+    for i in range(15):
+        m.track_file_access(f"f{i}.py")
+    assert len(m.recent_files) == 10
+    assert m.recent_files[-1] == "f14.py"
+
+
+async def test_anti_drift_appends_message(tmp_path):
+    m = ContextManager()
+    f1 = tmp_path / "test.txt"
+    f1.write_text("hello world")
+    m.track_file_access(str(f1))
+    m.set_conv([Message(role="user", content="hi")])
+    await m._anti_drift()
+    assert len(m.conv) == 2
+    assert "[Anti-Drift]" in (m.conv[-1].content or "")
+    assert "test.txt" in (m.conv[-1].content or "")
+
+
+# --------------------------------------------------------------------------- #
+# M4.3 同期：压缩流程的 trace 埋点
+# --------------------------------------------------------------------------- #
+async def test_compact_emits_trace_tree():
+    """完整压缩流程应记录 context.compact / microcompact / model.act 三层 span，
+    model.act 与 microcompact 通过 contextvars 自动成为 context.compact 的子 span。"""
+    tracer = Tracer()
+    model = _fake_model([Decision(text="<summary>摘要</summary>")])
+    ac = AutoCompact(model, tracer=tracer)
+    m = ContextManager(auto_compact=ac, tracer=tracer)
+    conv = [
+        Message(role="user", content="旧历史（将被压缩）" * 1000),
+        Message(role="user", content="大段消息" * 150_000),  # 触发阈值
+    ]
+    m.set_conv(conv)
+    m.compact_boundary = 1
+    await m.compact()
+
+    names = {s.name for s in tracer.spans}
+    assert "context.compact" in names
+    assert "compact.microcompact" in names
+    assert "compact.auto_compact" in names
+    assert "model.act" in names
+
+    ctx = next(s for s in tracer.spans if s.name == "context.compact")
+    model_span = next(s for s in tracer.spans if s.name == "model.act")
+    mc_span = next(s for s in tracer.spans if s.name == "compact.microcompact")
+    ac_span = next(s for s in tracer.spans if s.name == "compact.auto_compact")
+    # 隐式 parent 传递链：context.compact → compact.auto_compact → model.act
+    # （microcompact 与 auto_compact 平级，都是 context.compact 的子 span）
+    assert ac_span.parent_id == ctx.id
+    assert model_span.parent_id == ac_span.id
+    assert mc_span.parent_id == ctx.id
+
+
+async def test_compact_trace_shortcut_no_auto_span():
+    """microcompact 后未超阈值 → 跳过 auto_compact，不应产生 auto_compact / model.act span。"""
+    tracer = Tracer()
+    model = _fake_model([Decision(text="<summary>摘要</summary>")])
+    ac = AutoCompact(model, tracer=tracer)
+    m = ContextManager(auto_compact=ac, tracer=tracer)
+    # 只有少量 tool 结果，microcompact 后不可能超阈值
+    conv = _many_bash_tool_pairs(8)
+    m.set_conv(conv)
+    await m.compact()
+
+    names = {s.name for s in tracer.spans}
+    assert "context.compact" in names
+    assert "compact.microcompact" in names
+    assert "compact.auto_compact" not in names  # 捷径跳过，auto_compact 步骤根本未调用
+    assert "model.act" not in names
+
+
+async def test_auto_compact_model_act_span_records_usage():
+    """model.act span 应把 Decision.usage 写入 meta（供导出 Langfuse 等）。"""
+    tracer = Tracer()
+    model = _fake_model([Decision(
+        text="<summary>摘要</summary>",
+        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+    )])
+    ac = AutoCompact(model, tracer=tracer)
+    # 在 context.compact 隐式父 span 内调用，验证自动继承
+    with tracer.span("context.compact", kind="compact"):
+        out = await ac.compact(
+            [Message(role="user", content="历史"), Message(role="user", content="活跃")], 1
+        )
+    assert len(out) == 2
+    ac_span = next(s for s in tracer.spans if s.name == "compact.auto_compact")
+    model_span = next(s for s in tracer.spans if s.name == "model.act")
+    assert model_span.meta.get("usage", {}).get("total_tokens") == 15
+    # parent 自动继承链：model.act → compact.auto_compact → context.compact
+    ctx = next(s for s in tracer.spans if s.name == "context.compact")
+    assert model_span.parent_id == ac_span.id
+    assert ac_span.parent_id == ctx.id
+
+
+async def test_compact_trace_noop_when_tracer_none():
+    """未注入 tracer 时降级为 no-op，不报错且行为不变（保持现有用例契约）。"""
+    model = _fake_model([Decision(text="<summary>摘要</summary>")])
+    ac = AutoCompact(model)  # tracer=None
+    m = ContextManager(auto_compact=ac)  # tracer=None
+    conv = [
+        Message(role="user", content="旧历史" * 1000),
+        Message(role="user", content="大段消息" * 150_000),
+    ]
+    m.set_conv(conv)
+    m.compact_boundary = 1
+    result = await m.compact()
+    assert result is True
+    assert len(m.history) == 1

@@ -26,3 +26,8 @@ class Compactor(Protocol):
         实现必须保持 ``tool_use`` / ``tool_result`` 配对，禁止孤立任一方。
         """
         ...
+
+
+__all__ = [
+    "Compactor",
+]

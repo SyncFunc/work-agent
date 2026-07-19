@@ -20,6 +20,7 @@
 - **上下文管理设计**：`knowledge/context-management.md` —— 工具结果「保存 vs 注入」伪二选一的结论、双轨映射、压缩策略（**采用 Claude Code 四层渐进防线**，无 Codex）、配对铁律、子代理隔离、M4 规划。（被「架构决策·上下文稀缺」引用）
 - **Claude Code 上下文管理机制（详细调研）**：`knowledge/claude-code-context-management.md` —— 只讲 Claude Code 怎么做：上下文窗口四块组成（固定底座永不压 / Messages 可压）、四层渐进压缩防线（Microcompact 占位符→Snip/Collapse→Session Memory 零成本→AI 9 段摘要→Reactive Compact）、**Session Memory 深度机制（§3.5：自动后台记忆、10 段固定摘要结构每段≤2K/总≤12K、触发阈值 init 10K/between 5K/tool 3、forked agent 仅 Edit 提取、瞬时 compact、跨会话 Recall、`/remember`→AGENTS.local.md 提升通道、对比表）**、触发阈值公式（有效窗口−13K）、配对铁律、Compact Boundary 与防漂移重读、固定底座永不压缩、/context /compact 监控、与本项目双轨映射（AGENTS.md 替代 CLAUDE.md）、M4 落地建议。配套 `context-management.md`。（M4 设计依据）
 - **沙盒与审批设计（M2 依据）**：`knowledge/sandbox-approval-design.md` —— **采用 Codex 模式**：① 原理（P2 安全在 OS 层、P3 最小权限+纵深、与 PLAN 正交）；② 沙盒=可插拔执行层（`local` Linux landlock+seccomp / macOS Seatbelt / Windows 进程级+告警 · `docker` · `external` 直通），三档 profile `read-only`/`workspace-write`/`danger-full`，**网络默认拒绝**；③ 审批=AskForApproval 四模式 `untrusted`/`on-request`/`on-failure`/`never` + `allow`/`deny` 规则（**deny 永远优先**）+ HITL 回调 `AgentTransport.approve`（gate 经窄协议 `ApprovalUI` 消费）；④ 决策流（loop→gate→sandbox）、决策矩阵、与既有设施边界。**落地步骤见 `milestones/M2-安全与确认/`（2.1~2.6）。**
+- **Claude Code Subagents + Skills 机制（M5 依据）**：`knowledge/claude-code-subagents-skills.md` —— 调研 Claude Code 的 Subagent（独立上下文窗口、frontmatter 全字段、内置 Explore/Plan/General-purpose、fork 模式、并行/嵌套深度限制 5、摘要返回、转录持久化）与 Skill（SKILL.md frontmatter 全字段、项目/用户级 `.claude/skills/` 发现、`description` 常驻+正文按需加载、参数替换 `$ARGUMENTS/$N/$name/${...}`、多文件包 scripts/references/assets、`context:fork`+`agent:` 打通 subagent）。**重点**：逐条映射到本项目既有接口（`AgentLoop` 无状态→天然隔离、`ContextManager` 独立实例、`AgentTransport` NullTransport、`Tracer` parent_override、`ToolRegistry` 子集白名单、`ApprovalGate`/`SandboxExecutor` 覆盖、路径对齐 `.agent` 约定项目级>用户级）。**落地步骤见 `milestones/M5-扩展能力/`（5.1~5.5）。**
 
 ## 工程约定
 
@@ -297,5 +298,65 @@ flowchart TD
   3. **`keep_recent=0` 边界修复**：草稿 `tool_indices[:-0]` 为 `tool_indices[:0]`=空（替换 0 个），实际应为 `tool_indices[: len(tool_indices) - keep_recent]`（仅当 `len > keep_recent` 时替换）。
   4. **精确工具名过滤**：通过 `tool_call_id` 交叉验证工具名，非 `compactable_tools` 内工具（如 AskUserQuestion）即便很长也不压缩。
 - **测试**：`tests/test_context.py` 追加 10 个异步用例（边界零值 / keep_recent / 占位符 / 短内容不动 / 非 tool 不动 / 非大输出工具不动 / boundary 限制 / isinstance 协议 / ContextManager 集成 + 空 conv）。全量 `pytest` **237 passed**（原 226，+11 无回归）。
+
+## M4.3 沉淀（Auto Compact 9 段摘要）
+
+> 来源：`milestones/M4-上下文与记忆/4.3-AutoCompact.md`。落地 `agent/context/compactors/auto_compact.py` + `agent/prompts/compact_*.md`。
+>
+> **同期优化：contextvars 隐式 span parent 传递**（非 M4.3 内建，但在同一次开发会话中实施，直接受益 M4.3 的 AutoCompact 调用链）。详情见「M4.3 同期」小节末尾。
+
+- **模块**：`agent/context/compactors/auto_compact.py`（`AutoCompact` 类）、`agent/context/manager.py`（`compact()` 完整流程 + `track_file_access` + `_anti_drift`）、`agent/prompts/compact_system.md` / `compact_user.md`（外置模板，代码用内联常量）。
+- **`AutoCompact` 接口**：`__init__(model, max_failures=3)` → `async compact(conv, boundary) -> list[Message]`（**返回新列表**，非原地修改）。`_call_model(prompt)` 调 `model.act()` 解析 `<summary>` 标签；`_format_history(messages)` 每条截断 2000 字符 + tool_calls 追加 `→ tool: name(args)`。
+- **`ContextManager` 集成**：`compact() -> bool` 完整流程：① `apply_microcompact()` ② `should_compact()` ③ `auto_compact.compact(boundary)` → `record_compact("auto_compact")` ④ `mark_boundary()` ⑤ `_anti_drift()`。`track_file_access(path)` 记录最近 ≤10 文件（防漂移用）。`_anti_drift()` 去重取前 5 个文件每个 ≤10K 字符追加 `[Anti-Drift]` 消息。
+- **关键决策 / 踩坑（M4.4 必须看）**
+  1. **失败断路器用 `>=`**（草稿 `>`）：否则 `failure_count=3` 时仍会尝试第 4 次，3 次后放弃的语义不准确。
+  2. **`should_compact()` 只计量 `conv[compact_boundary:]`**：大消息若在 boundary 之前不会被计量到，因此集成测试必须把大消息放在 boundary 之后才能触发 auto compact。
+  3. **`AutoCompact.compact` 返回新列表**（与 Microcompact 的原地修改 + 同引用不同），`compact()` 用 `new_conv is not self.conv` 判断是否发生压缩。
+  4. **`<summary>` 标签解析 + 无标签兜底**：模型可能输出分析过程后跟标签、或纯文本无标签，两者都要处理。
+  5. **防漂移用 `errors="replace"`**：防止个别文件编码问题导致整个压缩流程崩溃。
+- **测试**：`tests/test_context.py` 追加 14 个异步用例（boundary=0 / 标签解析 / 无标签兜底 / 活跃消息保留 / 失败断路器 4 次验证 / 成功重置计数 / isinstance 协议 / 空历史 / tool_calls 格式化 / compact 完整流程 / microcompact only / track_file_access 路径记录 / max 10 裁剪 / anti_drift 追加文件内容）。全量 `pytest` **251 passed**（原 237，+14 无回归）。
+
+### M4.3 同期：contextvars 隐式 span parent 传递
+
+> 来源：同一次开发会话中实施的优化，`agent/obs/tracer.py`。直接受益 M4.3 的 `AutoCompact._call_model()` → `model.act()` 调用链——无需手动传 parent 参数即可自动成为 compact span 的子 span。
+
+- **动机**：消除显式 `parent=` 参数在调用链中的手动传递。原实现中 `AgentLoop._span()` 每次创建子 span 都要显式传 `parent=self._agent_span`，`AutoCompact._call_model()` 等深层调用无法自动继承父 span。
+- **核心改动**（`agent/obs/tracer.py`）：新增 `contextvars.ContextVar("_current_span")`；`_SpanCtx.__enter__` 自动从 contextvar 读取隐式 parent 并 push 当前 span；`__exit__` pop 恢复；`Tracer.span()` 新增可选 `parent_override` 参数（None 表示从 contextvar 继承）。新增 `Tracer.reset_current_span()` 类方法用于根 span 隔离。
+- **适配**（`agent/core/loop.py`）：`run()` 入口调用 `Tracer.reset_current_span()` 确保根 span 不受外部 contextvar 影响；移除 `model.act` 和 `tool.exec` 的显式 `parent=...` 传参（contextvar 自动继承）。
+- **零改动受益**：`auto_compact.py`、`model.py`、`manager.py` 均无需修改——`AutoCompact._call_model()` 内的 `model.act()` 自动继承当前 contextvar 中的 span 作为父 span。
+- **根 span 隔离铁律**：`agent.run` 根 span 创建前必须调用 `Tracer.reset_current_span()`，否则可能误继承上一轮循环的残留 span。
+- **测试**：`tests/test_obs.py` 追加 5 个用例（隐式 parent、显式覆盖、嵌套恢复、根隔离、异常安全）。全量 `pytest` **256 passed**（原 251，+5 无回归）。
+
+
+## M5 沉淀（SkillLoader + SubagentSpawner，落地后补全）
+
+> 来源：`milestones/M5-扩展能力/`（5.1~5.5）。当前仅文档完成，编码落地后在此汇总跨步骤接口/决策/坑。设计依据见 `knowledge/claude-code-subagents-skills.md`。
+
+- **路径约定（对齐 `.agent` 隔离）**：Skill 存 `<project>/.agent/skills/<name>/SKILL.md` 与 `~/.agent/skills/`；Agent 存 `<project>/.agent/agents/<name>.md` 与 `~/.agent/agents/`；**项目级 > 用户级**。
+- **Skill 触发双轨**：`description`(+`when_to_use`) 常驻系统提示（低成本），正文仅 `use_skill` 调用时读取并注入 conv（绝不让所有正文常驻）。
+- **Subagent 复用无状态 `AgentLoop`**：只传独立 `messages=[]` 即隔离上下文；可注入不同 `model`/`registry`/`sandbox`/`gate`。
+- **Trace 父子铁律**：子 agent 经 `SubagentSpawner.spawn(..., parent_span=父span)` 调起，`AgentLoop.run` 在 `parent_span` 给定时**跳过 `reset_current_span()`** 并用 `parent_override` 指回父（否则子 span 跑到根，见 loop.py:118）。
+- **摘要返回**：父 agent 只拿 `AgentResult.text`，子 agent 内部事件流不进父 `EventStream`。
+- **深度限制 5**：`spawn` 入口 `if depth >= max_depth: raise RecursionError`；每次 `depth+1`。
+- **工具白名单**：子 `registry` = `base_registry` 子集（`tools` 保留 / `disallowed_tools` 移除）。
+- **内置类型**：`explore`/`plan`（只读，拒 write/edit，跳过会话文件）/`general-purpose`（全工具）。
+
+### M4.3 压缩流程 trace 埋点（落地）
+
+> 来源：在 contextvars 改造之后落地。`ContextManager` 与 `AutoCompact` 现在把压缩流程完整记录进 trace 树。
+
+- **注入点**：`ContextManager.__init__(tracer=...)` 与 `AutoCompact.__init__(tracer=...)` 均接受 `Tracer | None`，缺省 None 降级为 no-op（不影响无 tracer 的旧用例）。
+- **span 树**（三者须注入**同一 Tracer 实例**才能同树汇聚）：
+  - `context.compact`（kind=compact，由 `ContextManager.compact()` 包裹整条流程）→ 父为调用方 contextvar 中的 span（如 `agent.run`）。
+    - `compact.microcompact`（由 `apply_microcompact()` 内包，记录 `tool_results_replaced`）。
+    - `compact.auto_compact`（由 `AutoCompact.compact()` 内包，记录 `boundary`/`conv_len`/`skip`/`summary_len`；边界越界或失败断路器触发时记 `skip` warn 日志）—— 自动成为 `context.compact` 的子 span。
+      - `model.act`（kind=model，由 `AutoCompact._call_model()` 内包，记录 `prompt_len`/`text_len`，并把 `decision.usage` 写入 `span.meta`）—— 因 contextvars 已在栈中，自动成为 `compact.auto_compact` 的子 span（而非直接挂在 `context.compact` 下）。
+    - `compact.anti_drift`（由 `_anti_drift()` 内包，仅在确有重读文件时，记录 `files_reread`）—— 同样自动挂到 `context.compact` 下。
+- **microcompact 后未超阈值** → 捷径跳过 auto_compact，此时不产生 `model.act` span（验证见 `test_compact_trace_shortcut_no_auto_span`）。
+- **零改动收益确认**：模型自身（`OpenAICompatibleModel._do_act`）仍不产 span，埋点在压缩器侧的 `model.act` 包裹处完成，与 loop 的 `model.act` span 解耦但同构。
+- **测试**：`tests/test_context.py` 追加 4 个用例（三层 span 树 + 隐式 parent、捷径无 model.act、usage 写入 meta、tracer=None 降级）。全量 `pytest` **260 passed**（原 256，+4 无回归）。
+
+
+
 
 

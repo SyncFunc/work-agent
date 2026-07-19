@@ -28,7 +28,7 @@
 |---|---|---|---|
 | M4.1 | [4.1-ContextManager基础.md](./4.1-ContextManager基础.md) | ContextManager 类 + 配置 + 计量 | ✅ 已完成 |
 | M4.2 | [4.2-Microcompact.md](./4.2-Microcompact.md) | 旧 tool_result 占位替换（零成本） | ✅ 已完成 |
-| M4.3 | [4.3-AutoCompact.md](./4.3-AutoCompact.md) | 9 段摘要 + Compact Boundary + 防漂移 | ⚪ 待启动 |
+| M4.3 | [4.3-AutoCompact.md](./4.3-AutoCompact.md) | 9 段摘要 + Compact Boundary + 防漂移 + contextvars 隐式 parent | ✅ 已完成 |
 | M4.4 | [4.4-SessionMemoryCompact.md](./4.4-SessionMemoryCompact.md) | 后台增量摘要文件（零成本首选） | ⚪ 待启动 |
 | M4.5 | [4.5-集成与固定底座.md](./4.5-集成与固定底座.md) | 系统提示重构 + prompt caching + AGENTS.md | ⚪ 待启动 |
 | M4.6 | [4.6-CLI命令.md](./4.6-CLI命令.md) | /context /compact 命令 + 状态栏 | ⚪ 待启动 |
@@ -131,6 +131,10 @@ block-beta
 - 删调用必删结果，删结果必删调用，或二者一起折叠为摘要；
 - 占位替换只改 `tool_result.content`，保留 `tool_call_id` 配对；
 - 违反即 API 400（M1.5 前车之鉴）。
+
+### contextvars 隐式 span parent 传递（M4.3 同期）
+
+`agent/obs/tracer.py` 新增 `contextvars.ContextVar("_current_span")`，`_SpanCtx.__enter__`/`__exit__` 自动 push/pop。`AutoCompact._call_model()` 等深层调用无需手动传 `parent` 参数——调用链中的任何 `model.act()` 自动继承当前 contextvar 的 span 作为父 span。根 span 创建前需调用 `Tracer.reset_current_span()` 隔离。详见 `knowledge/INDEX.md`「M4.3 同期」小节。
 
 ### 命名约定
 
