@@ -10,14 +10,15 @@
 - **98/1.6 法则**：AI 只做决策，循环/权限/路由/压缩/持久化全部确定性实现且可独立测试。
 - **安全在 OS 层**：沙箱是独立可插拔执行层（Local seccomp / Docker），prompt 仅软约束。→ 影响 M2；**完整设计见 `knowledge/sandbox-approval-design.md`**（Codex 模式：local/docker/external + 三档 profile + 网络默认拒绝 + AskForApproval 四模式）。
 - **上下文稀缺**：静态(系统提示/规则) 与 动态(对话/工具结果) 分离；稳定前缀走 prompt caching；超阈值递归摘要。→ 影响 M4。
-- **上下文管理设计文档**：`knowledge/context-management.md`（独立文档）。核心结论：**工具结果 = 对话历史，既保存也注入**（伪二选一）；本项目双轨映射——`EventStream` 全量不可变（保存/审计/压缩派生源）vs `conv`/`Session.messages` 可压缩投影（注入）；压缩只作用于 `conv`，绝不碰 `EventStream`；配对铁律（tool_use+tool_result 成对）；借鉴 Claude Code Microcompact/AutoCompact + Codex ContextManager；大输出走子代理隔离（M5）。详见该文档。
+- **上下文管理设计文档**：`knowledge/context-management.md`（独立文档）。核心结论：**工具结果 = 对话历史，既保存也注入**（伪二选一）；本项目双轨映射——`EventStream` 全量不可变（保存/审计/压缩派生源）vs `conv`/`Session.messages` 可压缩投影（注入）；压缩只作用于 `conv`，绝不碰 `EventStream`；配对铁律（tool_use+tool_result 成对）；采用 **Claude Code 四层渐进压缩防线**（Microcompact→Snip/Collapse→Session Memory 零成本→AI 9 段摘要→Reactive Compact）；大输出走子代理隔离（M5）。详见该文档。
 - **能力正交**：Tool(原子) / Skill(按需包) / Subagent(隔离上下文) 三层。→ 影响 M5。
 - **两条全局主线**：事件流（状态单一事实来源）+ Trace/Span（OTel 语义，父子 parent_id）。→ 事件流在 M1.3 落地，trace 在 M1.6 占位，M3 完善。
 - **可恢复**：检查点用 `session_id` + sqlite，路径 `<project>/.agent/sessions/<id>/`。→ 影响 M6 与项目隔离 M?（项目隔离贯穿）。
 
 ## 设计文档（standalone，跨里程碑）
 
-- **上下文管理设计**：`knowledge/context-management.md` —— 工具结果「保存 vs 注入」伪二选一的结论、双轨映射、压缩策略（Claude Code/Codex 调研）、配对铁律、子代理隔离、M4 规划。（被「架构决策·上下文稀缺」引用）
+- **上下文管理设计**：`knowledge/context-management.md` —— 工具结果「保存 vs 注入」伪二选一的结论、双轨映射、压缩策略（**采用 Claude Code 四层渐进防线**，无 Codex）、配对铁律、子代理隔离、M4 规划。（被「架构决策·上下文稀缺」引用）
+- **Claude Code 上下文管理机制（详细调研）**：`knowledge/claude-code-context-management.md` —— 只讲 Claude Code 怎么做：上下文窗口四块组成（固定底座永不压 / Messages 可压）、四层渐进压缩防线（Microcompact 占位符→Snip/Collapse→Session Memory 零成本→AI 9 段摘要→Reactive Compact）、**Session Memory 深度机制（§3.5：自动后台记忆、10 段固定摘要结构每段≤2K/总≤12K、触发阈值 init 10K/between 5K/tool 3、forked agent 仅 Edit 提取、瞬时 compact、跨会话 Recall、`/remember`→AGENTS.local.md 提升通道、对比表）**、触发阈值公式（有效窗口−13K）、配对铁律、Compact Boundary 与防漂移重读、固定底座永不压缩、/context /compact 监控、与本项目双轨映射（AGENTS.md 替代 CLAUDE.md）、M4 落地建议。配套 `context-management.md`。（M4 设计依据）
 - **沙盒与审批设计（M2 依据）**：`knowledge/sandbox-approval-design.md` —— **采用 Codex 模式**：① 原理（P2 安全在 OS 层、P3 最小权限+纵深、与 PLAN 正交）；② 沙盒=可插拔执行层（`local` Linux landlock+seccomp / macOS Seatbelt / Windows 进程级+告警 · `docker` · `external` 直通），三档 profile `read-only`/`workspace-write`/`danger-full`，**网络默认拒绝**；③ 审批=AskForApproval 四模式 `untrusted`/`on-request`/`on-failure`/`never` + `allow`/`deny` 规则（**deny 永远优先**）+ HITL 回调 `AgentTransport.approve`（gate 经窄协议 `ApprovalUI` 消费）；④ 决策流（loop→gate→sandbox）、决策矩阵、与既有设施边界。**落地步骤见 `milestones/M2-安全与确认/`（2.1~2.6）。**
 
 ## 工程约定
@@ -30,9 +31,9 @@
 
 ## 环境与 Provider（来源：M1 启动前约定，M1.1 重构后）
 
-- **provider 无关**：底层统一走 OpenAI 兼容协议（`/v1/chat/completions`）。代码里没有「DeepSeek」硬编码——`OpenAICompatibleModel` 只是默认实现。换 API 只改 `.env` 的 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`，不动代码。
+- **provider 无关**：底层统一走 OpenAI 兼容协议（`/v1/chat/completions`）。代码里没有「DeepSeek」硬编码——`OpenAICompatibleModel` 只是默认实现。换 API 只改 `<项目根>/.agent/settings.yaml` 的 `llm.api_key` / `llm.base_url` / `llm.model`，不动代码。
 - 默认值指向 DeepSeek：base `https://api.deepseek.com`，模型 `deepseek-v4-flash`（用户指定）。
-- 配置加载：通过 `pydantic-settings` 读 `.env`（`LLM_*` 前缀）+ 环境变量；CLI 参数优先级最高。
+- 配置加载：通过 `pydantic-settings` + 自定义 `YamlConfigSource` 读 YAML（用户级 + 项目级）；**不读 `.env`/环境变量**；CLI 参数（init）优先级最高。
 - **流式**：`Model` 协议含 `stream(messages) -> AsyncIterator[StreamEvent]`；`StreamEvent` 分 `text`（增量）与 `done`（回传完整 `Decision`，含流式聚合的工具调用）。CLI/循环优先用流式实现实时输出。
 - 测试一律用 `FakeModel` / `RecordingModel`，或向 `OpenAICompatibleModel` 注入假 client（不联网）；CI 中可用占位 key。
 
@@ -40,8 +41,8 @@
 
 - **模型边界铁律**：`Model.act(messages) -> Decision`，模型只决策不执行工具；工具执行在 M1.2 接入。
 - **关键接口**（`agent/core/model.py`）：`Message(role,content,tool_calls,tool_call_id)`、`Decision(text,tool_calls)`（`is_final`）、`ToolCall(id,name,arguments)`、`StreamEvent(type,text,decision)`（流式）；`Model` 协议含 `act` 与 `stream`；`FakeModel(script)`/`RecordingModel(decision|on_act)` 作测试替身；`OpenAICompatibleModel.from_settings(settings)` 离线构建（provider 无关）；`create_model(settings)` 工厂。
-- **配置**（`agent/config/settings.py`）：分层 YAML + env + CLI。**优先级（高→低）**：`CLI(init) > 环境变量/.env > 项目级 YAML > 用户级 YAML > 内置默认`。`load_settings(project_root=, **overrides)` 供 CLI/嵌入覆盖；默认 `llm_model="deepseek-v4-flash"`、`max_iterations=25`。
-- **配置分层实现要点（M1.1 补）**：自定义 `YamlConfigSource(PydanticBaseSettingsSource)`，`__init__` 预加载「用户级→项目级」合并（项目级覆盖用户级）、`get_field_value` 逐字段返回（pydantic-settings 主循环用 `get_field_value` 而非 `__call__`，这点易踩坑）；`settings_customise_sources` 排序 `init>env>dotenv>YamlConfigSource>file_secret`。YAML 支持扁平键或嵌套 `llm:` 块（自动展平）。路径：`~/.agent/settings.yaml`（用户）、`<project>/.agent/settings.yaml`（项目，gitignore），可被 `AGENT_USER_CONFIG_DIR`/`AGENT_PROJECT_ROOT` 覆盖。**密钥走 `.env`/`LLM_API_KEY`，不写 YAML。** 模板 `agent/config/settings.example.yaml`。
+- **配置**（`agent/config/settings.py`）：分层 YAML（用户级 + 项目级）+ CLI。**优先级（高→低）**：`CLI(init) > 项目级 YAML > 用户级 YAML > 内置默认`。**不读 `.env`/环境变量**（密钥走 YAML 的 `llm.api_key`）。`load_settings(project_root=, **overrides)` 供 CLI/嵌入覆盖；默认 `llm.model="deepseek-v4-flash"`、`max_iterations=25`。
+- **配置分层实现要点（M1.1 补）**：自定义 `YamlConfigSource(PydanticBaseSettingsSource)`，`__init__` 预加载「用户级→项目级」合并（项目级覆盖用户级）、`get_field_value` 逐字段返回（pydantic-settings 主循环用 `get_field_value` 而非 `__call__`，这点易踩坑）；`settings_customise_sources` 排序 `init > YamlConfigSource`（合并「用户级→项目级」，项目级覆盖用户级）。YAML 支持嵌套 `llm:` 块。路径：`~/.agent/settings.yaml`（用户）、`<project>/.agent/settings.yaml`（项目，gitignore），可被 `AGENT_USER_CONFIG_DIR`/`AGENT_PROJECT_ROOT` 覆盖。**密钥 `llm.api_key` 写在项目级 YAML（不进版本控制）**。模板 `agent/config/settings.example.yaml`。
 - **Tracer**（`agent/obs/tracer.py`）：`span(name,kind,parent)` 上下文管理器 + `render()` 父子树；M5 接 OTel。
 - **测试**：`asyncio_mode="auto"`；`monkeypatch.setenv` 验分层。
 - **约束**：`Decision.tool_calls` 形态是 M2 审批 / M3 压缩的输入；Tracer parent 是 M5 父子 span 基础。
@@ -70,7 +71,7 @@
 - **接口**：`AgentLoop(model, registry, settings, tracer=None)`、`async run(task)->AgentResult(text,events,iterations)`；`Event(seq,type,ts,decision,tool_use,tool_result,tool_call_id,text,error)`，`type ∈ {decision,tool_use,tool_result,final,error}`；`EventStream.append/to_json/from_json`。
 - **工具调用语义**：同一次 `Decision` 内多 `tool_calls` 用 `asyncio.gather + Semaphore(settings.max_tool_concurrency)` **并发**；轮间串行（依赖 `tool_result` 回填）。结果经 `tool_call_id` 配对，执行/回填顺序解耦。`UnknownTool`/工具异常降级为 `ToolResult(ok=False)` 事件，**不崩循环**（模型自纠）。
 - **重复/卡死检测（两层）**：`max_iterations` **软上限**（触顶不再抛 `LoopMaxIteration` 中断——改为返回带提示的 `AgentResult，mark `soft_limit_hit=True` 并把累计 `messages` 交回，会话层可续、用户「继续」接棒，不丢历史）；`LoopStalled` 语义检测——`callset = frozenset((name, canonical(args)))`，`canonical=json.dumps(sort_keys=True)` 使参数顺序无关，相邻轮相同计数达 `settings.max_repeat_calls` 即判原地打转（仍**硬中断**，因表示模型真打转需人工介入）。**stall 在「执行后」判断**：触发时工具已执行 `max_repeat_calls+1` 次。`LoopMaxIteration` 类保留仅作导出命名空间兼容。
-- **新增配置**（`Settings`）：`max_tool_concurrency: int = 5`、`max_repeat_calls: int = 3`（与 `max_iterations` 同机制，支持 YAML/env/CLI 覆盖）。
+- **新增配置**（`Settings`）：`max_tool_concurrency: int = 5`、`max_repeat_calls: int = 3`（与 `max_iterations` 同机制，支持 YAML/CLI 覆盖）。
 - **事件流即单一事实来源**：决策/工具调用/结果/结束全落事件，供 M5 trace、M5 恢复、M3 压缩派生。`seq` 单调递增，重放按 `seq` 保真。
 - **踩坑**：① dataclass 默认值字段须后置，`Event.seq=-1` 放最后；② `append` 同步无 await，并发赋值 `seq` 安全；③ gather 保序，`zip(calls,results)` 配对；④ stall 执行次数 = `max_repeat_calls+1`；⑤ 异常在 `_one` 内 catch 降级。
 - **踩坑⑥（纯文本刷屏死循环，易忘）**：DeepSeek/OpenAI 在「带 `tools` 的**纯文本回复**」时，偶尔会在流式末尾附带一个 `name` 为空的 `tool_call`（流式协议边界噪声）。若不过滤，`decision.tool_calls` 非空 → `is_final=False`（定义见 `model.py`：`is_final = not tool_calls`）→ 落入执行分支，空 name 被 `registry.get("")` 当 `UnknownTool` 降级为 `ToolResult(ok=False)`，模型下一轮又输出相同文本，造成「同一段文本反复快速刷屏」。**修复**（`loop._decide` 收尾）：`decision.tool_calls = [tc for tc in decision.tool_calls if tc.name and tc.name.strip()]`。过滤后纯文本回复 `tool_calls=[]` → `is_final=True` → 直接作为 final 返回。回归测试：`tests/test_loop.py::test_empty_name_toolcall_treated_as_final`。**判据**：终端只出现纯文本"💬 模型输出"面板、无"🔧 工具调用"面板却不停重复 → 即此问题（而非 stall，stall 会在 `max_repeat_calls+1` 轮抛 `LoopStalled`）。

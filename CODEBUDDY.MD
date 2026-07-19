@@ -52,7 +52,7 @@
 | 语言 | Python 3.12+ |
 | CLI | `typer` |
 | 异步 | `asyncio`（工具/子 Agent 并行） |
-| 模型 | 自抽象 `Model` 接口 + `FakeModel`/`RecordingModel`(测试) / 真实 provider 实现；**provider 无关**：底层走 OpenAI 兼容协议，任何服务（DeepSeek / OpenAI / 本地 vLLM 等）只需改 `.env` 的 `LLM_API_KEY` / `LLM_BASE_URL` / `LLM_MODEL`，**无需改代码**；默认值指向 DeepSeek（`https://api.deepseek.com`，模型 `deepseek-v4-flash`）。模型支持流式：`Model.stream()` 增量产文本、收尾回传 `Decision`。 |
+| 模型 | 自抽象 `Model` 接口 + `FakeModel`/`RecordingModel`(测试) / 真实 provider 实现；**provider 无关**：底层走 OpenAI 兼容协议，任何服务（DeepSeek / OpenAI / 本地 vLLM 等）只需改 `<项目根>/.agent/settings.yaml` 的 `llm.api_key` / `llm.base_url` / `llm.model`，**无需改代码**；默认值指向 DeepSeek（`https://api.deepseek.com`，模型 `deepseek-v4-flash`）。模型支持流式：`Model.stream()` 增量产文本、收尾回传 `Decision`。 |
 | 配置 | `pydantic-settings` + YAML，分层：内置默认 → 用户级 → 项目级 → CLI 参数 |
 | 持久化 | `sqlite`（会话/记忆/事件流），路径 `<project>/.agent/` |
 | 可观测 | 自研 `Tracer`(OTel 语义)，可导出 JSON / 接 Langfuse |
@@ -72,7 +72,7 @@
 - 里程碑模板：`milestones/template.md`
 - 里程碑目录：`milestones/<Mx-名称>/`（每步一个 `.md` 文件，均含三要素）
 - 知识库：`knowledge/INDEX.md`
-- 环境变量：`.env`（`DEEPSEEK_API_KEY` 等，已被 `.gitignore` 忽略）
+- 环境变量：`AGENT_PROJECT_ROOT` / `AGENT_USER_CONFIG_DIR`（覆盖配置目录；`AGENT_PROJECT_ROOT` 也用于从其他目录启动）。密钥 `llm.api_key` 写在 `<项目根>/.agent/settings.yaml`（已被 `.gitignore` 忽略），**不读 `.env`**
 
 ---
 

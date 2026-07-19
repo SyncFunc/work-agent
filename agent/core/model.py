@@ -267,8 +267,15 @@ class OpenAICompatibleModel:
         api_key = (settings.llm.api_key or "").strip()
         if not api_key:
             raise ValueError(
-                "未配置 LLM_API_KEY（模型 API 密钥）。请在项目根目录的 .env 中设置 "
-                "LLM_API_KEY=sk-xxx，或导出环境变量 LLM_API_KEY；详见 CODEBUDDY.md。"
+                "未配置模型 API 密钥（llm.api_key）。密钥通过 "
+                "<项目根>/.agent/settings.yaml 的 llm.api_key 字段提供（不支持 .env / "
+                "环境变量 LLM_API_KEY）。\n"
+                "请从以下方式之一解决：\n"
+                "  1) 从项目根目录或其子目录启动（配置依赖当前工作目录向上查找 .agent/settings.yaml）；\n"
+                "  2) 在 <项目根>/.agent/settings.yaml 中设置 llm.api_key: sk-xxx；\n"
+                "  3) 若需从其他任意目录启动，请先设置环境变量 "
+                "AGENT_PROJECT_ROOT 指向本项目根目录。\n"
+                "详见 CODEBUDDY.md。"
             )
         return cls(
             api_key=api_key,

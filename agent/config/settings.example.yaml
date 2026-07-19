@@ -2,14 +2,14 @@
 # 复制为下列之一（只需改路径，内容相同）：
 #   项目级：<project>/.agent/settings.yaml   （随项目，优先级更高）
 #   用户级：~/.agent/settings.yaml            （跨项目个人偏好，优先级更低）
-# 优先级：项目级 YAML > 用户级 YAML；环境变量 LLM_* / .env 可再覆盖；CLI 参数最高。
-# 密钥（llm_api_key）建议走环境变量 LLM_API_KEY 或 .env，不要写进会提交的 YAML。
+# 优先级：CLI 参数 > 项目级 YAML > 用户级 YAML > 内置默认（不读 .env/环境变量）。
+# 密钥（llm.api_key）写在本文件（项目级 settings.yaml，已被 .gitignore 忽略）；不要提交到版本库。
 
 llm:
   # OpenAI 兼容协议的基础地址；换服务商只改这三项，无需改代码
   base_url: https://api.deepseek.com
   model: deepseek-v4-flash
-  # api_key: 不建议在此填写（见上方说明）
+  # api_key: sk-xxx   ← 在此填写你的密钥（本文件已被 .gitignore 忽略）
 
 # 循环控制：单轮对话最大工具迭代次数
 max_iterations: 25
