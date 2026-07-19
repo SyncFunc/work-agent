@@ -8,7 +8,7 @@
 | **M1 骨架** | 端到端跑通空转 Agent | CLI + `Model` 抽象 + `AgentLoop`(FakeModel) + `ToolRegistry` + 基础 `bash`/`read`/`write` | 🟡 进行中 |
 | **M2 安全与确认** | 能安全跑命令 | `ApprovalGate` + `SandboxExecutor` + 分层权限配置 | 🔄 进行中（设计文档 + 步骤文档已完成，待编码落地） |
 | **M3 可观测与韧性层** | 看得见、可恢复、不掉线 | Trace/Span 增强 + Span 持久化 + Log 系统 + 韧性层（限流/熔断/降级） + 健康检查 | 🟡 进行中（M3.1–M3.3 代码已完成，M3.4–M3.5 待启动） |
-| **M4 上下文与记忆** | 长任务不爆窗口 | `ContextManager` + Microcompact + Auto Compact(9段摘要) + Session Memory + AGENTS.md 固定底座 + `/context` `/compact` 命令 | 🟡 进行中（步骤文档已完成，待编码落地） |
+| **M4 上下文与记忆** | 长任务不爆窗口 | `ContextManager` + Microcompact + Auto Compact(9段摘要) + Session Memory + AGENTS.md 固定底座 + `/context` `/compact` 命令 | 🟡 进行中（M4.1、M4.2 已落地，M4.3–M4.7 待启动） |
 | **M5 扩展能力** | 可组合可伸缩 | `SkillLoader` + `SubagentSpawner` | ⚪ 待启动 |
 | **M6 生产化** | 可恢复可观测可测 | 会话恢复 + 测试金字塔 + CI | ⚪ 待启动 |
 

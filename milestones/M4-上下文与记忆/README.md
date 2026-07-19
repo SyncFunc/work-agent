@@ -26,8 +26,8 @@
 
 | 步骤 | 文件 | 目标 | 状态 |
 |---|---|---|---|
-| M4.1 | [4.1-ContextManager基础.md](./4.1-ContextManager基础.md) | ContextManager 类 + 配置 + 计量 | ⚪ 待启动 |
-| M4.2 | [4.2-Microcompact.md](./4.2-Microcompact.md) | 旧 tool_result 占位替换（零成本） | ⚪ 待启动 |
+| M4.1 | [4.1-ContextManager基础.md](./4.1-ContextManager基础.md) | ContextManager 类 + 配置 + 计量 | ✅ 已完成 |
+| M4.2 | [4.2-Microcompact.md](./4.2-Microcompact.md) | 旧 tool_result 占位替换（零成本） | ✅ 已完成 |
 | M4.3 | [4.3-AutoCompact.md](./4.3-AutoCompact.md) | 9 段摘要 + Compact Boundary + 防漂移 | ⚪ 待启动 |
 | M4.4 | [4.4-SessionMemoryCompact.md](./4.4-SessionMemoryCompact.md) | 后台增量摘要文件（零成本首选） | ⚪ 待启动 |
 | M4.5 | [4.5-集成与固定底座.md](./4.5-集成与固定底座.md) | 系统提示重构 + prompt caching + AGENTS.md | ⚪ 待启动 |

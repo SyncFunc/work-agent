@@ -59,13 +59,8 @@ _PLAN_STATUS_COLOR = {
 }
 
 
-def _estimate_tokens(text: str) -> int:
-    """粗略 token 估算：CJK 按 1 token/字，其余按 ~4 字符/token（无 tiktoken 依赖）。"""
-    if not text:
-        return 0
-    cjk = sum(1 for c in text if ord(c) > 0x2E80)
-    other = len(text) - cjk
-    return cjk + other // 4 + 1
+# token 估算共享到 agent.context.tokens（单一事实来源，避免重复实现）
+from agent.context.tokens import _estimate_tokens  # noqa: E402
 
 
 def _extract_write_preview(raw: str) -> str:

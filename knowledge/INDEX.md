@@ -268,4 +268,34 @@ flowchart TD
 - **测试策略**：韧性层用 FakeModel + Pipeline(mock) 模拟限流/熔断；TraceStore 用 `tmp_path` 隔离 SQLite；CLI health 用 `CliRunner` + monkeypatch 注入 `HealthChecker`。
 - **全量测试 209 passed**：覆盖 13 个测试文件，M1/M2 零回归。
 
+## M4.1 沉淀（ContextManager 基础）
+
+> 来源：`milestones/M4-上下文与记忆/4.1-ContextManager基础.md`。落地 `agent/context/` 包。
+
+- **模块**：`agent/context/__init__.py`（导出 `ContextManager/ContextUsage/CompactRecord/Compactor`）、`agent/context/manager.py`、`agent/context/tokens.py`（共享 `_estimate_tokens`）、`agent/context/compactors/__init__.py`（`Compactor` 协议）、`agent/config/settings.py` 新增 `ContextConfig` 与 `Settings.context`。
+- **接口签名**：`ContextManager(context_window=200_000, max_output_tokens=20_000, compact_buffer=13_000, *, system_fixed_tokens=3_000, system_dynamic_tokens=0, tools_tokens=15_000)`；属性 `conv/effective_window/compact_threshold/compact_boundary/history`；方法 `estimate_usage()->ContextUsage`、`should_compact()->bool`、`mark_boundary()`、`record_compact(method,before,after)->CompactRecord`、`set_conv(conv)`、`get_active_messages()->list[Message]`。`ContextUsage(system_fixed/system_dynamic/tools/messages/total/available/used_pct)`、`CompactRecord(ts/method/before_tokens/after_tokens)`。
+- **公式**：有效窗口 `effective_window = context_window − min(max_output_tokens, 20000)`（默认 180_000）；压缩阈值 `compact_threshold = effective_window − compact_buffer`（默认 167_000）；`should_compact` 触发 `used_pct >= 0.93`（≈ 阈值）。
+- **`_estimate_tokens` 共享化（重要，防循环导入）**：原在 `agent/runtime/terminal_transport.py` 的函数**抽取到 `agent/context/tokens.py`**，并让 `terminal_transport` 反向 `from agent.context.tokens import _estimate_tokens` 复用（单一事实来源）；`tokens.py` 零依赖，不存在循环导入。M4.2+ 计量统一从此处取。
+- **`Message` 无 `name` 字段（踩坑）**：4.1 草稿里 `msg.name` 是笔误；`_estimate_conv_tokens` 改用 `msg.tool_call_id` 计入配对标识，`msg.tool_calls` 用 `tc.name + json.dumps(tc.arguments, sort_keys=True, ensure_ascii=False)` 估算。
+- **`record_compact()` 是 4.1 草稿未列、验收要求「历史记录」所需的方法**，已补（M4.2+ 压缩时落记录用）。
+- **`Compactor` 协议**：`runtime_checkable` Protocol，`async compact(conv, boundary) -> list[Message]`；具体实现 Microcompact / Auto Compact / Session Memory 在 M4.2–M4.4 落地，本步只定义协议。**配对铁律**：实现必须保持 `tool_use`/`tool_result` 配对，禁止孤立任一方。
+- **本步只做计量与边界管理，不执行压缩**；`ContextManager` 不触碰 `EventStream`（审计真相不可变）。
+- **配置**：`Settings.context: ContextConfig`（默认 `context_window=200_000 / max_output_tokens=20_000 / compact_buffer=13_000 / microcompact_keep_recent=5 / microcompact_enabled=True / auto_compact_enabled=True / session_memory_enabled=True / session_memory_dir=".agent/sessions" / agents_md_path="AGENTS.md" / agents_md_enabled=True`）。`ContextManager` 当前显式参数构造，M4.5 集成时可由 `settings.context` 派生阈值。
+- **测试**：`tests/test_context.py` 17 用例（构造默认值 / `effective_window` 预算封顶 / 空历史总量恒等式 / messages 计量 / `used_pct∈[0,1]` / 阈值触发-空历史高固定底座+大消息 / `mark_boundary==len(conv)` / 边界排除旧消息 / `record_compact` 历史 / 投影副本 / `Settings.context` 可读 / `Compactor` 协议 isinstance 检查）。全量 `pytest` 226 passed（M1–M4.1 零回归）。
+
+## M4.2 沉淀（Microcompact 零成本压缩）
+
+> 来源：`milestones/M4-上下文与记忆/4.2-Microcompact.md`。落地 `agent/context/compactors/microcompact.py`。
+
+- **模块**：`agent/context/compactors/microcompact.py`（`Microcompact` 类）、`agent/context/compactors/__init__.py`（Compactor 协议）、`agent/context/manager.py`（`apply_microcompact()` 入口）、`agent/context/__init__.py`（导出 `Microcompact/COMPACTABLE_TOOLS/PLACEHOLDER`）。
+- **常量**：`COMPACTABLE_TOOLS = ("bash","read","grep","glob","write","edit","find")`（大输出类工具列表）、`PLACEHOLDER = "[Old tool result content cleared]"`。
+- **`Microcompact` 接口**：`__init__(keep_recent=5, compactable_tools=None)` → `async compact(conv, boundary) -> list[Message]`（**就地修改 + 返回同一引用**）。`_build_id_to_name(conv)` 遍历 assistant.tool_calls 建 `tool_call_id→工具名` 映射；`_is_compactable(msg, id_to_name)` 先判 `content>100` 再交叉验证工具名（非 `compactable_tools` 内不压缩）。
+- **`ContextManager` 集成**：`__init__` 新增 `microcompact_keep_recent=5` / `microcompact: Microcompact | None = None` 参数；`apply_microcompact() -> list[Message]` 调用 `self.microcompact.compact(self.conv, len(self.conv))`（**用 `len(self.conv)` 而非 `self.compact_boundary`**，见踩坑）。
+- **关键决策 / 踩坑（M4.3 必须看）**
+  1. **协议对齐强制 async**：M4.2 草稿写的是同步 `compact()`，但 `Compactor` 协议声明 `async def compact(...)` 且 M4.3 必须 async。所有实现统一 async。`ContextManager.apply_microcompact()` 相应 async。
+  2. **`apply_microcompact` 用 `len(conv)` 而非 `compact_boundary`**（偏离草稿）。会话初期 `compact_boundary=0` 会使 Microcompact 对整个 conv 无操作；且 auto-compacted 区域是摘要（非长 tool 结果）不会被误伤。
+  3. **`keep_recent=0` 边界修复**：草稿 `tool_indices[:-0]` 为 `tool_indices[:0]`=空（替换 0 个），实际应为 `tool_indices[: len(tool_indices) - keep_recent]`（仅当 `len > keep_recent` 时替换）。
+  4. **精确工具名过滤**：通过 `tool_call_id` 交叉验证工具名，非 `compactable_tools` 内工具（如 AskUserQuestion）即便很长也不压缩。
+- **测试**：`tests/test_context.py` 追加 10 个异步用例（边界零值 / keep_recent / 占位符 / 短内容不动 / 非 tool 不动 / 非大输出工具不动 / boundary 限制 / isinstance 协议 / ContextManager 集成 + 空 conv）。全量 `pytest` **237 passed**（原 226，+11 无回归）。
+
 

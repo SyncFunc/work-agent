@@ -116,6 +116,21 @@ class ResilienceConfig(BaseModel):
     fallback: FallbackConfigModel = FallbackConfigModel()
 
 
+class ContextConfig(BaseModel):
+    """上下文与记忆配置（M4 上下文与记忆里程碑）。"""
+
+    context_window: int = 200_000
+    max_output_tokens: int = 20_000
+    compact_buffer: int = 13_000
+    microcompact_keep_recent: int = 5
+    microcompact_enabled: bool = True
+    auto_compact_enabled: bool = True
+    session_memory_enabled: bool = True
+    session_memory_dir: str = ".agent/sessions"
+    agents_md_path: str = "AGENTS.md"
+    agents_md_enabled: bool = True
+
+
 # --------------------------------------------------------------------------- #
 # 主 Settings
 # --------------------------------------------------------------------------- #
@@ -131,6 +146,7 @@ class Settings(BaseSettings):
     bash: BashConfig = BashConfig()
     obs: ObsConfig = ObsConfig()
     resilience: ResilienceConfig = ResilienceConfig()
+    context: ContextConfig = ContextConfig()
 
     @classmethod
     def settings_customise_sources(
