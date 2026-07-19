@@ -20,7 +20,7 @@ from agent.core.control_tools import (
     PRESENT_PLAN_TOOL_NAME,
 )
 from agent.core.loop import AgentLoop
-from agent.core.model import Decision, FakeModel, ToolCall
+from agent.core.model import Decision, FakeModel, Message, ToolCall
 from agent.obs.tracer import Tracer
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 
@@ -181,3 +181,64 @@ def test_chat_plan_then_approve_then_exec(runner, monkeypatch):
     assert result.exit_code == 0
     assert "计划B" in result.output          # 计划被打印
     assert "executed" in result.output       # 批准后进入 EXEC 执行
+
+
+# --------------------------------------------------------------------------- #
+# M5.4 CLI：/skills /agents /skill 命令（不调模型，仅改 Session 状态）
+# --------------------------------------------------------------------------- #
+def _write_skill_in_project_root(root, name, body="DEMO BODY CONTENT"):
+    d = root / ".agent" / "skills" / name
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "SKILL.md").write_text(
+        f"---\nname: {name}\ndescription: 演示 {name}\n---\n{body}\n", encoding="utf-8"
+    )
+
+
+def test_chat_agents_lists_builtins(runner, monkeypatch):
+    """/agents 展示内置类型（explore/plan/general-purpose），不调模型。"""
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/agents\nexit\n")
+
+    assert result.exit_code == 0
+    assert "explore" in result.output
+    assert "plan" in result.output
+    assert "general-purpose" in result.output
+
+
+def test_chat_skills_lists_and_skill_load(tmp_path, runner, monkeypatch):
+    """/skills 列出 skill（不含正文）；/skill <name> 显式注入；未知名提示。"""
+    _write_skill_in_project_root(tmp_path, "demo")
+    monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(
+        app, ["chat"], input="/skills\n/skill demo\n/skill nope\nexit\n"
+    )
+
+    assert result.exit_code == 0
+    # 列表含 name + description
+    assert "demo" in result.output
+    assert "演示 demo" in result.output
+    # 双轨不变量：列表不含 skill 正文
+    assert "DEMO BODY CONTENT" not in result.output
+    # 显式加载成功
+    assert "已加载 skill: demo" in result.output
+    # 未知 skill 名 → 提示，不崩溃
+    assert "未找到 skill: nope" in result.output
+
+
+def test_chat_skill_load_appends_message(tmp_path, monkeypatch):
+    """/skill <name> 把渲染后的正文作为 user 消息追加到 session.messages。"""
+    from agent.core.session import Session
+
+    _write_skill_in_project_root(tmp_path, "demo", body="HELLO FROM SKILL")
+    monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
+    settings = Settings()
+    sess = Session(FakeModel([]), _make_registry(), settings, tracer=None)
+    assert sess.skill_loader is not None
+    spec = sess.skill_loader.get("demo")
+    assert spec is not None
+    before = len(sess.messages)
+    sess.messages.append(Message(role="user", content=f"[Skill demo]\n{spec.render_body()}"))
+    assert len(sess.messages) == before + 1
+    assert sess.messages[-1].role == "user"
+    assert "HELLO FROM SKILL" in sess.messages[-1].content

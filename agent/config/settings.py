@@ -131,6 +131,21 @@ class ContextConfig(BaseModel):
     agents_md_enabled: bool = True
 
 
+class SkillsConfig(BaseModel):
+    """Skill 能力开关（M5.1/M5.3）。"""
+
+    enabled: bool = True
+    dirs: list[str] = []  # 额外 skill 目录（除项目级 .agent/skills、用户级 ~/.agent/skills）
+
+
+class SubagentsConfig(BaseModel):
+    """子 Agent 能力开关（M5.2/M5.3）。"""
+
+    enabled: bool = True
+    max_depth: int = 5
+    auto_allow: bool = False
+
+
 # --------------------------------------------------------------------------- #
 # 主 Settings
 # --------------------------------------------------------------------------- #
@@ -147,6 +162,11 @@ class Settings(BaseSettings):
     obs: ObsConfig = ObsConfig()
     resilience: ResilienceConfig = ResilienceConfig()
     context: ContextConfig = ContextConfig()
+    skills: SkillsConfig = SkillsConfig()
+    subagents: SubagentsConfig = SubagentsConfig()
+
+
+
 
     @classmethod
     def settings_customise_sources(

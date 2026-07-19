@@ -341,3 +341,26 @@ async def test_plan_present_records_path_even_if_declined(tmp_path):
     assert session.plan_path is not None            # 已记录，供后续 /exec 启用 update_plan
     assert session.plan_mode is True                # 拒绝 → 保持 PLAN 模式
     assert res.needs_plan_confirm is True
+
+
+async def test_session_shares_single_root_span():
+    """同一 Session 内多次 step 的 trace 应共享同一个 session.root span（而非每轮一个独立 root）。"""
+    from agent.core.session import Session
+    from agent.obs.tracer import Tracer
+
+    tracer = Tracer()
+    settings = _settings()
+    # 脚本耗尽后 FakeModel 返回 final，故可复用同一 model 跑两轮 step
+    session = Session(FakeModel([Decision(text="done")]), _make_registry(), settings, tracer=tracer)
+    await session.step("任务一", _FakeUI(confirm=True), yes=True)
+    await session.step("任务二", _FakeUI(confirm=True), yes=True)
+
+    # 唯一根 = session.root span
+    roots = [s for s in tracer.spans if s.parent_id is None]
+    assert len(roots) == 1
+    root = roots[0]
+    assert root.kind == "session"
+    # 两次 run 都挂在 session.root 下（不再是多个独立 root）
+    runs = [s for s in tracer.spans if s.kind == "agent"]
+    assert len(runs) == 2
+    assert all(r.parent_id == root.id for r in runs)

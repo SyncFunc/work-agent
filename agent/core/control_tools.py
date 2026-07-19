@@ -105,11 +105,62 @@ UPDATE_PLAN_TOOL: dict[str, Any] = {
 }
 
 
+USE_SKILL_TOOL_NAME = "use_skill"
+SPAWN_SUBAGENT_TOOL_NAME = "spawn_subagent"
+
+USE_SKILL_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": USE_SKILL_TOOL_NAME,
+        "description": (
+            "调用一个已注册的 Skill（按需加载其正文到上下文）。"
+            "先参考系统提示中的「Available Skills」目录，用 name 触发。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "skill 名称（kebab-case）"},
+                "args": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "位置参数（替换正文中的 $ARGUMENTS / $N / $name）",
+                },
+            },
+            "required": ["name"],
+        },
+    },
+}
+
+SPAWN_SUBAGENT_TOOL: dict[str, Any] = {
+    "type": "function",
+    "function": {
+        "name": SPAWN_SUBAGENT_TOOL_NAME,
+        "description": (
+            "把一个子任务委派给独立上下文的子 agent，返回其摘要。"
+            "适合大范围探索、并行调研或需要隔离上下文的任务。"
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "agent": {
+                    "type": "string",
+                    "description": "agent 类型（explore/plan/general-purpose 或自定义名）",
+                },
+                "task": {"type": "string", "description": "委派给子 agent 的任务描述"},
+            },
+            "required": ["agent", "task"],
+        },
+    },
+}
+
+
 def collect_control_tools(
     clarify: ClarifyConfig,
     *,
     plan_mode: bool = False,
     has_plan: bool = False,
+    skills_enabled: bool = False,
+    subagents_enabled: bool = False,
 ) -> list[dict]:
     """按当前模式收集应下发给模型的控制工具。
 
@@ -118,6 +169,8 @@ def collect_control_tools(
     - `present_plan`：仅 **plan 模式**（`plan_mode=True`）并入。
     - `update_plan`：仅 **执行期**（`has_plan=True` 且 **非** plan 模式）并入——
       用于更新计划进度（M1.4 设计约束：update_plan 在「非 plan 模式」下使用）。
+    - `use_skill`：仅当 `skills_enabled=True` 并入。
+    - `spawn_subagent`：仅当 `subagents_enabled=True` 并入。
     """
     tools: list[dict] = []
     if clarify.enabled:
@@ -126,4 +179,8 @@ def collect_control_tools(
         tools.append(PRESENT_PLAN_TOOL)
     if has_plan and not plan_mode:
         tools.append(UPDATE_PLAN_TOOL)
+    if skills_enabled:
+        tools.append(USE_SKILL_TOOL)
+    if subagents_enabled:
+        tools.append(SPAWN_SUBAGENT_TOOL)
     return tools

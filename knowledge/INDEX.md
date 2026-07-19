@@ -324,7 +324,7 @@ flowchart TD
 - **核心改动**（`agent/obs/tracer.py`）：新增 `contextvars.ContextVar("_current_span")`；`_SpanCtx.__enter__` 自动从 contextvar 读取隐式 parent 并 push 当前 span；`__exit__` pop 恢复；`Tracer.span()` 新增可选 `parent_override` 参数（None 表示从 contextvar 继承）。新增 `Tracer.reset_current_span()` 类方法用于根 span 隔离。
 - **适配**（`agent/core/loop.py`）：`run()` 入口调用 `Tracer.reset_current_span()` 确保根 span 不受外部 contextvar 影响；移除 `model.act` 和 `tool.exec` 的显式 `parent=...` 传参（contextvar 自动继承）。
 - **零改动受益**：`auto_compact.py`、`model.py`、`manager.py` 均无需修改——`AutoCompact._call_model()` 内的 `model.act()` 自动继承当前 contextvar 中的 span 作为父 span。
-- **根 span 隔离铁律**：`agent.run` 根 span 创建前必须调用 `Tracer.reset_current_span()`，否则可能误继承上一轮循环的残留 span。
+- **根 span 隔离铁律（M5 已演进）**：原「`agent.run` 前必须 `Tracer.reset_current_span()`」在 M5 被取代——`Session` 现在创建 `root_span`（`kind="session"`）作为整条 session 的 trace 锚点，`Session.step` 把 `root_span` 作为 `agent.run` 的显式 `parent_span`；`Tracer.reset_current_span()` 已删除，parentage 不再依赖 contextvar 隐式状态，也不存在「误继承残留 span」风险。
 - **测试**：`tests/test_obs.py` 追加 5 个用例（隐式 parent、显式覆盖、嵌套恢复、根隔离、异常安全）。全量 `pytest` **256 passed**（原 251，+5 无回归）。
 
 
@@ -335,11 +335,58 @@ flowchart TD
 - **路径约定（对齐 `.agent` 隔离）**：Skill 存 `<project>/.agent/skills/<name>/SKILL.md` 与 `~/.agent/skills/`；Agent 存 `<project>/.agent/agents/<name>.md` 与 `~/.agent/agents/`；**项目级 > 用户级**。
 - **Skill 触发双轨**：`description`(+`when_to_use`) 常驻系统提示（低成本），正文仅 `use_skill` 调用时读取并注入 conv（绝不让所有正文常驻）。
 - **Subagent 复用无状态 `AgentLoop`**：只传独立 `messages=[]` 即隔离上下文；可注入不同 `model`/`registry`/`sandbox`/`gate`。
-- **Trace 父子铁律**：子 agent 经 `SubagentSpawner.spawn(..., parent_span=父span)` 调起，`AgentLoop.run` 在 `parent_span` 给定时**跳过 `reset_current_span()`** 并用 `parent_override` 指回父（否则子 span 跑到根，见 loop.py:118）。
+- **Trace 父子铁律**：子 agent 经 `SubagentSpawner.spawn(..., parent_span=父span)` 调起，`AgentLoop.run` 用 `parent=parent_span` 显式挂到父调用链下（主循环=`session.root_span`，子 agent=父 `agent.run` span）。`Tracer.reset_current_span()` 已删除，`loop.py:118` 旧引用失效，parentage 不再依赖 contextvar 隐式状态。
 - **摘要返回**：父 agent 只拿 `AgentResult.text`，子 agent 内部事件流不进父 `EventStream`。
 - **深度限制 5**：`spawn` 入口 `if depth >= max_depth: raise RecursionError`；每次 `depth+1`。
 - **工具白名单**：子 `registry` = `base_registry` 子集（`tools` 保留 / `disallowed_tools` 移除）。
 - **内置类型**：`explore`/`plan`（只读，拒 write/edit，跳过会话文件）/`general-purpose`（全工具）。
+
+### M5.1 SkillLoader 基础（落地）
+
+> 来源：`milestones/M5-扩展能力/5.1-SkillLoader基础.md`；代码 `agent/skills/{spec,loader,__init__}.py` + `tests/test_skills.py`（22 passed，无回归）。
+
+- **接口**：`SkillSpec`(dataclass，frontmatter 字段全映射) + `SkillLoader(project_root, user_root=None)`。`discover()` 扫 `<project_root>/.agent/skills/*` 与 `<user_root>/skills/*`（项目级同名覆盖用户级，后写覆盖先写）；`get(name)`/`catalog_prompt()`/`is_auto_enabled(spec, current_file)`。
+- **frontmatter 解析**：复用 `agent.core.prompts._split_frontmatter`；`_meta_get` 兼容 snake_case 与 kebab-case 两种 key（如 `disable_model_invocation` / `disable-model-invocation`）；**解析异常降级**为「空元数据」仍保留 skill（不抛错）。
+- **触发目录双轨（不变量）**：`catalog_prompt()` 只输出 `- <name>: <trigger_text>`（name + description+when_to_use，截断 1536 字符），**绝不含 SKILL.md 正文**；正文仅在 `SkillSpec.body()`/`render_body()` 显式调用时才读文件并缓存（`_body_cache`），`discover` 阶段零正文进入上下文。
+- **参数替换规则**（`render_body(args, named)`）：`$ARGUMENTS`→全部参数串；`$ARGUMENTS[N]`/`$N`→0 基索引（越界保留原 token）；`$name`→`arguments` 声明的命名参数（由 `named` 提供）；`${SKILL_DIR}`→`spec.path.resolve()`；`\$`→字面 `$`（先占位保护再还原）。**关键**：正文不含 `$ARGUMENTS` token 但传入了参数时，自动追加 `\n\nARGUMENTS: <joined>`（避免模型参数丢失，对齐 Claude Code 行为）—— 测试 `test_render_body_index_args` 已覆盖此分支。
+- **自动启用判定**（`is_auto_enabled`）：`disable_model_invocation=True` → False；`paths` 设 Glob → 仅 `current_file` 匹配其一返回 True（无 `current_file` 时 False，`**` 写法归一化为 `*` 兼容 fnmatch）；否则 True。`user_invocable` 不进自动门控（留给 M5.4 的 `/skill` 菜单）。
+- **body 归一化**：`body()` 末尾 `rstrip("\n")`，注入更干净（测试期望不含尾换行）。
+- **多文件包**：`scripts/`/`references/`/`assets/` 由正文相对链接引用，模型按需 `read`（M5.1 仅做发现/解析，调用注入在 M5.3）。
+
+### M5.3 集成与工具白名单（落地）
+
+> 来源：`milestones/M5-扩展能力/5.3-集成与工具白名单.md`；代码 `agent/core/loop.py`/`control_tools.py`/`session.py`/`settings.py`/`system.md`/`subagent.py` + `tests/test_loop.py` 新增 10 用例。全量 `pytest` 310 passed。
+
+- **控制工具接入**：`control_tools.collect_control_tools` 新增 `skills_enabled`/`subagents_enabled` 关键字（默认 False）；`loop._model_tools` 按 `settings.skills.enabled and skill_loader is not None` 等计算是否下发 `use_skill`/`spawn_subagent`。
+- **Skill 触发目录注入**：`loop._system_prompt` 在 `skill_loader` 非空时取 `catalog_prompt()` 注入 `system.md` 的 `skills_catalog` 变量（仅 name+trigger_text，正文不进系统提示——双轨不变量仍成立）。
+- **Subagent 触发目录注入（同机制）**：`SubagentSpawner.catalog_prompt()` 列出可用 agent 类型（内置 `explore`/`plan`/`general-purpose` + 项目/用户级自定义，同名覆盖），`loop._system_prompt` 在 `subagent_spawner` 非空时注入 `agents_catalog` 变量（独立 `{% if agents_catalog %}` 段，`## Sub-agents`）。**只列 name+description+工具约束，绝不灌 agent 的 system_prompt 正文**。`general-purpose` 是内置（可探索+修改，`tools=None` 继承全部），此前因无 catalog 暴露、系统提示只写死 `explore` 例子，模型看不到它——现已修复。
+- **use_skill 分支**：`loop._tool_use_skill` → `spec.render_body(args)` → 正文压入 `self._pending_skill_injections`；`run()` 每轮把待注入正文作为 **user 消息**追加到 conv 末尾（与 tool 结果分离，持久供后续轮次）。`use_skill`/`spawn_subagent` 作为控制工具**不进真实 registry**，由 `_exec_tools` 在 `registry.get` 之前拦截。
+- **spawn_subagent 分支**：`loop._tool_spawn_subagent` → `subagent_spawner.get(agent_name)`（含内置类型）→ `spawn(spec, task, depth=self._current_depth+1, parent_span=self._agent_span, base_registry, base_model, parent_transport, parent_sandbox, parent_gate)` → 返回 `[Subagent <name>]\n<text>` 摘要；`RecursionError` 降级为 `ToolResult(ok=False)`。
+- **深度累加**：`subagent.spawn` 内 `loop._current_depth = depth` 传给子 loop，使嵌套 `spawn` 的 `depth+1` 正确累加；`depth>=max_depth` 抛 `RecursionError`。
+- **初始化约定**：`AgentLoop.__init__` 必须显式初始化 `self._agent_span=None` / `self._transport=None`（两者在 `run()` 内设置；直接调 `_tool_spawn_subagent` 测试/路径时需回退 None，否则 AttributeError）。
+- **Session 注入**：`Session.__init__` 按 `settings.skills.enabled`/`settings.subagents.enabled` 构造 `SkillLoader(AGENT_PROJECT_ROOT or cwd)` / `SubagentSpawner(settings, max_depth=settings.subagents.max_depth)` 并传给 `AgentLoop`。
+- **配置**：`Settings` 新增 `skills: SkillsConfig(enabled, dirs)` / `subagents: SubagentsConfig(enabled, max_depth, auto_allow)`。
+- **测试技巧**：完整 `run()` + `spawn_subagent` 难以用单一 `FakeModel` 共享（父子消费同一队列冲突），spawn 路径测试直接调 `_tool_spawn_subagent` 并给子 agent 独立 `FakeModel`，父 loop 不跑 `run`。
+- **Subagent 触发目录（后续补）**：`SubagentSpawner.catalog_prompt()` 列出可用 agent 类型（内置 explore/plan/general-purpose + 自定义），`loop._system_prompt` 注入 `agents_catalog` 变量（`system.md` 独立 `## Sub-agents` 段），只列 name+description+工具约束、绝不灌 agent 正文。此前系统提示只写死 `explore` 例子，模型看不到 `general-purpose`，已修复。
+
+### M5.4 CLI 命令（落地）
+
+> 来源：`milestones/M5-扩展能力/5.4-CLI命令.md`；代码 `agent/core/transport.py`/`agent/runtime/terminal_transport.py`/`agent/skills/loader.py`/`agent/subagent.py`/`agent/core/session.py`/`agent/cli.py` + `tests/test_cli.py` 新增 3 用例。全量 `pytest` 314 passed。
+
+- **Transport 协议扩展**：`AgentTransport` 新增 `show_skills(specs)` / `show_agents(specs)`（默认 `...` 占位，不破坏既有实现）。`TerminalTransport` 用 rich `Table` 渲染：`show_skills`(name/description/paths/模式[自动|仅手动|不可手动])、`show_agents`(name+（内置/自定义）/description/tools/model)；**两者均不含正文**（双轨不变量）。
+- **精简列表**：`SkillLoader.summaries()` → `SkillSummary`(name/description/paths/user_invocable/disable_model_invocation)；`SubagentSpawner.summaries()` → `AgentSummary`(name/description/tools/disallowed_tools/model/permission_mode/builtin)。两者每次重新 `discover()`（实时重扫），不读正文。
+- **Session 持有依赖**：`Session.__init__` 把 `skill_loader`/`subagent_spawner` 存为 `self` 属性（M5.3 只局部传参未持有，导致 CLI 无法直接查询）；新增 `list_skills()`/`list_agents()`（禁用时返回 `[]`）。
+- **chat REPL 命令**：`/skills`→`show_skills(list_skills())`；`/agents`→`show_agents(list_agents())`；`/skill <name>`→命则把 `[Skill <name>]\n{spec.render_body()}` 作为 **user 消息追加到 `session.messages`**（等价于模型调 `use_skill`），未命中则 `notify("未找到 skill: <name>")`；裸 `/skill` 提示用法。所有命令 `continue`，**不调模型**。
+- **大小写约定**：命令匹配用 `cmd.lower()`，但 `/skill` 名字提取用原 `task`（保留大小写）。
+
+### M5.5 测试与验收（落地）
+
+> 来源：`milestones/M5-扩展能力/5.5-测试与验收.md`。全量 `pytest` **314 passed**（M1–M4 零回归）。
+
+- **测试统计**：`test_skills.py` 30 用例、`test_subagent.py` 24 用例、`test_loop.py` M5.3 追加 10 用例、`test_cli.py` M5.4 追加 3 用例，均远超最低要求（≥10/≥12/≥6/≥3）。
+- **不变量全绿**：① Skill 正文不在 discover 进上下文；② 子 agent messages 与父隔离；③ 主 EventStream 不含子内部事件；④ 深度≥max_depth 抛 `RecursionError`；⑤ 子 span parent 到父。
+- **覆盖率**：目标 `agent/skills/` 与 `agent/subagent.py` ≥80%；本环境未装 `pytest-cov`，未实测（需 `pip install pytest-cov` 后复核）。
+- **M5 总览**：5.1–5.5 全部落地——Skill 双轨加载/触发目录 + Subagent（内置 explore/plan/general-purpose + 自定义、白名单/权限/深度/隔离/Trace 父子）完整接入主循环与 CLI。
 
 ### M4.3 压缩流程 trace 埋点（落地）
 

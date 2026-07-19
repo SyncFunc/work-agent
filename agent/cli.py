@@ -22,7 +22,7 @@ from rich.tree import Tree
 
 
 from agent.config.settings import load_settings
-from agent.core.model import create_model
+from agent.core.model import Message, create_model
 from agent.core.session import Session
 from agent.obs.tracer import Tracer
 from agent.obs.store import TraceStore
@@ -133,7 +133,8 @@ def chat() -> None:
     """交互式 REPL：多轮对话，单一会话持续累积历史。
 
     任意轮次用命令切换模式：/plan（探索） / exec（执行） / approve（批准计划并切执行）
-    / mode（查看当前模式）。输入 exit/quit 退出。
+    / mode（查看当前模式）。扩展命令：/skills（列出 skill）、/agents（列出 subagent 类型）、
+    /skill <name>（显式加载某 skill 到下一轮）。输入 exit/quit 退出。
     """
     settings = load_settings()
     try:
@@ -149,7 +150,7 @@ def chat() -> None:
     session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store)
     transport = TerminalTransport(interactive=True)
 
-    typer.echo("进入 chat 模式（/plan /exec 切换模式；exit/quit 退出）。")
+    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；exit/quit 退出）。")
     while True:
         try:
             task = typer.prompt("you")
@@ -183,6 +184,31 @@ def chat() -> None:
         if cmd in {"/mode"}:
             typer.echo(f"→ 当前模式：{'PLAN' if session.plan_mode else 'EXEC'}"
                        + (f"，计划：{session.plan_path}" if session.plan_path else ""), err=True)
+            continue
+        # ---- M5.4：Skill / Subagent 命令（仅改 Session 状态，不调模型）----
+        if cmd in {"/skills"}:
+            transport.show_skills(session.list_skills())
+            continue
+        if cmd in {"/agents"}:
+            transport.show_agents(session.list_agents())
+            continue
+        if cmd in {"/skill"}:
+            typer.echo("用法: /skill <name>  —— 显式加载某 skill 到下一轮对话", err=True)
+            continue
+        if cmd.startswith("/skill "):
+            name = task.strip()[len("/skill "):].strip()  # 保留原名大小写
+            if session.skill_loader is None:
+                typer.echo("skills 未启用（settings.skills.enabled=false）", err=True)
+            else:
+                spec = session.skill_loader.get(name)
+                if spec is None:
+                    typer.echo(f"未找到 skill: {name}", err=True)
+                else:
+                    # 等价于模型调 use_skill：把渲染后的正文作为 user 消息注入下一轮
+                    session.messages.append(Message(
+                        role="user", content=f"[Skill {name}]\n{spec.render_body()}"
+                    ))
+                    typer.echo(f"已加载 skill: {name}", err=True)
             continue
 
         try:

@@ -31,6 +31,7 @@ from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.syntax import Syntax
+from rich.table import Table
 from rich.text import Text
 
 from agent.core.control_tools import (
@@ -428,6 +429,59 @@ class TerminalTransport(AgentTransport):
 
     def notify(self, message: str) -> None:
         typer.echo(message, err=True)
+
+    # ------------------------------------------------------------------ #
+    # M5.4：Skill / Subagent 列表面板（仅展示 name+描述等精简信息，不含正文）
+    # ------------------------------------------------------------------ #
+    def show_skills(self, specs: list) -> None:
+        """展示已注册 Skill 列表（name / description / paths / 是否仅手动）。"""
+        title = "🧩 已注册 Skill"
+        if not specs:
+            self._console.print(Panel("(无 skill)", title=title, border_style="blue", expand=False))
+            return
+        table = Table(show_header=True, header_style="bold", expand=False)
+        table.add_column("name", style="cyan", no_wrap=True)
+        table.add_column("description")
+        table.add_column("paths", style="dim")
+        table.add_column("模式", style="yellow")
+        for s in specs:
+            mode = []
+            if getattr(s, "disable_model_invocation", False):
+                mode.append("仅手动")
+            if not getattr(s, "user_invocable", True):
+                mode.append("不可手动")
+            paths = ", ".join(getattr(s, "paths", []) or [])
+            table.add_row(
+                s.name,
+                (s.description or "")[:80],
+                paths,
+                "/".join(mode) if mode else "自动",
+            )
+        self._console.print(Panel(table, title=title, border_style="blue", expand=False))
+
+    def show_agents(self, specs: list) -> None:
+        """展示已注册 Subagent 类型（name / description / tools / model）。"""
+        title = "🤖 已注册 Subagent 类型"
+        if not specs:
+            self._console.print(Panel("(无 subagent)", title=title, border_style="blue", expand=False))
+            return
+        table = Table(show_header=True, header_style="bold", expand=False)
+        table.add_column("name", style="cyan", no_wrap=True)
+        table.add_column("description")
+        table.add_column("tools", style="green")
+        table.add_column("model", style="dim")
+        for s in specs:
+            tools = getattr(s, "tools", None)
+            tools_s = ", ".join(tools) if tools else ("禁用:" + ", ".join(getattr(s, "disallowed_tools", []) or []) if getattr(s, "disallowed_tools", None) else "全部")
+            model = getattr(s, "model", None) or "inherit"
+            scope = "（内置）" if getattr(s, "builtin", False) else "（自定义）"
+            table.add_row(
+                s.name + scope,
+                (s.description or "")[:80],
+                tools_s,
+                model,
+            )
+        self._console.print(Panel(table, title=title, border_style="blue", expand=False))
 
     async def approve(self, action: "Action") -> bool:
         """审批面板：展示待审批的操作并等待用户 y/N 确认。"""

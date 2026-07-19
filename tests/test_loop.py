@@ -5,16 +5,20 @@
 """
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
 from agent.config.settings import Settings
+from agent.core.control_tools import SPAWN_SUBAGENT_TOOL_NAME, USE_SKILL_TOOL_NAME
 from agent.core.events import EventStream
 from agent.core.loop import AgentLoop, LoopStalled
 from agent.core.model import Decision, FakeModel, RecordingModel, ToolCall
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.runtime.sandbox import FakeExecutor, SandboxProfile
+from agent.skills.loader import SkillLoader
+from agent.subagent import SubagentSpawner
 
 
 # --------------------------------------------------------------------------- #
@@ -421,3 +425,157 @@ async def test_unless_trused_exec_policy_skips_ask():
     )
     await loop.run("task", transport=transport)
     assert len(fake.requests) == 1  # 已执行，未被拦
+
+
+# --------------------------------------------------------------------------- #
+# M5.3 集成：SkillLoader + SubagentSpawner 接入 AgentLoop
+# --------------------------------------------------------------------------- #
+def _make_skill_dir(root: Path, name: str, body: str, **front: str) -> Path:
+    d = root / ".agent" / "skills" / name
+    d.mkdir(parents=True, exist_ok=True)
+    fm = "---\n" + "\n".join(f"{k}: {v}" for k, v in front.items()) + "\n---\n"
+    (d / "SKILL.md").write_text(fm + body, encoding="utf-8")
+    return d
+
+
+async def test_system_prompt_includes_skills_catalog_not_body(tmp_path):
+    _make_skill_dir(tmp_path, "demo", "SECRET BODY MUST NOT APPEAR IN SYSTEM PROMPT\n",
+                    description="demo skill desc")
+    loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
+    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
+                     skill_loader=loader)
+    sp = loop._system_prompt()
+    assert "demo" in sp
+    assert "demo skill desc" in sp
+    assert "SECRET BODY" not in sp  # 双轨不变量：正文不进系统提示
+
+
+async def test_system_prompt_lists_subagent_types():
+    spawner = SubagentSpawner(_settings())
+    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
+                     subagent_spawner=spawner)
+    sp = loop._system_prompt()
+    # 内置三种类型都应出现在触发目录（含 general-purpose）
+    assert "explore" in sp
+    assert "plan" in sp
+    assert "general-purpose" in sp
+    # 不变量：agent 的 system_prompt 正文不应灌进系统提示
+    assert "你是通用执行 agent" not in sp
+
+
+async def test_use_skill_injects_body_into_conv(tmp_path):
+    _make_skill_dir(tmp_path, "demo", "DEMO BODY: do the thing\n",
+                    description="demo skill")
+    loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
+    model = FakeModel([
+        Decision(tool_calls=[ToolCall(id="s1", name=USE_SKILL_TOOL_NAME,
+                                      arguments={"name": "demo"})]),
+        Decision(text="done"),
+    ])
+    loop = AgentLoop(model, _make_registry(), _settings(), skill_loader=loader)
+    res = await loop.run("task")
+    assert res.text == "done"
+    user_msgs = [m for m in res.messages if m.role == "user"]
+    assert any("DEMO BODY" in (m.content or "") for m in user_msgs)
+    tr = next(e for e in res.events if e.type == "tool_result")
+    assert tr.tool_result is not None and tr.tool_result.ok
+
+
+def test_use_skill_unknown_returns_error():
+    loader = SkillLoader(Path("/nonexistent-project"), user_root=Path("/nonexistent-user"))
+    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
+                     skill_loader=loader)
+    res = loop._tool_use_skill(ToolCall(id="s1", name=USE_SKILL_TOOL_NAME,
+                                        arguments={"name": "nope"}))
+    assert not res.ok
+    assert "unknown skill" in res.error
+
+
+async def test_control_tools_present_when_enabled(tmp_path):
+    loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
+    spawner = SubagentSpawner(_settings())
+    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
+                     skill_loader=loader, subagent_spawner=spawner)
+    names = [t["function"]["name"] for t in loop._model_tools()]
+    assert USE_SKILL_TOOL_NAME in names
+    assert SPAWN_SUBAGENT_TOOL_NAME in names
+
+
+async def test_control_tools_absent_when_disabled(tmp_path):
+    s = _settings()
+    s.skills.enabled = False
+    s.subagents.enabled = False
+    loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
+    spawner = SubagentSpawner(_settings())
+    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), s,
+                     skill_loader=loader, subagent_spawner=spawner)
+    names = [t["function"]["name"] for t in loop._model_tools()]
+    assert USE_SKILL_TOOL_NAME not in names
+    assert SPAWN_SUBAGENT_TOOL_NAME not in names
+
+
+async def test_spawn_subagent_returns_summary():
+    spawner = SubagentSpawner(_settings())
+    child_model = FakeModel([Decision(text="explore result")])
+    loop = AgentLoop(child_model, _make_registry(), _settings(), subagent_spawner=spawner)
+    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
+                  arguments={"agent": "explore", "task": "find stuff"})
+    res = await loop._tool_spawn_subagent(tc)
+    assert res.ok
+    assert res.output.startswith("[Subagent explore]")
+    assert "explore result" in res.output
+
+
+async def test_spawn_subagent_depth_limit_returns_error():
+    spawner = SubagentSpawner(_settings(), max_depth=1)
+    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
+                     subagent_spawner=spawner)
+    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
+                  arguments={"agent": "explore", "task": "t"})
+    res = await loop._tool_spawn_subagent(tc)
+    assert not res.ok
+    assert "depth" in res.error.lower()
+
+
+async def test_explore_subagent_runs_bash_without_approval():
+    spawner = SubagentSpawner(_settings())
+    child_model = FakeModel([
+        Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "echo hi"})]),
+        Decision(text="done"),
+    ])
+    loop = AgentLoop(child_model, _bash_registry(), _settings(), subagent_spawner=spawner)
+    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
+                  arguments={"agent": "explore", "task": "ls"})
+    res = await loop._tool_spawn_subagent(tc)
+    assert res.ok
+    assert "done" in res.output  # explore(gate=never) 不弹审批，直接执行并收尾
+
+
+async def test_spawn_subagent_explore_rejects_write():
+    spawner = SubagentSpawner(_settings())
+    child_model = FakeModel([
+        Decision(tool_calls=[ToolCall(id="w1", name="write",
+                                      arguments={"path": "x", "content": "y"})]),
+        Decision(text="recovered"),
+    ])
+    loop = AgentLoop(child_model, _make_registry(), _settings(), subagent_spawner=spawner)
+    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
+                  arguments={"agent": "explore", "task": "t"})
+    res = await loop._tool_spawn_subagent(tc)
+    assert res.ok
+    # explore 白名单拒 write → 子 agent 恢复并返回 "recovered"
+    assert "recovered" in res.output
+
+
+async def test_parent_eventstream_clean_after_spawn():
+    """不变量：子 agent 内部事件不进主 EventStream（spawn 用独立 stream）。"""
+    spawner = SubagentSpawner(_settings())
+    child_model = FakeModel([Decision(text="sub done")])
+    loop = AgentLoop(child_model, _make_registry(), _settings(), subagent_spawner=spawner)
+    parent_stream = EventStream()
+    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
+                  arguments={"agent": "explore", "task": "t"})
+    res = await loop._tool_spawn_subagent(tc)
+    assert res.ok
+    # _tool_spawn_subagent 不向父 stream 写任何子内部事件
+    assert len(parent_stream) == 0

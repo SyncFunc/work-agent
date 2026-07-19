@@ -67,6 +67,14 @@ class AgentTransport(Protocol):
         """输出一条提示/状态信息（非最终答案，如模式切换、计划未确认等）。"""
         ...
 
+    def show_skills(self, specs: list) -> None:
+        """展示已注册 Skill 列表（name / description / paths 等精简信息，不含正文）。"""
+        ...
+
+    def show_agents(self, specs: list) -> None:
+        """展示已注册 Subagent 类型（name / description / tools / model 等精简信息）。"""
+        ...
+
     def bind(self, stream: "EventStream") -> None:
         """订阅 ``EventStream`` 以渲染/转发事件（终端 rich / 未来 web 序列化）。
 

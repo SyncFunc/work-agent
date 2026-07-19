@@ -132,11 +132,6 @@ class Tracer:
         self.spans: list[Span] = []
         self.session_id: str = session_id or uuid.uuid4().hex[:12]
 
-    @classmethod
-    def reset_current_span(cls) -> None:
-        """重置隐式当前 span 为 None（在根 span 创建前调用）。"""
-        _CURRENT_SPAN.set(None)
-
     def span(self, name: str, kind: str = "span", parent: Span | None = None) -> _SpanCtx:
         s = Span(
             id=uuid.uuid4().hex[:8],

@@ -15,13 +15,15 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, TYPE_CHECKING
 
 from agent.config.settings import Settings
 from agent.core.control_tools import (
     ASK_CLARIFICATION_TOOL_NAME,
     UPDATE_PLAN_TOOL_NAME,
     PRESENT_PLAN_TOOL_NAME,
+    USE_SKILL_TOOL_NAME,
+    SPAWN_SUBAGENT_TOOL_NAME,
     collect_control_tools,
 )
 from agent.core.events import Event, EventStream
@@ -34,6 +36,10 @@ from agent.obs.tracer import Tracer, _span
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, UnknownTool
 from agent.runtime.sandbox import ExecRequest, Executor, SandboxProfile
+
+if TYPE_CHECKING:
+    from agent.skills.loader import SkillLoader
+    from agent.subagent import SubagentSpawner
 
 
 class LoopMaxIteration(RuntimeError):
@@ -76,6 +82,8 @@ class AgentLoop:
         plan_path: str | None = None,
         sandbox: "Executor | None" = None,
         gate: "ApprovalGate | None" = None,
+        skill_loader: "SkillLoader | None" = None,
+        subagent_spawner: "SubagentSpawner | None" = None,
     ) -> None:
         self.model = model
         self.registry = registry
@@ -85,6 +93,14 @@ class AgentLoop:
         self.plan_path = plan_path
         self.sandbox = sandbox
         self.gate = gate
+        self.skill_loader = skill_loader
+        self.subagent_spawner = subagent_spawner
+        self._agent_span = None  # 由 run() 内的 _span 上下文设置；直接调工具时回退为 None
+        self._transport = None    # 由 run() 设置；直接调工具时回退为 None
+        # 嵌套深度：主 loop 从 0 起；子 loop 由 SubagentSpawner 设置
+        self._current_depth: int = 0
+        # use_skill 待注入 conv 的正文（run 每轮结束时统一追加为 user 消息）
+        self._pending_skill_injections: list[str] = []
 
     async def run(
         self,
@@ -95,12 +111,15 @@ class AgentLoop:
         plan_mode: bool | None = None,
         plan_path: str | None = None,
         transport: "AgentTransport | None" = None,
+        system_prompt: str | None = None,
+        parent_span=None,
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
         self._run_pm = pm
         self._run_pp = pp
         self._transport = transport
+        self._run_system_prompt = system_prompt
 
         conv = list(messages) if messages else []
         conv.append(Message(role="user", content=task))
@@ -113,12 +132,12 @@ class AgentLoop:
         repeat_count = 0
         ct = clarify_total
 
-        # 重置隐式 parent，确保 agent.run 为根 span（不受外部 contextvar 影响）
-        Tracer.reset_current_span()
-
-        with _span(self.tracer, "agent.run", kind="agent") as self._agent_span:
+        # agent.run 的 parent 由 parent_span 显式指定：主循环=session.root_span，
+        # 子 agent=调用方的 agent.run span。不再依赖 contextvar 隐式状态，也不需 reset。
+        # 并行安全：子 agent 各自独立 asyncio.Task + 显式 parent。
+        with _span(self.tracer, "agent.run", kind="agent", parent=parent_span) as self._agent_span:
             for i in range(self.settings.loop.max_iterations):
-                decision = await self._decide(conv, stream, plan_mode=pm, plan_path=pp)
+                decision = await self._decide(conv, stream, plan_mode=pm, plan_path=pp, system_prompt=self._run_system_prompt)
                 if decision.usage:
                     for k, v in decision.usage.items():
                         usage_total[k] = usage_total.get(k, 0) + v
@@ -203,6 +222,12 @@ class AgentLoop:
                     conv.append(
                         Message(role="tool", content=res.output or res.error, tool_call_id=tc.id)
                     )
+                # use_skill 注入：把渲染后的 skill 正文作为 user 消息追加到 conv 末尾，
+                # 与 tool 结果分离，供后续轮次使用（保持对话结构清晰）。
+                if self._pending_skill_injections:
+                    for _inj in self._pending_skill_injections:
+                        conv.append(Message(role="user", content=_inj))
+                    self._pending_skill_injections.clear()
 
         notice = (
             f"⚠️ 已到达最大轮次上限（{self.settings.loop.max_iterations}），本轮未产出最终答案。"
@@ -219,8 +244,13 @@ class AgentLoop:
     async def _decide(
         self, conv: list[Message], stream: EventStream, *,
         plan_mode: bool = False, plan_path: str | None = None,
+        system_prompt: str | None = None,
     ) -> Decision:
-        full = [Message(role="system", content=self._system_prompt(plan_mode=plan_mode, plan_path=plan_path))] + conv
+        if system_prompt is not None:
+            sys_content = system_prompt
+        else:
+            sys_content = self._system_prompt(plan_mode=plan_mode, plan_path=plan_path)
+        full = [Message(role="system", content=sys_content)] + conv
         decision: Decision | None = None
         with _span(self.tracer, "model.act", kind="model") as mspan:
             if mspan is not None:
@@ -252,7 +282,15 @@ class AgentLoop:
 
     def _model_tools(self, *, plan_mode: bool = False, plan_path: str | None = None) -> list[dict]:
         registry_tools = [spec.to_openai() for spec in self.registry.list()]
-        control = collect_control_tools(self.settings.clarify, plan_mode=plan_mode, has_plan=bool(plan_path))
+        skills_enabled = self.settings.skills.enabled and self.skill_loader is not None
+        subagents_enabled = self.settings.subagents.enabled and self.subagent_spawner is not None
+        control = collect_control_tools(
+            self.settings.clarify,
+            plan_mode=plan_mode,
+            has_plan=bool(plan_path),
+            skills_enabled=skills_enabled,
+            subagents_enabled=subagents_enabled,
+        )
         return registry_tools + control
 
     def _system_prompt(self, *, plan_mode: bool = False, plan_path: str | None = None) -> str:
@@ -261,6 +299,12 @@ class AgentLoop:
             _net_allowed = SandboxProfile(self.settings.sandbox.profile) == SandboxProfile.DANGER_FULL
         except ValueError:
             _net_allowed = False
+        catalog = ""
+        if self.skill_loader is not None:
+            catalog = self.skill_loader.catalog_prompt()
+        agents_catalog = ""
+        if self.subagent_spawner is not None:
+            agents_catalog = self.subagent_spawner.catalog_prompt()
         return prompt.render(
             clarify_enabled=self.settings.clarify.enabled,
             plan_mode=plan_mode,
@@ -269,6 +313,8 @@ class AgentLoop:
             approval_mode=self.settings.approval.mode,
             network_allowed=_net_allowed,
             sandbox_exec_policy=list(self.settings.approval.exec_policy),
+            skills_catalog=catalog,
+            agents_catalog=agents_catalog,
         )
 
     @staticmethod
@@ -310,6 +356,13 @@ class AgentLoop:
                         plan_update={"step_id": step_id, "status": status, "note": note},
                     ))
                     return ToolResult(ok=True, output="progress updated")
+
+                # 控制工具：use_skill（按需加载 skill 正文注入 conv）
+                if tc.name == USE_SKILL_TOOL_NAME:
+                    return self._tool_use_skill(tc)
+                # 控制工具：spawn_subagent（委派子任务，回填摘要）
+                if tc.name == SPAWN_SUBAGENT_TOOL_NAME:
+                    return await self._tool_spawn_subagent(tc)
 
                 # 未知工具
                 try:
@@ -359,6 +412,54 @@ class AgentLoop:
             stream.append(Event(type="tool_use", tool_use=tc))
         results = list(await asyncio.gather(*(_one(tc) for tc in calls)))
         return results
+
+    # ------------------------------------------------------------------ #
+    # 控制工具实现：use_skill / spawn_subagent
+    # ------------------------------------------------------------------ #
+    def _tool_use_skill(self, tc: ToolCall) -> ToolResult:
+        """按需加载 skill 正文，渲染后注入 conv（正文不进系统提示）。"""
+        if self.skill_loader is None:
+            return ToolResult(ok=False, error="skill loader not available (skills disabled)")
+        a = tc.arguments or {}
+        name = a.get("name")
+        if not name:
+            return ToolResult(ok=False, error="use_skill requires 'name'")
+        spec = self.skill_loader.get(name)
+        if spec is None:
+            return ToolResult(ok=False, error=f"unknown skill: {name}")
+        args = a.get("args") or []
+        rendered = spec.render_body(args)
+        self._pending_skill_injections.append(rendered)
+        return ToolResult(ok=True, output=f"Skill '{name}' loaded and injected into context.")
+
+    async def _tool_spawn_subagent(self, tc: ToolCall) -> ToolResult:
+        """委派子任务给独立上下文子 agent，返回其摘要（子事件走独立 stream）。"""
+        if self.subagent_spawner is None:
+            return ToolResult(ok=False, error="subagent spawner not available (subagents disabled)")
+        a = tc.arguments or {}
+        agent_name = a.get("agent")
+        task = a.get("task")
+        if not agent_name or not task:
+            return ToolResult(ok=False, error="spawn_subagent requires 'agent' and 'task'")
+        spec = self.subagent_spawner.get(agent_name)
+        if spec is None:
+            return ToolResult(ok=False, error=f"unknown agent: {agent_name}")
+        parent_span = self._agent_span
+        try:
+            result = await self.subagent_spawner.spawn(
+                spec, task,
+                depth=self._current_depth + 1,
+                parent_span=parent_span,
+                base_registry=self.registry,
+                base_model=self.model,
+                parent_transport=self._transport,
+                parent_sandbox=self.sandbox,
+                parent_gate=self.gate,
+            )
+        except RecursionError as e:
+            return ToolResult(ok=False, error=str(e))
+        summary = f"[Subagent {spec.name}]\n{result.text}"
+        return ToolResult(ok=True, output=summary)
 
     async def _run_bash_in_sandbox(
         self, args: dict[str, Any], elevated_profile: "SandboxProfile | None"

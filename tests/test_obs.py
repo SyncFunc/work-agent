@@ -220,20 +220,6 @@ def test_span_nested_restore():
     assert c.parent_id == b.id
 
 
-def test_span_root_after_reset():
-    """Tracer.reset_current_span() 后创建的 span 父为 None。"""
-    t = Tracer()
-    # 先在一个 span 内设置 contextvar
-    with t.span("old_root") as old:
-        pass
-    # 重置后创建新 span，应为根
-    Tracer.reset_current_span()
-    with t.span("new_root") as new:
-        pass
-    assert old.parent_id is None
-    assert new.parent_id is None
-
-
 def test_span_exception_safety():
     """with 块抛出异常后 contextvar 正确恢复。"""
     t = Tracer()

@@ -6,12 +6,15 @@ M3.3 增强：集成 Pipeline 保护 Sandbox 调用。
 
 from __future__ import annotations
 
+import time
+import uuid
 from typing import TYPE_CHECKING
 
 from agent.core.loop import AgentLoop
 from agent.core.model import Message
 from agent.core.transport import AgentTransport
 from agent.obs.store import TraceStore
+from agent.obs.tracer import Span
 
 if TYPE_CHECKING:
     from agent.core.intent import Question
@@ -29,6 +32,19 @@ class Session:
         self.settings = settings
         self.tracer = tracer
         self.trace_store: TraceStore | None = trace_store
+        # 会话级根 span：整条 session 的 trace 树锚点（所有 run 都挂在其下）。
+        # tracer 为 None 时不创建（无观测路径）；否则直接 new Span 并挂到 tracer，
+        # 生命周期跨多轮，不用 _span 上下文管理器（避免 per-step 关闭）。
+        self.root_span: Span | None = None
+        if tracer is not None:
+            self.root_span = Span(
+                id=uuid.uuid4().hex[:8],
+                name="session",
+                kind="session",
+                parent_id=None,
+                started_at=time.time(),
+            )
+            tracer.spans.append(self.root_span)
         sandbox_pipeline = build_sandbox_pipeline(settings)
         sandbox = build_executor(
             settings.sandbox.mode,
@@ -43,7 +59,29 @@ class Session:
             sandbox_profile=SandboxProfile(settings.sandbox.profile),
             elevated_profile=SandboxProfile(settings.approval.elevated_sandbox_profile),
         )
-        self.loop = AgentLoop(model, reg, settings, tracer=tracer, sandbox=sandbox, gate=gate)
+
+        # M5.3：构造 SkillLoader / SubagentSpawner 并接入 AgentLoop
+        import os
+
+        from agent.skills.loader import SkillLoader
+        from agent.subagent import SubagentSpawner
+
+        skill_loader = None
+        subagent_spawner = None
+        if settings.skills.enabled:
+            _proj = Path(os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd())
+            skill_loader = SkillLoader(_proj)
+        if settings.subagents.enabled:
+            subagent_spawner = SubagentSpawner(
+                settings, tracer=tracer, max_depth=settings.subagents.max_depth
+            )
+        self.loop = AgentLoop(
+            model, reg, settings, tracer=tracer, sandbox=sandbox, gate=gate,
+            skill_loader=skill_loader, subagent_spawner=subagent_spawner,
+        )
+        # M5.4：持有 loader/spawner 供 CLI 命令（/skills /agents /skill）直接查询
+        self.skill_loader = skill_loader
+        self.subagent_spawner = subagent_spawner
         self.messages: list[Message] = []
         self.clarify_total = 0
         self.plan_mode = plan_mode
@@ -66,6 +104,7 @@ class Session:
                 plan_mode=self.plan_mode,
                 plan_path=self.plan_path,
                 transport=transport,
+                parent_span=self.root_span,
             )
             self.messages = list(res.messages or self.messages)
             self.clarify_total = res.clarify_total
@@ -113,4 +152,22 @@ class Session:
 
     def _save_trace(self) -> None:
         if self.tracer is not None and self.trace_store is not None:
+            # 落盘时把根 span 的结束时间推进到当前（反映累计会话时长）
+            if self.root_span is not None and self.root_span.ended_at is None:
+                self.root_span.ended_at = time.time()
             self.trace_store.save_trace(self.tracer)
+
+    # ------------------------------------------------------------------ #
+    # M5.4：CLI 查询辅助（实时重扫：summaries() 内部重新 discover()）
+    # ------------------------------------------------------------------ #
+    def list_skills(self) -> list:
+        """已注册 Skill 精简列表；未启用返回 []。"""
+        if self.skill_loader is None:
+            return []
+        return self.skill_loader.summaries()
+
+    def list_agents(self) -> list:
+        """已注册 Subagent 类型精简列表；未启用返回 []。"""
+        if self.subagent_spawner is None:
+            return []
+        return self.subagent_spawner.summaries()

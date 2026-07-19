@@ -1,7 +1,7 @@
 # 里程碑 M5 扩展能力
 
 > 目标：交付 `SkillLoader` + `SubagentSpawner`，让 Agent **可组合、可伸缩**。
-> 设计依据：`knowledge/claude-code-subagents-skills.md`（Claude Code subagent/skill 机制调研 + 本项目对接点）。
+> 设计依据：`knowledge/claude-code-subagents-skills.md`（Subagents/Skills 机制调研 + 本项目对接点）。
 
 ## 目标
 
