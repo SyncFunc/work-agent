@@ -19,9 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from rich.live import Live
-from rich.panel import Panel
-
 
 @dataclass
 class AgentSummary:
@@ -45,7 +42,7 @@ from agent.obs.tracer import Tracer
 from agent.runtime.approval import ApprovalGate
 from agent.runtime.registry import ToolRegistry, default_registry
 from agent.runtime.sandbox import SandboxProfile, build_executor
-from agent.runtime.terminal_transport import TerminalTransport
+from agent.runtime.terminal_transport import _SubAgentTransport
 
 
 # --------------------------------------------------------------------------- #
@@ -114,91 +111,6 @@ BUILTIN_SESSION_MEMORY = AgentSpec(
 BUILTIN_SPECS: tuple[AgentSpec, ...] = (
     BUILTIN_EXPLORE, BUILTIN_PLAN, BUILTIN_GENERAL, BUILTIN_SESSION_MEMORY,
 )
-
-
-# --------------------------------------------------------------------------- #
-# _SubAgentTransport：子任务视图渲染 + 屏蔽独立 HITL
-# --------------------------------------------------------------------------- #
-class _SubAgentTransport(TerminalTransport):
-    """子 agent 传输：继承 TerminalTransport 获得完整渲染能力，但：
-
-    - 绑定独立（子）EventStream，事件以固定高度滚动框（Panel）渲染到同一终端，
-      不写入/混入父 agent 自己的 EventStream。
-    - 屏蔽独立 HITL：澄清/审批**不弹出子 agent 自己的交互**，而是委托给 ``parent``
-      传输由父代理统一决策（``parent`` 为 None 或非交互时，澄清抛错、审批自动放行）。
-    """
-
-    def __init__(
-        self, parent: "AgentTransport | None", *,
-        name: str = "subagent", panel_height: int = 15,
-    ) -> None:
-        interactive = bool(parent.interactive) if parent is not None else False
-        super().__init__(interactive=interactive)
-        self._parent = parent
-        self._name = name
-        self._panel_height = max(1, panel_height)
-        self._sub_live: Live | None = None
-        # 交互模式下用 record console 捕获所有 rich 输出，供框内刷新
-        if interactive:
-            from rich.console import Console as _RichConsole
-            self._console = _RichConsole(record=True)
-
-    @property
-    def interactive(self) -> bool:
-        return bool(self._parent.interactive) if self._parent is not None else False
-
-    def bind(self, stream) -> None:
-        if self.interactive:
-            self._sub_live = Live(
-                Panel(
-                    "(等待子 agent 输出…)",
-                    title=f"▶ subagent: {self._name}",
-                    border_style="dim",
-                    height=self._panel_height,
-                ),
-                console=self._console,
-                auto_refresh=False,
-            )
-            self._sub_live.start()
-        super().bind(stream)
-        # 额外订阅：每个事件后刷新滚动框
-        if self.interactive:
-            stream.subscribe(lambda _: self._refresh_sub_live())
-
-    def close(self) -> None:
-        if self._sub_live is not None:
-            self._sub_live.stop()
-            self._sub_live = None
-        super().close()
-
-    def _refresh_sub_live(self) -> None:
-        """从 record console 取文本，截取最后 panel_height 行刷新 Live 面板。"""
-        if self._sub_live is None:
-            return
-        text = self._console.export_text()
-        lines = text.splitlines()
-        if len(lines) > self._panel_height:
-            lines = lines[-self._panel_height:]
-        self._sub_live.update(
-            Panel(
-                "\n".join(lines) if lines else "(等待子 agent 输出…)",
-                title=f"▶ subagent: {self._name}",
-                border_style="blue",
-                height=self._panel_height,
-            )
-        )
-        self._sub_live.refresh()
-
-    async def ask(self, question) -> str:
-        if self._parent is not None and self._parent.interactive:
-            return await self._parent.ask(question)
-        raise RuntimeError("subagent 不应触发独立澄清交互（HITL 由父代理统一决策）")
-
-    async def approve(self, action) -> bool:
-        if self._parent is not None and self._parent.interactive:
-            return await self._parent.approve(action)
-        # 非交互（或 parent 为 None）：交给调用方配置的 gate 非交互默认放行
-        return True
 
 
 # --------------------------------------------------------------------------- #
@@ -353,13 +265,18 @@ class SubagentSpawner:
         loop._control_tools_enabled = not spec.no_control_tools
         # 让子 loop 继承当前深度，使嵌套 spawn 能正确累加（depth+1 传入）
         loop._current_depth = depth
-        result = await loop.run(
-            task,
-            messages=initial,
-            transport=sub_transport,
-            system_prompt=spec.system_prompt or None,
-            parent_span=parent_span,
-        )
+        try:
+            result = await loop.run(
+                task,
+                messages=initial,
+                transport=sub_transport,
+                system_prompt=spec.system_prompt or None,
+                parent_span=parent_span,
+            )
+        finally:
+            # loop.run 不会关闭 transport；必须显式关闭，否则子 agent 面板 slot 不注销、
+            # hub 的 Live 残留继续占用终端，污染后续父 agent 输出。
+            sub_transport.close()
         return result
 
     # ------------------------------------------------------------------ #

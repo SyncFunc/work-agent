@@ -26,7 +26,7 @@ from typing import Any
 
 import typer
 from prompt_toolkit import PromptSession
-from rich.console import Console
+from rich.console import Console, Group
 from rich.live import Live
 from rich.markdown import Markdown
 from rich.panel import Panel
@@ -37,6 +37,7 @@ from rich.text import Text
 from agent.core.control_tools import (
     ASK_CLARIFICATION_TOOL_NAME,
     UPDATE_PLAN_TOOL_NAME,
+    SPAWN_SUBAGENT_TOOL_NAME,
 )
 from agent.core.events import Event, EventStream
 from agent.core.intent import Question
@@ -102,6 +103,88 @@ def _render_steps_panel(steps: Any, *, title: str) -> Panel:
     return Panel("\n".join(lines), title=title, border_style="magenta", expand=False)
 
 
+class _PanelSlot:
+    """hub 中一个子 agent 面板槽：内容由子 agent 实时更新其 ``panel``。"""
+
+    __slots__ = ("title", "panel")
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+        self.panel = Panel("(等待子 agent 输出…)", title=title, border_style="dim")
+
+
+class SubagentPanelHub:
+    """顶层唯一的 Live 面板集：任意层级的子 agent 共用，避免并行渲染抢占同一终端。
+
+    原先每个子 agent 各自持有一个 ``Live`` 直接写真实终端，与父传输的内容 Live、与其
+    他并行子 agent 的 Live 互相用光标转义序列抢占，导致输出错乱、``▶ subagent`` 边框
+    被穿插进父 agent 文本。这里改为：所有子 agent 在 ``register`` 时获得一个 ``_PanelSlot``，
+    其事件累积进自身缓冲后通过 ``refresh`` 把全部 slot 以 ``Group`` 重绘进**同一个** ``Live``。
+    该 ``Live`` 在首个 slot 注册时惰性启动、最后一个 slot 注销时停止，从而与父传输自身的
+    内容 Live 错峰（子 agent 运行期间父内容 Live 已 ``stop()``）。
+
+    面板高度按当前并行子 agent 数动态平分终端高度，保证多子 agent 并行时整体仍落在屏幕内。
+    """
+
+    def __init__(self, console: Console) -> None:
+        self._console = console
+        self._slots: list[_PanelSlot] = []
+        self._live: Live | None = None
+
+    def register(self, title: str) -> _PanelSlot:
+        slot = _PanelSlot(title)
+        self._slots.append(slot)
+        self._ensure_started()
+        self.refresh()
+        return slot
+
+    def unregister(self, slot: _PanelSlot) -> None:
+        if slot in self._slots:
+            self._slots.remove(slot)
+        if not self._slots and self._live is not None:
+            self._live.stop()
+            self._live = None
+
+    def refresh(self) -> None:
+        """重绘所有子 agent 面板（单一 Live，并行安全：事件循环单线程，刷新天然串行）。"""
+        if self._live is not None:
+            self._live.update(self._render())
+            self._live.refresh()
+
+    def stop_all(self) -> None:
+        if self._live is not None:
+            self._live.stop()
+            self._live = None
+        self._slots.clear()
+
+    def slot_budget(self) -> int:
+        """单个 slot 内「内容」可用的高度预算（行），按并行子 agent 数动态平分终端高度。
+
+        子 agent 自身面板按内容自适应高度，仅当内容超过此预算时才裁剪最旧条目，因此并行
+        越多每个面板越矮、但不再有「固定高度撑出的大片空行」。
+        """
+        n = max(1, len(self._slots))
+        # 给若干行余量（各面板边框 + hub 自身），避免正好顶满触发滚动
+        per = max(3, (self._console.size.height - 2) // n)
+        # 减去外层面板自身上下边框（2 行），得到内部内容预算
+        return max(1, per - 2)
+
+    def _render(self) -> Group:
+        # 各 slot 面板已由 _SubAgentTransport 按内容自适应高度（不再强制固定高度），
+        # 这里只负责把全部 slot 以 Group 拼进唯一的 Live。
+        return Group(*(s.panel for s in self._slots))
+
+    def _ensure_started(self) -> None:
+        if self._live is None:
+            self._live = Live(
+                self._render(),
+                console=self._console,
+                auto_refresh=False,
+                screen=False,
+            )
+            self._live.start()
+
+
 class TerminalTransport(AgentTransport):
     """``AgentTransport`` 的 rich 终端实现：把 HITL 交互与事件流渲染统一到单一契约。"""
 
@@ -114,10 +197,27 @@ class TerminalTransport(AgentTransport):
         self._tool_live = None        # 工具调用参数流式预览的 Live（write/edit 内容实时显示）
         self._tc_by_id: dict[str, Any] = {}   # tool_use 事件收集，供 tool_result 取工具名
         self._plan_steps: list[Any] | None = None  # 计划步骤（show_plan 时记录，progress 增量更新）
+        # 子 agent 面板集（并行安全）：交互模式下创建一个顶层唯一 Live，所有层级的子 agent
+        # 共用；非交互则不创建（子 agent 走降级渲染，见 agent/subagent.py）。
+        # 用 _own_hub 记录「本传输自己拥有的 hub」：close 只停自己的，避免子 agent 的
+        # subagent_hub 属性（委派到父 hub）误停父 hub、连累其他并行子 agent。
+        self._own_hub: SubagentPanelHub | None = (
+            SubagentPanelHub(self._console) if interactive else None
+        )
 
     @property
     def interactive(self) -> bool:
         return self._interactive
+
+    @property
+    def subagent_hub(self) -> "SubagentPanelHub | None":
+        """本传输自身拥有的子 agent 面板 hub。
+
+        子 agent 的 ``_SubAgentTransport`` 同名属性是只读 property，委派到父传输的 hub，
+        使任意层级的子 agent 共用顶层唯一 Live；父传输（如主 TerminalTransport）这里直接
+        返回自己拥有的 hub。
+        """
+        return self._own_hub
 
     # ------------------------------------------------------------------ #
     # 渲染：由 bind 订阅的事件流驱动（取代原 LoopPresenter 回调）
@@ -292,6 +392,10 @@ class TerminalTransport(AgentTransport):
         # update_plan 结果不单独渲染：其步骤进度已由 on_plan_progress 以步骤列表展示
         if tc.name == UPDATE_PLAN_TOOL_NAME:
             return
+        # spawn_subagent 结果不单独渲染：子 agent 已有独立面板展示其摘要；重复打印不仅会
+        # 冗余，还可能在并行兄弟子 agent 的 Live 仍激活时抢占终端导致渲染错乱。
+        if tc.name == SPAWN_SUBAGENT_TOOL_NAME:
+            return
         # write / edit：以高亮 diff 面板流式展示实际改动（old→new），而非仅一句字符数
         if tc.name in (WRITE_TOOL_NAME, EDIT_TOOL_NAME) and res.ok and res.diff:
             diff = res.diff
@@ -348,6 +452,12 @@ class TerminalTransport(AgentTransport):
         self._stop_tool_live()
         self._commit_live()
         self._end_reasoning_segment()
+        # 收尾子 agent 面板集（若有未注销的 slot，统一停掉，避免残留 Live 抢占终端）。
+        # 仅停本传输自己拥有的 hub（子 agent 的 subagent_hub 是委派属性，会指向父 hub，
+        # 不能在此停——否则会误关父 hub 连累其他并行子 agent）。
+        if self._own_hub is not None:
+            self._own_hub.stop_all()
+
 
     def report_usage(self, usage: dict[str, int] | None, answer: str | None = None) -> None:
         if usage:
@@ -502,6 +612,240 @@ class TerminalTransport(AgentTransport):
         except (EOFError, KeyboardInterrupt):
             return False
         return ans.strip().lower() in {"y", "yes", "是"}
+
+
+# --------------------------------------------------------------------------- #
+# _SubAgentTransport：子 agent 子任务视图渲染（继承 TerminalTransport，屏蔽独立 HITL）
+# --------------------------------------------------------------------------- #
+class _SubAgentTransport(TerminalTransport):
+    """子 agent 传输：继承 TerminalTransport 获得 HITL 委托能力，但**不直接打印到真实终端**，
+    而是把事件累积为「带框条目」列表，统一由父传输的面板集（hub）以单一 Live 展示。
+
+    相比旧的「整段 Markdown 拼进一个固定高度面板」：
+    - 每次工具调用 / 结果 / 模型输出 / 思考都渲染为**独立带框 Panel**（嵌套在外层
+      ``▶ subagent`` 面板内），层级清晰，工具与模型输出都有框（修复「工具和模型输出没有框」）。
+    - 外层面板**按内容自适应高度**，仅在内容超过按并行数动态预算时才丢弃最旧条目，不再强行
+      撑到固定高度 → 不再出现大片空行（修复「始终有空行」）。
+    """
+
+    def __init__(
+        self,
+        parent: "AgentTransport | None", *,
+        name: str = "subagent", panel_height: int = 15,
+    ) -> None:
+        interactive = bool(parent.interactive) if parent is not None else False
+        super().__init__(interactive=interactive)
+        self._parent = parent
+        self._name = name
+        # 仅作信息性保留（旧测试引用）；渲染不再强制固定高度，改用终端动态预算
+        self._panel_height = max(3, panel_height)
+        self._slot = None
+        # 已定稿的带框条目：(rich renderable, 估计渲染行数)
+        self._entries: list[tuple[Any, int]] = []
+        self._stream_text = ""     # 当前流式模型输出（未定稿）
+        self._reasoning_text = ""  # 当前流式思考（未定稿）
+        # 仅交互模式：把自身面板注册进父 hub（所有层级共用顶层唯一 Live）。
+        # 用 getattr 容错：测试用的假父传输可能没有 hub（此时退化为无面板渲染）。
+        if interactive and parent is not None:
+            hub = getattr(parent, "subagent_hub", None)
+            if hub is not None:
+                self._slot = hub.register(f"▶ subagent: {self._name}")
+
+    @property
+    def interactive(self) -> bool:
+        return bool(self._parent.interactive) if self._parent is not None else False
+
+    @property
+    def subagent_hub(self):
+        # 委派到父传输的 hub，使任意层级的子 agent 共用顶层唯一的 Live 面板
+        if self._parent is not None:
+            return getattr(self._parent, "subagent_hub", None)
+        return None
+
+    def bind(self, stream) -> None:
+        # 仅订阅事件流，渲染交给条目缓冲 + hub（不再创建任何独立 Live）
+        super().bind(stream)
+
+    # ------------------------------------------------------------------ #
+    # 内部工具
+    # ------------------------------------------------------------------ #
+    def _est_lines(self, text: str) -> int:
+        """粗略估计文本在面板内的渲染行数（按宽度折行），用于高度预算。"""
+        w = max(10, self._console.size.width - 6)
+        if not text:
+            return 1
+        total = 0
+        for line in text.splitlines() or [""]:
+            if not line:
+                total += 1
+                continue
+            total += max(1, (len(line) + w - 1) // w)
+        return total
+
+    def _cap_lines(self, text: str, max_lines: int) -> str:
+        lines = text.splitlines()
+        if len(lines) <= max_lines:
+            return text
+        return "…(更早内容已省略)\n" + "\n".join(lines[-max_lines:])
+
+    def _tool_call_panel(self, tc) -> "tuple[Any, int]":
+        if tc.name == UPDATE_PLAN_TOOL_NAME:
+            a = tc.arguments or {}
+            sid = a.get("step_id", "?")
+            st = a.get("status", "?")
+            color = _PLAN_STATUS_COLOR.get(st, "white")
+            note = a.get("note")
+            text = f"[cyan]{sid}[/cyan] → [{color}]{st}[/{color}]" + (
+                f"\n[dim]注: {note}[/dim]" if note else "")
+            p = Panel(text, title="📋 计划更新", border_style="magenta", expand=False)
+            return p, self._est_lines(text) + 2
+        args = json.dumps(tc.arguments, ensure_ascii=False, indent=2)
+        text = f"{tc.name}\n{args}"
+        p = Panel(
+            f"[cyan]{tc.name}[/cyan]\n```\n{args}\n```",
+            title="🔧 工具调用", border_style="cyan", expand=False,
+        )
+        return p, self._est_lines(text) + 2
+
+    def _tool_result_panel(self, tc, res) -> "tuple[Any, int]":
+        if tc.name in (WRITE_TOOL_NAME, EDIT_TOOL_NAME) and res.ok and res.diff:
+            diff = res.diff
+            dcap = 4000
+            if len(diff) > dcap:
+                diff = diff[:dcap] + "\n…(diff 已截断)"
+            p = Panel(
+                Syntax(diff, "diff", theme="ansi_dark", word_wrap=True),
+                title=f"✅ {tc.name} — {res.output}", border_style="green", expand=False,
+            )
+            return p, min(self._est_lines(diff) + 2, 200)
+        style = "green" if res.ok else "red"
+        body = res.output or res.error or ""
+        if len(body) > 2000:
+            body = body[:2000] + "\n…(已截断)"
+        p = Panel(
+            Markdown(body),
+            title=f"[{'✅' if res.ok else '❌'}] {tc.name}",
+            border_style=style, expand=False,
+        )
+        return p, self._est_lines(body) + 2
+
+    def _finalize_stream(self) -> None:
+        if self._stream_text:
+            p = Panel(Markdown(self._stream_text), title="💬 模型输出",
+                      border_style="green", expand=False)
+            self._entries.append((p, self._est_lines(self._stream_text) + 2))
+            self._stream_text = ""
+        if self._reasoning_text:
+            p = Panel("💭 " + self._reasoning_text, title="💭 思考",
+                      border_style="dim", expand=False)
+            self._entries.append((p, self._est_lines(self._reasoning_text) + 2))
+            self._reasoning_text = ""
+
+    def _refresh_sub(self) -> None:
+        if self._slot is None or self.subagent_hub is None:
+            return
+        budget = self.subagent_hub.slot_budget()
+        # 组装候选条目（已定稿 + 当前流式思考 + 当前流式输出）
+        parts: list[tuple[Any, int]] = list(self._entries)
+        if self._reasoning_text:
+            rt = self._reasoning_text
+            parts.append((Panel("💭 " + rt, title="💭 思考", border_style="dim", expand=False),
+                          self._est_lines(rt) + 2))
+        if self._stream_text:
+            st = self._stream_text
+            if self._est_lines(st) > budget:
+                st = self._cap_lines(st, budget)
+            parts.append((Panel(Markdown(st), title="💬 模型输出", border_style="green", expand=False),
+                          min(self._est_lines(st) + 2, budget + 2)))
+        # 预算裁剪：从最旧条目开始丢弃，直到总高 <= 预算（保证不撑出屏幕、不刷屏）
+        total = sum(n for _, n in parts)
+        while total > budget and len(parts) > 1:
+            parts.pop(0)
+            total = sum(n for _, n in parts)
+        if not parts:
+            render: Any = Panel("(等待子 agent 输出…)", title=self._slot.title,
+                                border_style="blue", expand=False)
+        else:
+            render = Panel(Group(*[r for r, _ in parts]), title=self._slot.title,
+                           border_style="blue", expand=False)
+        self._slot.panel = render
+        self.subagent_hub.refresh()
+
+    def on_text(self, text: str, kind: str) -> None:
+        if self._slot is None:
+            return super().on_text(text, kind)
+        if kind == "reasoning":
+            self._reasoning_text += text
+        else:
+            self._stream_text += text
+        self._refresh_sub()
+
+    def on_tool_call(self, tc) -> None:
+        if self._slot is None:
+            return super().on_tool_call(tc)
+        self._finalize_stream()
+        r, n = self._tool_call_panel(tc)
+        self._entries.append((r, n))
+        self._refresh_sub()
+
+    def on_tool_call_delta(self, index, name, args_raw) -> None:
+        if self._slot is None:
+            return super().on_tool_call_delta(index, name, args_raw)
+        # 瞬时事件不单独渲染，避免面板抖动（定稿由 on_tool_call / on_tool_result 展示）
+
+    def on_tool_result(self, tc, res) -> None:
+        if self._slot is None:
+            return super().on_tool_result(tc, res)
+        self._finalize_stream()
+        if tc.name == SPAWN_SUBAGENT_TOOL_NAME:
+            return
+        if tc.name == UPDATE_PLAN_TOOL_NAME:
+            return  # 已在 on_tool_call 以「📋 计划更新」面板展示，避免重复
+        r, n = self._tool_result_panel(tc, res)
+        self._entries.append((r, n))
+        self._refresh_sub()
+
+    def on_plan_progress(self, ev) -> None:
+        if self._slot is None:
+            return super().on_plan_progress(ev)
+        self._finalize_stream()
+        upd = ev.plan_update or {}
+        text = f"{upd.get('step_id', '?')} → {upd.get('status', '?')}"
+        p = Panel(text, title="📋 计划进度", border_style="magenta", expand=False)
+        self._entries.append((p, self._est_lines(text) + 2))
+        self._refresh_sub()
+
+    def _on_decision_done(self) -> None:
+        if self._slot is None:
+            return super()._on_decision_done()
+        self._finalize_stream()
+        self._refresh_sub()
+
+    def report_usage(self, usage: dict[str, int] | None, answer: str | None = None) -> None:
+        if self._slot is None:
+            return super().report_usage(usage, answer)
+        # 子 agent 不单独刷 token 面板，避免与条目挤占高度
+
+    def close(self) -> None:
+        # 定稿并刷新后，把自身 slot 从 hub 注销（最后一个注销时 hub 自动 stop 其唯一 Live）
+        if self._slot is not None:
+            self._finalize_stream()
+            self._refresh_sub()
+            if self.subagent_hub is not None:
+                self.subagent_hub.unregister(self._slot)
+            self._slot = None
+        super().close()
+
+    async def ask(self, question) -> str:
+        if self._parent is not None and self._parent.interactive:
+            return await self._parent.ask(question)
+        raise RuntimeError("subagent 不应触发独立澄清交互（HITL 由父代理统一决策）")
+
+    async def approve(self, action) -> bool:
+        if self._parent is not None and self._parent.interactive:
+            return await self._parent.approve(action)
+        # 非交互（或 parent 为 None）：交给调用方配置的 gate 非交互默认放行
+        return True
 
 
 # --------------------------------------------------------------------------- #

@@ -60,7 +60,7 @@ def _render_soft_limit(res) -> None:
         )
 
 
-def _print_trace(tracer: Tracer) -> None:
+def _print_trace(tracer: Tracer | None) -> None:
     """用 rich Tree 美化 trace（保留父子关系），模型调用节点展示 total token。"""
     if tracer is None:
         return

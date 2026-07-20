@@ -354,20 +354,20 @@ def test_sub_transport_panel_height_custom():
     assert sub._panel_height == 5
 
 
-def test_sub_transport_panel_height_at_least_1():
-    """panel_height 至少为 1。"""
+def test_sub_transport_panel_height_at_least_3():
+    """panel_height 下限为 3（无父终端时对自定义值取 max(3, v)）。"""
     parent = _FakeParentTransport(interactive=True)
     sub = _SubAgentTransport(parent=parent, name="explore", panel_height=0)
-    assert sub._panel_height == 1
+    assert sub._panel_height == 3
     sub2 = _SubAgentTransport(parent=parent, name="explore", panel_height=-5)
-    assert sub2._panel_height == 1
+    assert sub2._panel_height == 3
 
 
-def test_sub_transport_non_interactive_skips_live():
-    """非交互模式下不启动 Live（不抛错）。"""
+def test_sub_transport_non_interactive_skips_slot():
+    """非交互模式下不注册面板 slot（不抛错）。"""
     parent = _FakeParentTransport(interactive=False)
     sub = _SubAgentTransport(parent=parent, name="explore", panel_height=10)
-    assert sub._sub_live is None
-    # bind 不应抛错
+    assert sub._slot is None
+    # bind / close 不应抛错
     sub.bind(EventStream())
     sub.close()
