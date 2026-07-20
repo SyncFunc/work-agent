@@ -19,6 +19,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from rich.live import Live
+from rich.panel import Panel
+
 
 @dataclass
 class AgentSummary:
@@ -61,6 +64,7 @@ class AgentSpec:
     isolation: str | None = None       # "worktree" 可选（M5 先留接口，不强制）
     share_history: bool = False        # True=fork 模式：继承父 conv（如记忆子 agent 需读父对话）
     builtin: bool = False
+    panel_height: int = 15             # 子 agent 输出框的固定行高（0=不限制）
 
 
 # --------------------------------------------------------------------------- #
@@ -105,26 +109,72 @@ BUILTIN_SPECS: tuple[AgentSpec, ...] = (BUILTIN_EXPLORE, BUILTIN_PLAN, BUILTIN_G
 class _SubAgentTransport(TerminalTransport):
     """子 agent 传输：继承 TerminalTransport 获得完整渲染能力，但：
 
-    - 绑定独立（子）EventStream，事件以「子任务视图」（来源标记头）渲染到同一终端，
+    - 绑定独立（子）EventStream，事件以固定高度滚动框（Panel）渲染到同一终端，
       不写入/混入父 agent 自己的 EventStream。
     - 屏蔽独立 HITL：澄清/审批**不弹出子 agent 自己的交互**，而是委托给 ``parent``
       传输由父代理统一决策（``parent`` 为 None 或非交互时，澄清抛错、审批自动放行）。
     """
 
-    def __init__(self, parent: "AgentTransport | None", *, name: str = "subagent") -> None:
+    def __init__(
+        self, parent: "AgentTransport | None", *,
+        name: str = "subagent", panel_height: int = 15,
+    ) -> None:
         interactive = bool(parent.interactive) if parent is not None else False
         super().__init__(interactive=interactive)
         self._parent = parent
         self._name = name
+        self._panel_height = max(1, panel_height)
+        self._sub_live: Live | None = None
+        # 交互模式下用 record console 捕获所有 rich 输出，供框内刷新
+        if interactive:
+            from rich.console import Console as _RichConsole
+            self._console = _RichConsole(record=True)
 
     @property
     def interactive(self) -> bool:
         return bool(self._parent.interactive) if self._parent is not None else False
 
     def bind(self, stream) -> None:
-        # 来源标记头：声明这是一个子 agent 的子任务视图
-        self._console.print(f"[dim]┌─ ▶ subagent: {self._name}[/dim]")
+        if self.interactive:
+            self._sub_live = Live(
+                Panel(
+                    "(等待子 agent 输出…)",
+                    title=f"▶ subagent: {self._name}",
+                    border_style="dim",
+                    height=self._panel_height,
+                ),
+                console=self._console,
+                auto_refresh=False,
+            )
+            self._sub_live.start()
         super().bind(stream)
+        # 额外订阅：每个事件后刷新滚动框
+        if self.interactive:
+            stream.subscribe(lambda _: self._refresh_sub_live())
+
+    def close(self) -> None:
+        if self._sub_live is not None:
+            self._sub_live.stop()
+            self._sub_live = None
+        super().close()
+
+    def _refresh_sub_live(self) -> None:
+        """从 record console 取文本，截取最后 panel_height 行刷新 Live 面板。"""
+        if self._sub_live is None:
+            return
+        text = self._console.export_text()
+        lines = text.splitlines()
+        if len(lines) > self._panel_height:
+            lines = lines[-self._panel_height:]
+        self._sub_live.update(
+            Panel(
+                "\n".join(lines) if lines else "(等待子 agent 输出…)",
+                title=f"▶ subagent: {self._name}",
+                border_style="blue",
+                height=self._panel_height,
+            )
+        )
+        self._sub_live.refresh()
 
     async def ask(self, question) -> str:
         if self._parent is not None and self._parent.interactive:
@@ -238,6 +288,7 @@ class SubagentSpawner:
             isolation=meta.get("isolation"),
             share_history=bool(meta.get("share_history", False)),
             builtin=False,
+            panel_height=int(meta.get("panel_height", 15)),
         )
 
     # ------------------------------------------------------------------ #
@@ -270,7 +321,10 @@ class SubagentSpawner:
         # ④ fork：share_history=True 时继承父 conv
         initial = list(parent_messages) if (spec.share_history and parent_messages) else []
 
-        sub_transport = _SubAgentTransport(parent=parent_transport, name=spec.name)
+        sub_transport = _SubAgentTransport(
+            parent=parent_transport, name=spec.name,
+            panel_height=spec.panel_height,
+        )
 
         # max_turns 限制：克隆 settings 覆盖循环上限
         sub_settings = self.settings

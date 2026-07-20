@@ -338,3 +338,36 @@ async def test_sub_transport_renders_independent_stream():
     from agent.core.events import Event
     child_stream.append(Event(type="text", text="hello", kind="content"))
     assert len(parent.rendered) == 0
+
+
+def test_sub_transport_panel_height_default():
+    """_SubAgentTransport 默认 panel_height=15。"""
+    parent = _FakeParentTransport(interactive=True)
+    sub = _SubAgentTransport(parent=parent, name="explore")
+    assert sub._panel_height == 15
+
+
+def test_sub_transport_panel_height_custom():
+    """_SubAgentTransport 支持自定义 panel_height。"""
+    parent = _FakeParentTransport(interactive=True)
+    sub = _SubAgentTransport(parent=parent, name="explore", panel_height=5)
+    assert sub._panel_height == 5
+
+
+def test_sub_transport_panel_height_at_least_1():
+    """panel_height 至少为 1。"""
+    parent = _FakeParentTransport(interactive=True)
+    sub = _SubAgentTransport(parent=parent, name="explore", panel_height=0)
+    assert sub._panel_height == 1
+    sub2 = _SubAgentTransport(parent=parent, name="explore", panel_height=-5)
+    assert sub2._panel_height == 1
+
+
+def test_sub_transport_non_interactive_skips_live():
+    """非交互模式下不启动 Live（不抛错）。"""
+    parent = _FakeParentTransport(interactive=False)
+    sub = _SubAgentTransport(parent=parent, name="explore", panel_height=10)
+    assert sub._sub_live is None
+    # bind 不应抛错
+    sub.bind(EventStream())
+    sub.close()
