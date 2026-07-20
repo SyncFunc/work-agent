@@ -99,6 +99,9 @@ class AgentLoop:
         self._transport = None    # 由 run() 设置；直接调工具时回退为 None
         # 嵌套深度：主 loop 从 0 起；子 loop 由 SubagentSpawner 设置
         self._current_depth: int = 0
+        # 子 agent 是否允许控制/虚拟工具（use_skill / spawn_subagent 等）；
+        # 记忆子 agent 等强隔离场景设为 False（见 agent/subagent.py）。
+        self._control_tools_enabled: bool = True
         # use_skill 待注入 conv 的正文（run 每轮结束时统一追加为 user 消息）
         self._pending_skill_injections: list[str] = []
 
@@ -290,7 +293,7 @@ class AgentLoop:
             has_plan=bool(plan_path),
             skills_enabled=skills_enabled,
             subagents_enabled=subagents_enabled,
-        )
+        ) if self._control_tools_enabled else []
         return registry_tools + control
 
     def _system_prompt(self, *, plan_mode: bool = False, plan_path: str | None = None) -> str:

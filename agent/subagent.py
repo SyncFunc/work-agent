@@ -36,6 +36,7 @@ class AgentSummary:
     builtin: bool
 
 from agent.config.settings import Settings, project_config_path, user_config_path
+from agent.context.compactors.session_memory import MEMORY_SYSTEM_PROMPT
 from agent.core.loop import AgentLoop, AgentResult
 from agent.core.model import Message, Model, OpenAICompatibleModel
 from agent.core.prompts import _split_frontmatter
@@ -63,6 +64,7 @@ class AgentSpec:
     effort: str | None = None
     isolation: str | None = None       # "worktree" 可选（M5 先留接口，不强制）
     share_history: bool = False        # True=fork 模式：继承父 conv（如记忆子 agent 需读父对话）
+    no_control_tools: bool = False      # True=子 agent 不注入控制/虚拟工具（纯文本产出，强隔离）
     builtin: bool = False
     panel_height: int = 15             # 子 agent 输出框的固定行高（0=不限制）
 
@@ -100,7 +102,18 @@ BUILTIN_GENERAL = AgentSpec(
     tools=None, builtin=True,
 )
 
-BUILTIN_SPECS: tuple[AgentSpec, ...] = (BUILTIN_EXPLORE, BUILTIN_PLAN, BUILTIN_GENERAL)
+# M4.4 记忆子 agent：复用 M5.4.1 后台 Subagent 机制，在后台增量维护会话摘要。
+# 强隔离：tools=[] 且无控制工具（no_control_tools），只从 fork 的对话历史产出 10 段
+# markdown 摘要文本；结果由父 Session 落盘到 summary.md（绝不触碰项目代码）。
+BUILTIN_SESSION_MEMORY = AgentSpec(
+    name="session-memory", description="后台增量维护会话摘要（记忆子 agent，纯文本产出）",
+    system_prompt=MEMORY_SYSTEM_PROMPT,
+    tools=[], no_control_tools=True, share_history=True, builtin=True,
+)
+
+BUILTIN_SPECS: tuple[AgentSpec, ...] = (
+    BUILTIN_EXPLORE, BUILTIN_PLAN, BUILTIN_GENERAL, BUILTIN_SESSION_MEMORY,
+)
 
 
 # --------------------------------------------------------------------------- #
@@ -336,6 +349,8 @@ class SubagentSpawner:
             sub_model, sub_reg, sub_settings,
             tracer=self.tracer, sandbox=sub_sandbox, gate=sub_gate,
         )
+        # 强隔离：记忆子 agent 等场景禁止控制/虚拟工具（只产出文本，不能委派/加载 skill）
+        loop._control_tools_enabled = not spec.no_control_tools
         # 让子 loop 继承当前深度，使嵌套 spawn 能正确累加（depth+1 传入）
         loop._current_depth = depth
         result = await loop.run(

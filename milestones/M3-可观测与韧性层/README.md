@@ -4,6 +4,8 @@
 > 并引入韧性层（限流 / 熔断 / 降级），使 Agent 在生产中**看得见、可恢复、不掉线**。
 > 原「上下文与记忆」推后为 M4，「扩展能力」→ M5，「生产化」→ M6。
 
+> **状态：🟢 已完成** —— Tracer 持久化（M3.1）+ 韧性层核心（M3.2）+ Pipeline 集成（M3.3）+ 健康检查 `agent health` 与 HTTP `/health`（M3.4）全部编码；test_obs/test_resilience/test_health 通过（M3.5）。
+
 ## 目标
 
 1. **可观测性（Obs）**：内存 Span 树 → 持久化 SQLite（按 session 归档）→ 支持 `Tracer.log()` 在 span 内记录结构化日志（key-value 列表），每条 log 含时间戳。Session 重启/恢复时能回放 trace。
@@ -23,8 +25,8 @@
 | M3.1 | [3.1-Tracer增强与持久化.md](./3.1-Tracer增强与持久化.md) | Tracer 持久化（SQLite）+ `log()` 方法 + 跨 session 恢复 | ✅ 完成 |
 | M3.2 | [3.2-韧性层核心.md](./3.2-韧性层核心.md) | RateLimiter + CircuitBreaker + Fallback 基础实现 | ✅ 完成 |
 | M3.3 | [3.3-韧性层Pipeline与集成.md](./3.3-韧性层Pipeline与集成.md) | Pipeline 可组合包装器 + 集成到 Model/Sandbox 调用链 | ✅ 完成 |
-| M3.4 | [3.4-健康检查与CLI.md](./3.4-健康检查与CLI.md) | `agent health` 命令 + HTTP 健康端点 | ⚪ 待启动 |
-| M3.5 | [3.5-测试与验收.md](./3.5-测试与验收.md) | 全量测试通过 + 韧性层集成测试 + trace 持久化验证 | ⚪ 待启动 |
+| M3.4 | [3.4-健康检查与CLI.md](./3.4-健康检查与CLI.md) | `agent health` 命令 + HTTP 健康端点 | ✅ 完成 |
+| M3.5 | [3.5-测试与验收.md](./3.5-测试与验收.md) | 全量测试通过 + 韧性层集成测试 + trace 持久化验证 | ✅ 完成 |
 
 ## 里程碑级知识沉淀
 

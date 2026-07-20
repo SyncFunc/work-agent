@@ -328,6 +328,23 @@ flowchart TD
 - **测试**：`tests/test_obs.py` 追加 5 个用例（隐式 parent、显式覆盖、嵌套恢复、根隔离、异常安全）。全量 `pytest` **256 passed**（原 251，+5 无回归）。
 
 
+## M4.4 沉淀（Session Memory Compact，零成本首选）
+
+> 来源：`milestones/M4-上下文与记忆/4.4-SessionMemoryCompact.md`。落地 `agent/context/compactors/session_memory.py` + 集成进 `ContextManager` + `SubagentSpawner` 新增 `session-memory` 内置类型 + `Session` 触发后台增量更新。
+
+- **模块**：`agent/context/compactors/session_memory.py`（`SessionMemory` 类、`SessionMemoryConfig`/`SessionMemoryData` dataclass、`SUMMARY_SECTIONS`/`MEMORY_SYSTEM_PROMPT` 常量）；`agent/context/__init__.py` 导出 `SessionMemory/SessionMemoryConfig`；`agent/config/settings.py` 的 `ContextConfig` 新增三档阈值 `session_memory_min_message_tokens=10_000` / `session_memory_min_tokens_between=5_000` / `session_memory_tool_calls_between=3`（另含既有 `session_memory_enabled` / `session_memory_dir`）。
+- **`SessionMemory` 接口**（验收契约）：
+  - `load() -> str | None`：未保存返回 `None`，否则返回摘要**原文**。
+  - `save(summary, stats=None)`：写出摘要；目录 `0o700`、文件 `0o600`（Windows chmod 受限忽略）；版本/统计写入同名 sidecar `.meta.json`（不污染 `load()` 契约）。
+  - `should_update(conv_tokens, tokens_since_update, tool_calls_since_update, last_round_has_tool) -> bool`：token 增量为必要条件；`enabled=False`→False；未保存且 `conv_tokens < init`→False；`tokens_since_update < between`→False；`tool_calls >= tool_between`→True；否则 `not last_round_has_tool`（自然断点）。
+  - `compact(conv, boundary, keep_recent_tokens=10_000, min_recent_messages=5, max_recent_tokens=40_000) -> list[Message] | None`：有摘要则 `[Session Summary]\n{summary}` + 保留 boundary 后最近原文（对齐 Claude Code DEFAULT_SM_COMPACT_CONFIG），无摘要返回 `None`。
+- **关键决策（偏离草稿 1 处，务必注意）**：草稿 `save()` 把 `SessionMemoryData` 序列化为 JSON，但验收契约要求 `save("x")` 后 `load()=="x"`。**实测实现改为 `summary.md` 只存摘要原文（裸 markdown）**，`SessionMemoryData` 仅作内存形态、其 `version/stats` 落 `.meta.json` sidecar。这与「10 段固定 markdown」的诉求一致，且 `load()` 直接返回供 `compact()` 复用。
+- **ContextManager 集成决策流**：`compact()` → ① `apply_microcompact()` → ② `should_compact()` ③a **优先 Session Memory**（有摘要直接替换 boundary 前历史，零 API 调用，`record_compact("session_memory")`）→ ③b 否则 Auto Compact 兜底 → ④ `mark_boundary()` → ⑤ `_anti_drift()`。Session Memory 的初始摘要**仅由后台记忆子 agent 产出**（不做 Auto Compact 反填）。
+- **复用 M5.4.1 后台 Subagent 做增量提取（本步核心亮点）**：记忆子 agent 不是另写一套调度，而是**复用 M5.4.1 的 `Session.spawn_background`**。`spawn_background` 新增可选 `result_sink(agent_name, task, text)` 与 `on_done(success)` 回调——记忆场景传入 `result_sink`（把子 agent 产出的摘要 `session_memory.save()` 落盘，而非像 `/agent` 那样注入 `session.messages`）与 `on_done`（释放串行化锁）。`Session` 每轮 `step()` 结束调 `_maybe_trigger_session_memory(transport)`：累计 `tokens_since_update`/`tool_calls_since_update`/`last_round_has_tool`，命中 `should_update` 则启动一次后台提取，**不阻塞主对话**。`SessionMemory` 前置要求 Auto Compact 开启（`enabled = session_memory_enabled and auto_compact_enabled`）。
+- **强隔离（记忆子 agent 不碰项目代码）**：`agent/subagent.py` 新增内置 `BUILTIN_SESSION_MEMORY`（`name="session-memory"`，`tools=[]`、`no_control_tools=True`、`share_history=True`）。`AgentSpec` 新增 `no_control_tools` 旗标；`SubagentSpawner.spawn` 据此设 `loop._control_tools_enabled=False`；`AgentLoop._model_tools` 在禁用时返回 `[]`（不注入 `use_skill`/`spawn_subagent` 等控制工具）。子 agent 只从 fork 的对话历史产出 10 段 markdown 文本，结果由父 `Session` 落盘——**绝不触碰项目文件**，满足 4.4.2「只授权 Edit summary.md」的安全意图（本项目以「纯文本产出 + 父落盘」实现更强隔离）。
+- **跨会话 Recall（4.4.6）**：`Session.collect_other_session_summaries() -> list[(session_id, summary)]` 收集同项目其它 session 的 `summary.md`，供新会话注入参考（标注「背景参考」由 M4.6/M6 接线）；当前 session 自身排除。
+- **测试**：`tests/test_context.py` 追加 11 用例（load None / save-load 往返 + 权限 / should_update 四情形 / compact 有摘要 / compact 无摘要 / 保留原文约束 / ContextManager 优先走 Session Memory 且 Auto Compact 未被调用 / 无摘要降级 Auto / 内置 `session-memory` agent 强隔离 / **Session 后台 Subagent 复用端到端**：触发后记忆子 agent 跑完、摘要落盘、主对话不被污染、串行锁释放）。全量增量运行 `pytest tests/test_context.py` **58 passed**。
+
 ## M5 沉淀（SkillLoader + SubagentSpawner，落地后补全）
 
 > 来源：`milestones/M5-扩展能力/`（5.1~5.5）。当前仅文档完成，编码落地后在此汇总跨步骤接口/决策/坑。设计依据见 `knowledge/claude-code-subagents-skills.md`。
@@ -378,6 +395,16 @@ flowchart TD
 - **Session 持有依赖**：`Session.__init__` 把 `skill_loader`/`subagent_spawner` 存为 `self` 属性（M5.3 只局部传参未持有，导致 CLI 无法直接查询）；新增 `list_skills()`/`list_agents()`（禁用时返回 `[]`）。
 - **chat REPL 命令**：`/skills`→`show_skills(list_skills())`；`/agents`→`show_agents(list_agents())`；`/skill <name>`→命则把 `[Skill <name>]\n{spec.render_body()}` 作为 **user 消息追加到 `session.messages`**（等价于模型调 `use_skill`），未命中则 `notify("未找到 skill: <name>")`；裸 `/skill` 提示用法。所有命令 `continue`，**不调模型**。
 - **大小写约定**：命令匹配用 `cmd.lower()`，但 `/skill` 名字提取用原 `task`（保留大小写）。
+
+### M5.4 后台 Subagent（追加实现）
+
+> 来源：`milestones/M5-扩展能力/5.4-CLI命令.md` 的「后台 Subagent」增强部分。代码 `agent/core/session.py`/`agent/cli.py` + `tests/test_cli.py` 新增 4 用例。
+
+- **Session 接口**：`spawn_background(agent_name, task, transport, *, parent_span=None) -> str | None`——启动后台 Subagent 任务，返回 task_id（失败返回 None）。内部用 `asyncio.ensure_future` 调度，自动处理有/无运行中事件循环两种情况。完成后自动注入 `[Background Subagent <name> — <task>]\n<summary>` 到 `session.messages`。`list_background_tasks() -> list[dict]` 返回任务列表。
+- **任务管理**：`Session._bg_tasks: dict[str, asyncio.Task]` 持有运行中的后台任务；任务完成后自动从字典移除。
+- **CLI 命令**：`/agent <name> <task>`（第一个空格分隔 name 与 task）、`/agent`（提示用法）、`/bg`（展示运行中后台任务）。所有命令 `continue`，**不调模型**。
+- **测试技巧**：后台任务测试需在 `asyncio.run()` 内创建事件循环（`spawn_background` 依赖运行中的 loop）；`CliRunner` 测试 `/agent` 命令时 CliRunner 不提供事件循环，`spawn_background` 内部 `try/except RuntimeError` 回退创建新 loop。
+- **验收**：`tests/test_cli.py` 新增 4 用例全绿。全量 `pytest` 16 passed（CLI 文件），无回归。
 
 ### M5.5 测试与验收（落地）
 

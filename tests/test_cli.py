@@ -242,3 +242,73 @@ def test_chat_skill_load_appends_message(tmp_path, monkeypatch):
     assert len(sess.messages) == before + 1
     assert sess.messages[-1].role == "user"
     assert "HELLO FROM SKILL" in sess.messages[-1].content
+
+
+# --------------------------------------------------------------------------- #
+# M5.4 后台 Subagent：/agent /bg 命令
+# --------------------------------------------------------------------------- #
+def test_chat_agent_command_usage(runner, monkeypatch):
+    """/agent 不带参数提示用法；/agent 未知名提示未找到。"""
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/agent\n/agent unknown task\nexit\n")
+
+    assert result.exit_code == 0
+    assert "用法: /agent" in result.output
+    assert "未找到 subagent: unknown" in result.output
+
+
+def test_chat_agent_starts_background(runner, monkeypatch):
+    """/agent <name> <task> 启动后台 Subagent，返回 task_id 提示。"""
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/agent general-purpose do something\n/bg\nexit\n")
+
+    assert result.exit_code == 0
+    assert "后台 Subagent [general-purpose] 已启动" in result.output
+    assert "task_id:" in result.output
+
+
+def test_chat_bg_lists_no_tasks(runner, monkeypatch):
+    """/bg 无后台任务时提示当前没有。"""
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/bg\nexit\n")
+
+    assert result.exit_code == 0
+    assert "当前没有运行中的后台任务" in result.output
+
+
+def test_background_spawn_injects_summary(monkeypatch):
+    """后台 Subagent 完成后把摘要作为 user 消息注入 session.messages。"""
+    import asyncio
+
+    from agent.config.settings import Settings
+    from agent.core.model import FakeModel, Decision
+    from agent.core.session import Session
+    from agent.runtime.terminal_transport import TerminalTransport
+
+    model = FakeModel([Decision(text="background result summary")])
+    settings = Settings()
+    transport = TerminalTransport(interactive=False)
+    sess = Session(model, _make_registry(), settings, tracer=None)
+    assert sess.subagent_spawner is not None
+
+    before = len(sess.messages)
+
+    async def _run():
+        task_id = sess.spawn_background(
+            "general-purpose", "do research", transport,
+            parent_span=None,
+        )
+        assert task_id is not None
+        assert task_id in sess._bg_tasks
+        # 等待后台任务完成
+        await sess._bg_tasks[task_id]
+        return task_id
+
+    task_id = asyncio.run(_run())
+
+    assert task_id not in sess._bg_tasks  # 完成后从字典移除
+    assert len(sess.messages) == before + 1
+    msg = sess.messages[-1]
+    assert msg.role == "user"
+    assert "[Background Subagent general-purpose" in msg.content
+    assert "background result summary" in msg.content

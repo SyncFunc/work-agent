@@ -16,6 +16,8 @@ from agent.context import (
     ContextUsage,
     Microcompact,
     PLACEHOLDER,
+    SessionMemory,
+    SessionMemoryConfig,
 )
 from agent.context.compactors import Compactor as CompactorAlias
 from agent.core.model import Decision, Message, ToolCall
@@ -614,3 +616,201 @@ async def test_compact_trace_noop_when_tracer_none():
     result = await m.compact()
     assert result is True
     assert len(m.history) == 1
+
+
+# --------------------------------------------------------------------------- #
+# M4.4 Session Memory Compact
+# --------------------------------------------------------------------------- #
+def _sm_config(**kw) -> SessionMemoryConfig:
+    return SessionMemoryConfig(**kw)
+
+
+def test_session_memory_load_none(tmp_path):
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s1")
+    assert sm.load() is None
+
+
+def test_session_memory_save_load_roundtrip_and_perms(tmp_path):
+    import os
+    import stat
+
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s2")
+    sm.save("我的摘要")
+    assert sm.load() == "我的摘要"
+    # 校验落盘位置与权限
+    assert sm._summary_path.is_file()
+    if os.name != "nt":  # Windows 不保证 chmod 语义
+        fmode = stat.S_IMODE(sm._summary_path.stat().st_mode)
+        dmode = stat.S_IMODE(sm._summary_path.parent.stat().st_mode)
+        assert oct(fmode) == oct(0o600), f"文件权限应为 0o600，实际 {oct(fmode)}"
+        assert oct(dmode) == oct(0o700), f"目录权限应为 0o700，实际 {oct(dmode)}"
+    # meta sidecar 记录版本演进
+    meta = sm.load_stats()
+    assert meta.get("version") == 1
+
+
+def test_session_memory_should_update_disabled(tmp_path):
+    sm = SessionMemory(
+        _sm_config(enabled=False, session_memory_dir=str(tmp_path)), session_id="s3"
+    )
+    sm.save("摘要")
+    assert sm.should_update(50_000, 10_000, 5, False) is False
+
+
+def test_session_memory_should_update_init_threshold(tmp_path):
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s4")
+    # 未保存且无摘要，且上下文未达 init 阈值 → False
+    assert sm.should_update(5_000, 10_000, 5, False) is False
+    # 未保存但上下文已达 init 阈值 → 允许首次触发
+    assert sm.should_update(15_000, 10_000, 5, False) is True
+
+
+def test_session_memory_should_update_between_threshold(tmp_path):
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s5")
+    sm.save("已有摘要")
+    # token 增量不足 → False
+    assert sm.should_update(20_000, 1_000, 5, False) is False
+    # token 增量达标且 tool call ≥ 3 → True
+    assert sm.should_update(20_000, 6_000, 3, True) is True
+    # token 增量达标、tool call 不足，但最后一轮无 tool（自然断点）→ True
+    assert sm.should_update(20_000, 6_000, 0, False) is True
+    # token 增量达标、tool call 不足，且最后一轮有 tool → False
+    assert sm.should_update(20_000, 6_000, 0, True) is False
+
+
+def test_session_memory_compact_with_summary(tmp_path):
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s6")
+    sm.save("## Session Title\n项目背景摘要")
+    conv = [
+        Message(role="user", content="旧历史1"),
+        Message(role="user", content="旧历史2"),
+        Message(role="user", content="活跃消息"),
+    ]
+    out = sm.compact(conv, boundary=2)
+    assert out is not None
+    assert len(out) == 2  # 摘要 + 1 条保留的活跃消息
+    assert out[0].role == "user"
+    assert "[Session Summary]" in (out[0].content or "")
+    assert "项目背景摘要" in (out[0].content or "")
+    assert out[1].content == "活跃消息"
+
+
+def test_session_memory_compact_no_summary_returns_none(tmp_path):
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s7")
+    conv = [Message(role="user", content="x")]
+    assert sm.compact(conv, boundary=0) is None
+
+
+def test_session_memory_compact_recent_retention(tmp_path):
+    """保留原文满足：≥ min_recent_messages(5) 且 ≤ max_recent_tokens(40000)（估算 ±10%）。"""
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s8")
+    sm.save("摘要")
+    # boundary=0，recent = conv 全部；每条约 5000 tokens（CJK 1 token/字）
+    conv = [Message(role="user", content="中" * 5_000) for _ in range(10)]
+    out = sm.compact(conv, boundary=0)
+    assert out is not None
+    recent = out[1:]  # 去掉首条 [Session Summary]
+    # 超过 max_recent_tokens(40000) 的部分被丢弃；但至少保留 5 条（min_recent_messages）
+    assert len(recent) >= 5
+    assert len(recent) <= 10
+    # 总保留 token 不超过 max_recent_tokens 太多（±10% 容差）
+    kept_tokens = sum(len(m.content or "") // 4 + 1 for m in recent)
+    assert kept_tokens <= 40_000 * 1.1
+
+
+async def test_context_manager_compact_prefers_session_memory(tmp_path):
+    """有摘要时 ContextManager.compact() 优先走 Session Memory 分支，不触发 Auto Compact。"""
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s9")
+    sm.save("已有会话摘要")
+
+    # Auto Compact 模型若被调用则抛错（验证确实未走到兜底）
+    class _MustNotCall:
+        async def act(self, messages, tools=None):
+            raise AssertionError("Auto Compact 不应被调用（Session Memory 优先）")
+
+    ac = AutoCompact(_MustNotCall())
+    m = ContextManager(auto_compact=ac, session_memory=sm)
+    conv = [
+        Message(role="user", content="旧历史占位"),          # boundary 前，被摘要替换
+        Message(role="user", content="大段活跃" * 150_000),   # post-boundary，触发阈值
+        Message(role="user", content="活跃消息A"),
+        Message(role="user", content="活跃消息B"),
+    ]
+    m.set_conv(conv)
+    m.compact_boundary = 1
+    result = await m.compact()
+    assert result is True
+    # 压缩方法记录应为 session_memory
+    assert m.history[-1].method == "session_memory"
+    assert "[Session Summary]" in (m.conv[0].content or "")
+    # 活跃消息（boundary 后、且在保留额度内）仍保留
+    assert any("活跃消息" in (x.content or "") for x in m.conv)
+
+
+async def test_context_manager_compact_session_memory_fallback_to_auto(tmp_path):
+    """无摘要时 Session Memory 返回 None，compact() 降级走 Auto Compact。"""
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s10")
+    # 注意：未 save → load() 为 None
+    model = _fake_model([Decision(text="<summary>自动摘要</summary>")])
+    ac = AutoCompact(model)
+    m = ContextManager(auto_compact=ac, session_memory=sm)
+    conv = [
+        Message(role="user", content="旧历史" * 1000),
+        Message(role="user", content="大段消息" * 150_000),
+    ]
+    m.set_conv(conv)
+    m.compact_boundary = 1
+    await m.compact()
+    assert m.history[-1].method == "auto_compact"
+    assert "[Compact Summary]" in (m.conv[0].content or "")
+
+
+def test_session_memory_registered_as_builtin_agent():
+    """记忆子 agent 作为内置类型被发现，且强隔离（无工具、无控制工具）。"""
+    from agent.subagent import SubagentSpawner
+
+    sp = SubagentSpawner(Settings())
+    specs = {s.name: s for s in sp.discover()}
+    assert "session-memory" in specs
+    spec = specs["session-memory"]
+    assert spec.builtin is True
+    assert spec.tools == []            # 不暴露任何工具
+    assert spec.no_control_tools is True  # 不注入控制/虚拟工具
+    assert spec.share_history is True  # fork 父对话以读历史
+
+
+async def test_session_memory_background_update_reuses_subagent(monkeypatch, tmp_path):
+    """M4.4 复用 M5.4.1 后台 Subagent：触发后记忆子 agent 在后台跑，结果落盘 summary.md。"""
+    monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
+    from agent.core.model import FakeModel, Decision
+    from agent.core.session import Session
+    from agent.runtime.registry import default_registry
+    from agent.runtime.terminal_transport import TerminalTransport
+
+    settings = Settings(
+        subagents={"enabled": True},
+        context={
+            "session_memory_enabled": True,
+            "auto_compact_enabled": True,
+            "session_memory_dir": str(tmp_path),
+        },
+    )
+    # 记忆子 agent 用同一个 FakeModel 产出 10 段摘要文本
+    model = FakeModel([Decision(text="## Session Title\n后台生成的会话摘要")])
+    sess = Session(model, default_registry, settings, tracer=None)
+    assert sess.session_memory is not None
+
+    transport = TerminalTransport(interactive=False)
+    task_id = sess._trigger_session_memory_update(transport)
+    assert task_id is not None
+    assert task_id in sess._bg_tasks
+
+    # 等待后台记忆子 agent 完成（复用 spawn_background 的 asyncio.Task）
+    await sess._bg_tasks[task_id]
+    assert task_id not in sess._bg_tasks  # 完成后从任务表移除
+    # 结果由 result_sink 落盘到 summary.md（而非注入主对话）
+    assert sess.session_memory.load() == "## Session Title\n后台生成的会话摘要"
+    assert sess._sm_updating is False  # on_done 已释放串行化锁
+    # 主对话未被污染（记忆结果不应作为 user 消息注入）
+    assert all("[Background Subagent" not in (m.content or "") for m in sess.messages)
+

@@ -127,6 +127,10 @@ class ContextConfig(BaseModel):
     auto_compact_enabled: bool = True
     session_memory_enabled: bool = True
     session_memory_dir: str = ".agent/sessions"
+    # M4.4 Session Memory 增量更新阈值（token 增量为必要条件）
+    session_memory_min_message_tokens: int = 10_000   # 初次触发所需上下文 token 数
+    session_memory_min_tokens_between: int = 5_000     # 两次更新最小 token 增量
+    session_memory_tool_calls_between: int = 3         # 两次更新最少 tool call 次数
     agents_md_path: str = "AGENTS.md"
     agents_md_enabled: bool = True
 

@@ -20,6 +20,7 @@ from pathlib import Path
 
 from agent.context.compactors.auto_compact import AutoCompact
 from agent.context.compactors.microcompact import Microcompact, PLACEHOLDER
+from agent.context.compactors.session_memory import SessionMemory
 from agent.context.tokens import _estimate_tokens
 from agent.core.model import Message
 from agent.obs.tracer import Tracer, _span
@@ -65,6 +66,7 @@ class ContextManager:
         microcompact_keep_recent: int = 5,
         microcompact: Microcompact | None = None,
         auto_compact: AutoCompact | None = None,
+        session_memory: SessionMemory | None = None,
         tracer: Tracer | None = None,
     ):
         self.conv: list[Message] = []
@@ -80,6 +82,7 @@ class ContextManager:
         self._tools = tools_tokens
         self.microcompact = microcompact or Microcompact(keep_recent=microcompact_keep_recent)
         self.auto_compact: AutoCompact | None = auto_compact
+        self.session_memory: SessionMemory | None = session_memory
         self.tracer = tracer
         self.recent_files: list[str] = []  # 最近操作的文件路径（防漂移用）
 
@@ -143,7 +146,12 @@ class ContextManager:
             self.recent_files = self.recent_files[-10:]
 
     async def compact(self) -> bool:
-        """执行完整压缩流程：Microcompact → (若仍超) Auto Compact → 防漂移。"""
+        """执行完整压缩流程：Microcompact → (若仍超) Session Memory → Auto Compact → 防漂移。
+
+        决策流（见 milestones/M4-上下文与记忆/README.md 流程图）：
+        ① Microcompact（零成本）→ ② 仍超阈值则 ③a 优先 Session Memory Compact
+        （复用摘要，零 API 调用）；无摘要时 ③b 降级 Auto Compact（1 次调用）。
+        """
         with _span(self.tracer, "context.compact", kind="compact") as cspan:
             if cspan is not None:
                 cspan.log("trigger_pct", round(self.estimate_usage().used_pct, 4))
@@ -153,10 +161,27 @@ class ContextManager:
             # ② 检查是否需要进一步压缩
             if not self.should_compact():
                 if cspan is not None:
-                    cspan.log("shortcut", "microcompact 后未超阈值，跳过 auto_compact")
+                    cspan.log("shortcut", "microcompact 后未超阈值，跳过压缩")
                 return True
 
-            # ③ Auto Compact（1 次调用）
+            # ③a Session Memory Compact（零成本首选，复用后台维护的摘要）
+            if self.session_memory is not None:
+                sm_result = self.session_memory.compact(
+                    self.conv, self.compact_boundary
+                )
+                if sm_result is not None:
+                    before_tokens = self.estimate_usage().total
+                    self.conv = sm_result
+                    after_tokens = self.estimate_usage().total
+                    self.record_compact("session_memory", before_tokens, after_tokens)
+                    if cspan is not None:
+                        cspan.log("session_memory", f"{before_tokens} -> {after_tokens} tok")
+                    # ④ 标记边界 + ⑤ 防漂移
+                    self.mark_boundary()
+                    await self._anti_drift()
+                    return True
+
+            # ③b Auto Compact（1 次调用兜底）
             if self.auto_compact is not None:
                 before_tokens = self.estimate_usage().total
                 new_conv = await self.auto_compact.compact(self.conv, self.compact_boundary)

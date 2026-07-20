@@ -4,6 +4,8 @@
 > 设计依据：[`../../knowledge/sandbox-approval-design.md`](../../knowledge/sandbox-approval-design.md)（Codex 模式的沙盒 + 审批完整设计：原理 / profile / 四模式 / 决策流）。
 > 开发模式：每步一个 `.md`，含「实现方案 / 验收标准 / 知识沉淀」三要素（见 `../template.md`）。
 
+> **状态：🟢 已完成** —— `SandboxExecutor`(`sandbox.py`)/`ApprovalGate`(`approval.py`)/分层权限配置(`settings`)/HITL(`terminal_transport.approve`)/CLI 接入均已编码，`test_sandbox`/`test_approval` 通过；设计文档与编码均已落地。
+
 ## 前置依赖
 
 - **M1 全部完成**：`AgentLoop`（`agent/core/loop.py`）、`ToolRegistry`（`agent/runtime/registry.py`，含 `RISK_LEVELS`/`ToolResult`/`ToolSpec`）、内置 `bash`/`read`/`write`/`edit`/`grep` 工具、`Settings` 分层配置、`Session`（`agent/core/session.py`，持有状态/编排）、`AgentTransport`（`agent/core/transport.py`）由 `TerminalTransport`（`agent/runtime/terminal_transport.py`）实现（注：原 `SessionUI`/`_TyperUI` 经 M-refactor 合并为统一 `AgentTransport`，见该里程碑）。

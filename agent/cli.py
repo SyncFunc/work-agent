@@ -150,7 +150,7 @@ def chat() -> None:
     session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store)
     transport = TerminalTransport(interactive=True)
 
-    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；exit/quit 退出）。")
+    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；exit/quit 退出）。")
     while True:
         try:
             task = typer.prompt("you")
@@ -209,6 +209,43 @@ def chat() -> None:
                         role="user", content=f"[Skill {name}]\n{spec.render_body()}"
                     ))
                     typer.echo(f"已加载 skill: {name}", err=True)
+            continue
+        # ---- M5.4 后台 Subagent 命令 ----
+        if cmd in {"/agent"}:
+            typer.echo("用法: /agent <name> <task>  —— 后台启动一个 Subagent", err=True)
+            continue
+        if cmd.startswith("/agent "):
+            rest = task.strip()[len("/agent "):].strip()
+            # 解析 agent_name 和 task：第一个空格前是 name，之后是 task
+            space_idx = rest.find(" ")
+            if space_idx < 0:
+                typer.echo("用法: /agent <name> <task>  —— name 和 task 之间用空格分隔", err=True)
+            else:
+                agent_name = rest[:space_idx]
+                agent_task = rest[space_idx + 1:].strip()
+                if not agent_task:
+                    typer.echo("用法: /agent <name> <task>  —— task 不能为空", err=True)
+                else:
+                    task_id = session.spawn_background(
+                        agent_name, agent_task, transport,
+                        parent_span=session.loop._agent_span,
+                    )
+                    if task_id is not None:
+                        typer.echo(
+                            f"→ 后台 Subagent [{agent_name}] 已启动（task_id: {task_id}），"
+                            f"完成后将自动通知。可用 /bg 查看状态。",
+                            err=True,
+                        )
+            continue
+        if cmd in {"/bg"}:
+            tasks = session.list_background_tasks()
+            if not tasks:
+                typer.echo("→ 当前没有运行中的后台任务", err=True)
+            else:
+                typer.echo(f"→ 后台任务数: {len(tasks)}", err=True)
+                for t in tasks:
+                    status = "✅ 已完成" if t["done"] else "🔄 运行中"
+                    typer.echo(f"  {t['id']}: {status}", err=True)
             continue
 
         try:

@@ -1,15 +1,15 @@
 # 里程碑总览
 
 > 开发模式详见根目录 `CODEBUDDY.MD`。**每个里程碑一个文件夹 `milestones/<Mx-名称>/`，每步一个 `.md` 文件**，均含「实现方案 / 验收标准 / 知识沉淀」三要素。
-> 当前进度：M1 进行中，M2 进行中，M3 已完成，M4 进行中，M5 已落地（5.1–5.5 全部编码完成，全量 `pytest` 314 passed），M6 待启动（启动前用 `milestones/template.md` 建文件夹与步骤文件）。
+> 当前进度：M1 已完成、M2 已完成、M3 已完成、M4 部分完成（M4.1–M4.4 已落地，M4.5–M4.7 待启动）、M5 已完成（5.1–5.5 全编码 + 后台 Agent 介绍，全量 `pytest` 314 passed）、M6 待启动（启动前用 `milestones/template.md` 建文件夹与步骤文件）。
 
 | 里程碑 | 目标 | 关键交付 | 状态 |
 |---|---|---|---|
-| **M1 骨架** | 端到端跑通空转 Agent | CLI + `Model` 抽象 + `AgentLoop`(FakeModel) + `ToolRegistry` + 基础 `bash`/`read`/`write` | 🟡 进行中 |
-| **M2 安全与确认** | 能安全跑命令 | `ApprovalGate` + `SandboxExecutor` + 分层权限配置 | 🔄 进行中（设计文档 + 步骤文档已完成，待编码落地） |
-| **M3 可观测与韧性层** | 看得见、可恢复、不掉线 | Trace/Span 增强 + Span 持久化 + Log 系统 + 韧性层（限流/熔断/降级） + 健康检查 | 🟡 进行中（M3.1–M3.3 代码已完成，M3.4–M3.5 待启动） |
-| **M4 上下文与记忆** | 长任务不爆窗口 | `ContextManager` + Microcompact + Auto Compact(9段摘要) + Session Memory + AGENTS.md 固定底座 + `/context` `/compact` 命令 | 🟡 进行中（M4.1–M4.3 已落地，M4.4–M4.7 待启动） |
-| **M5 扩展能力** | 可组合可伸缩 | `SkillLoader` + `SubagentSpawner` + CLI 命令 + 测试验收 | 🟢 5.1–5.5 全部落地（Skill 双轨加载/触发目录 + Subagent 内置 explore/plan/general-purpose + 主循环集成/工具白名单 + CLI `/skills`/`/agents`/`/skill` + 全量测试 314 passed） |
+| **M1 骨架** | 端到端跑通空转 Agent | CLI + `Model` 抽象 + `AgentLoop`(FakeModel) + `ToolRegistry` + 基础 `bash`/`read`/`write` | 🟢 已完成（`AgentLoop`/`Model`/`ToolRegistry`/内置工具/`Session`/`AgentTransport`/`cli` 全部落地，test_model/test_loop/test_registry/test_tools/test_intent/test_plan/test_cli 通过） |
+| **M2 安全与确认** | 能安全跑命令 | `ApprovalGate` + `SandboxExecutor` + 分层权限配置 | 🟢 已完成（`sandbox.py`/`approval.py`/`terminal_transport.py` 已编码，test_sandbox/test_approval 通过） |
+| **M3 可观测与韧性层** | 看得见、可恢复、不掉线 | Trace/Span 增强 + Span 持久化 + Log 系统 + 韧性层（限流/熔断/降级） + 健康检查 | 🟢 已完成（Tracer 持久化 + 韧性层核心/Pipeline + `agent health` 与 HTTP `/health` 全部编码，test_obs/test_resilience/test_health 通过） |
+| **M4 上下文与记忆** | 长任务不爆窗口 | `ContextManager` + Microcompact + Auto Compact(9段摘要) + Session Memory + AGENTS.md 固定底座 + `/context` `/compact` 命令 | 🟡 部分完成（M4.1–M4.4 已落地，test_context 通过；M4.5–M4.7 待启动） |
+| **M5 扩展能力** | 可组合可伸缩 | `SkillLoader` + `SubagentSpawner` + CLI 命令 + 测试验收 | 🟢 已完成（Skill 双轨加载/触发目录 + Subagent 内置 explore/plan/general-purpose + 主循环集成/工具白名单 + CLI `/skills`/`/agents`/`/skill`/`/agent`/`/bg` + 全量测试 314 passed） |
 | **M6 生产化** | 可恢复可观测可测 | 会话恢复 + 测试金字塔 + CI | ⚪ 待启动 |
 
 ## M1 步骤文件

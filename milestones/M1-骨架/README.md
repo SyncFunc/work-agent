@@ -4,6 +4,8 @@
 > 前置依赖：无。
 > 每步细节见同目录下的 `1.x-*.md`，均含「实现方案 / 验收标准 / 知识沉淀」。
 
+> **状态：🟢 已完成** —— `AgentLoop`/`Model`/`ToolRegistry`/内置工具(`bash`/`read`/`write`/`edit`/`grep`)/`Session`/`AgentTransport`/`cli`(run/chat) 全部落地，对应测试（test_model/test_loop/test_registry/test_tools/test_intent/test_plan/test_cli）通过。
+
 ## 步骤索引
 
 | 步骤 | 文件 | 目标 |

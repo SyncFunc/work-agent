@@ -3,6 +3,8 @@
 > 目标：交付 `SkillLoader` + `SubagentSpawner`，让 Agent **可组合、可伸缩**。
 > 设计依据：`knowledge/claude-code-subagents-skills.md`（Subagents/Skills 机制调研 + 本项目对接点）。
 
+> **状态：🟢 已完成** —— `SkillLoader`(5.1) + `SubagentSpawner`(5.2) + 主循环集成/工具白名单(5.3) + CLI 命令 `/skills` `/agents` `/skill` `/agent` `/bg`(5.4，含 5.4.1 后台 Agent 介绍) + 全量测试(5.5) 均落地，全量 `pytest` 314 passed。
+
 ## 目标
 
 把「能力正交」三层（Tool 原子 / Skill 按需包 / Subagent 隔离上下文）补齐后两层：
@@ -14,10 +16,10 @@
 
 | 里程碑 | 状态 | 本里程碑依赖的内容 |
 |---|---|---|
-| M1 骨架 | 进行中 | `AgentLoop`(无状态)/`AgentResult`/`Model`(`FakeModel`/`RecordingModel`)/`Session`/`AgentTransport`/`EventStream`/`load_prompt` |
-| M2 安全与确认 | 进行中 | `ApprovalGate`/`SandboxExecutor`/`build_executor`/`ToolRisk`（子 agent 权限/沙箱隔离） |
-| M3 可观测与韧性层 | 进行中 | `Tracer`/`Span`/`contextvars` 隐式 parent（子 agent trace 成父子 span） |
-| M4 上下文与记忆 | 进行中 | `ContextManager`/`compact()`（子 agent 独立上下文 + 压缩，绝不碰 EventStream） |
+| M1 骨架 | 已完成 | `AgentLoop`(无状态)/`AgentResult`/`Model`(`FakeModel`/`RecordingModel`)/`Session`/`AgentTransport`/`EventStream`/`load_prompt` |
+| M2 安全与确认 | 已完成 | `ApprovalGate`/`SandboxExecutor`/`build_executor`/`ToolRisk`（子 agent 权限/沙箱隔离） |
+| M3 可观测与韧性层 | 已完成 | `Tracer`/`Span`/`contextvars` 隐式 parent（子 agent trace 成父子 span） |
+| M4 上下文与记忆 | 部分完成（M4.1–M4.3 已落地） | `ContextManager`/`compact()`（子 agent 独立上下文 + 压缩，绝不碰 EventStream） |
 
 > M5 全部复用既有接口，**不改动 M1–M4 的核心实现**；仅 M5.3 在 `AgentLoop` 接入 skill 触发工具与 `spawn_subagent` 工具（分支处理，复用 `_exec_tools` 的 tool_call_id 配对）。
 
@@ -29,6 +31,7 @@
 | M5.2 | [5.2-SubagentSpawner.md](./5.2-SubagentSpawner.md) | `AgentSpec` + `SubagentSpawner.spawn()`：独立 loop/conv/ContextManager/Tracer parent、摘要回填、深度限制、内置类型 |
 | M5.3 | [5.3-集成与工具白名单.md](./5.3-集成与工具白名单.md) | 主循环接入 skill 触发 + `spawn_subagent` 工具；工具白名单/权限/沙箱映射；fork 可选 |
 | M5.4 | [5.4-CLI命令.md](./5.4-CLI命令.md) | `/skills` 管理、`/agents` 查看、交互触发 skill、后台 subagent |
+| M5.4 | [5.4.1-后台Agent介绍.md](./5.4.1-后台Agent介绍.md) | 后台 Subagent 介绍文档：是什么/怎么用/与前台 spawn 区别/设计要点/验收/限制 |
 | M5.5 | [5.5-测试与验收.md](./5.5-测试与验收.md) | FakeModel 驱动全链路；断言隔离/白名单/摘要/深度/不变量 |
 
 ## 关键设计决策（跨步骤，详见调研文档 §5–§6）

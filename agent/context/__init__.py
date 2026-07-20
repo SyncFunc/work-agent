@@ -12,6 +12,12 @@ from agent.context.compactors.microcompact import (
     PLACEHOLDER,
     Microcompact,
 )
+from agent.context.compactors.session_memory import (
+    MEMORY_SYSTEM_PROMPT,
+    SUMMARY_SECTIONS,
+    SessionMemory,
+    SessionMemoryConfig,
+)
 from agent.context.manager import CompactRecord, ContextManager, ContextUsage
 
 __all__ = [
@@ -21,6 +27,10 @@ __all__ = [
     "Compactor",
     "Microcompact",
     "AutoCompact",
+    "SessionMemory",
+    "SessionMemoryConfig",
+    "SUMMARY_SECTIONS",
+    "MEMORY_SYSTEM_PROMPT",
     "COMPACTABLE_TOOLS",
     "PLACEHOLDER",
 ]

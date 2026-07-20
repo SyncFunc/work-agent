@@ -5,6 +5,8 @@
 >
 > **重要命名替换**：本项目将 Claude Code 的 `CLAUDE.md` 改名为 `AGENTS.md`（项目级记忆文件，见 M4.5）。
 
+> **状态：🟡 部分完成** —— M4.1 `ContextManager` / M4.2 `Microcompact` / M4.3 `AutoCompact` / M4.4 `SessionMemory`（零成本首选 + 复用 M5.4.1 后台 Subagent 增量提取）已编码（`test_context` 通过）；M4.5 固定底座与 AGENTS.md 实际注入、M4.6 `/context` `/compact` 命令、M4.7 集成测试**待启动**（代码暂无 `/context` `/compact` 命令、AGENTS.md 尚未注入会话）。
+
 ## 目标
 
 1. **`ContextManager` 基础**（M4.1）：持有 `conv` 投影、估算 token 分类明细、记录压缩历史与 Compact Boundary 位置。
@@ -29,7 +31,7 @@
 | M4.1 | [4.1-ContextManager基础.md](./4.1-ContextManager基础.md) | ContextManager 类 + 配置 + 计量 | ✅ 已完成 |
 | M4.2 | [4.2-Microcompact.md](./4.2-Microcompact.md) | 旧 tool_result 占位替换（零成本） | ✅ 已完成 |
 | M4.3 | [4.3-AutoCompact.md](./4.3-AutoCompact.md) | 9 段摘要 + Compact Boundary + 防漂移 + contextvars 隐式 parent | ✅ 已完成 |
-| M4.4 | [4.4-SessionMemoryCompact.md](./4.4-SessionMemoryCompact.md) | 后台增量摘要文件（零成本首选） | ⚪ 待启动 |
+| M4.4 | [4.4-SessionMemoryCompact.md](./4.4-SessionMemoryCompact.md) | 后台增量摘要文件（零成本首选） | ✅ 已完成 |
 | M4.5 | [4.5-集成与固定底座.md](./4.5-集成与固定底座.md) | 系统提示重构 + prompt caching + AGENTS.md | ⚪ 待启动 |
 | M4.6 | [4.6-CLI命令.md](./4.6-CLI命令.md) | /context /compact 命令 + 状态栏 | ⚪ 待启动 |
 | M4.7 | [4.7-测试与验收.md](./4.7-测试与验收.md) | 全量测试通过 + 压缩流程端到端验证 | ⚪ 待启动 |
