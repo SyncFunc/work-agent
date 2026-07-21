@@ -58,6 +58,16 @@ def _build_model(settings, tracer=None, pipeline=None):
     return create_model(settings, tracer=tracer, pipeline=pipeline)
 
 
+def _ensure_scaffold() -> None:
+    """首次运行：在项目级 .agent/ 下自动生成配置骨架（已存在则跳过，不覆盖）。"""
+    from agent.config.settings import scaffold_project
+
+    created = scaffold_project()
+    made = [k for k, v in created.items() if v]
+    if made:
+        typer.echo(f"[init] 已为项目创建配置骨架 .agent/：{', '.join(made)}", err=True)
+
+
 def _render_soft_limit(res) -> None:
     """max_iterations 软上限命中提示：不中断会话，仅告知用户上下文已保留、可接棒续跑。"""
     if res is None:
@@ -105,6 +115,7 @@ def run(
     no_clarify: bool = typer.Option(False, "--no-clarify", help="关闭意图澄清"),
     no_trace: bool = typer.Option(False, "--no-trace", help="关闭 trace 记录"),
 ) -> None:
+    _ensure_scaffold()
     settings = load_settings(clarify_enabled=not no_clarify, plan_mode=plan)
     tracer = None if no_trace else Tracer()
     model = _build_model(settings, tracer=tracer)
@@ -145,6 +156,7 @@ def chat() -> None:
     /skill <name>（显式加载某 skill 到下一轮）、/context（查看上下文占用）、/compact（手动压缩）。
     输入 exit/quit 退出。
     """
+    _ensure_scaffold()
     settings = load_settings()
     try:
         tracer = Tracer() if settings.obs.enabled else None
@@ -361,6 +373,23 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings) -
             )
     # 退出前再刷一次，避免最后一轮命令产生的通知丢失
     transport.flush_notifications()
+
+
+@app.command()
+def init() -> None:
+    """初始化项目配置骨架：生成 .agent/settings.yaml、skills/、agents/、AGENTS.md。
+
+    仅创建缺失的文件/目录，绝不覆盖已存在的 settings.yaml（以免破坏你的配置）。
+    首次运行 run/chat 也会自动执行同样的逻辑（已存在则跳过）。
+    """
+    from agent.config.settings import scaffold_project
+
+    created = scaffold_project(create_if_exists=True)
+    made = [k for k, v in created.items() if v]
+    if made:
+        typer.echo(f"已创建配置骨架：{', '.join(made)}", err=True)
+    else:
+        typer.echo("配置骨架已存在，无需创建（.agent/settings.yaml 不会被覆盖）。", err=True)
 
 
 @app.command()

@@ -117,6 +117,18 @@ def _build_dynamic_segment(settings) -> str:
     # 日期：移出静态段，避免每轮变化破坏稳定前缀的缓存命中。
     parts.append(f"## 当前日期\n{date.today().isoformat()}\n")
 
+    # 当前工作目录（每轮可能变化，属动态段）：让模型明确知道自己在哪个目录工作，
+    # 尤其是从其他目录用 AGENT_PROJECT_ROOT 启动、或 cwd 与项目根不一致时。
+    cwd = Path.cwd()
+    proj_root_env = os.environ.get("AGENT_PROJECT_ROOT")
+    if proj_root_env:
+        parts.append(
+            f"## 当前工作目录\n{cwd}\n"
+            f"项目根目录（AGENT_PROJECT_ROOT）：{proj_root_env}\n"
+        )
+    else:
+        parts.append(f"## 当前工作目录\n{cwd}\n")
+
     # AGENTS.md 固定底座：永不压缩，每次从磁盘重新读取注入首条 <system-reminder>。
     if settings.context.agents_md_enabled:
         agents_content = _read_agents_md(settings)

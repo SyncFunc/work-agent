@@ -262,3 +262,76 @@ def load_settings(project_root: str | Path | None = None, **overrides: Any) -> S
     overrides = {k: v for k, v in overrides.items() if v is not None}
     with _env_override(AGENT_PROJECT_ROOT=project_root):
         return Settings(**overrides)
+
+
+# --------------------------------------------------------------------------- #
+# 首次运行脚手架（M4.5 增强）：在项目级 .agent/ 下生成配置骨架
+# --------------------------------------------------------------------------- #
+_AGENTS_MD_TEMPLATE = """# AGENTS.md（项目约定）
+
+本文件由 Agent 自动维护，记录项目级约定与上下文。
+- 在此填写项目的编码规范、目录结构、常用命令等。
+- 模型每次请求都会读取本文件（永不压缩）。
+- 也可在项目根创建 AGENTS.md 并提交到版本库，优先级更高。
+"""
+
+
+def scaffold_project(
+    project_root: str | Path | None = None,
+    *,
+    create_if_exists: bool = False,
+) -> dict[str, bool]:
+    """首次运行 scaffolding：在项目级 ``.agent/`` 下生成配置骨架。
+
+    产物：
+      - ``.agent/settings.yaml``（若不存在，从 ``settings.example.yaml`` 复制）
+      - ``.agent/skills/``、``.agent/agents/``（空目录占位）
+      - ``.agent/AGENTS.md``（最小模板，若缺失）
+
+    ``create_if_exists=False``（自动首次运行）：若 ``.agent/`` 已存在则**整体跳过**，
+    避免在既有项目中误建目录/文件（幂等、不污染）。
+    ``create_if_exists=True``（显式 ``init`` 命令）：即便 ``.agent/`` 已存在，也补齐
+    缺失项，但**绝不覆盖已存在的 ``settings.yaml``**（避免破坏用户配置）。
+
+    返回各产物是否新建的字典（空字典表示整体跳过）。
+    """
+    root = Path(project_root) if project_root else Path(
+        os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd()
+    )
+    agent_dir = root / ".agent"
+
+    # 自动模式：已有 .agent 则不再触碰
+    if agent_dir.exists() and not create_if_exists:
+        return {}
+
+    agent_dir.mkdir(parents=True, exist_ok=True)
+    created: dict[str, bool] = {}
+
+    # settings.yaml（从示例复制；已存在则不覆盖）
+    settings_path = agent_dir / "settings.yaml"
+    if not settings_path.exists():
+        example = Path(__file__).parent / "settings.example.yaml"
+        text = example.read_text(encoding="utf-8") if example.exists() else ""
+        settings_path.write_text(text, encoding="utf-8")
+        created["settings.yaml"] = True
+    else:
+        created["settings.yaml"] = False
+
+    # skills / agents 目录占位
+    for sub in ("skills", "agents"):
+        d = agent_dir / sub
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            created[sub] = True
+        else:
+            created[sub] = False
+
+    # AGENTS.md（自动维护版；已存在则不覆盖）
+    agents_md = agent_dir / "AGENTS.md"
+    if not agents_md.exists():
+        agents_md.write_text(_AGENTS_MD_TEMPLATE, encoding="utf-8")
+        created["AGENTS.md"] = True
+    else:
+        created["AGENTS.md"] = False
+
+    return created

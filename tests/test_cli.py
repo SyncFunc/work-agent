@@ -80,6 +80,51 @@ def test_run_clarification_non_interactive_errors(runner, monkeypatch):
     assert "用哪个框架" in result.output  # 问题被打印出来（合并输出）
 
 
+def test_scaffold_creates_skeleton_in_fresh_project(monkeypatch, tmp_path):
+    """首次运行（无 .agent/）应生成配置骨架；再次运行（已存在）应为 no-op。"""
+    monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
+    from agent.config.settings import scaffold_project
+
+    created = scaffold_project()
+    assert created.get("settings.yaml") and created.get("skills")
+    assert created.get("agents") and created.get("AGENTS.md")
+    assert (tmp_path / ".agent" / "settings.yaml").is_file()
+    assert (tmp_path / ".agent" / "skills").is_dir()
+    assert (tmp_path / ".agent" / "agents").is_dir()
+    assert (tmp_path / ".agent" / "AGENTS.md").is_file()
+
+    # 二次调用：.agent 已存在 → 整体跳过，不覆盖
+    created2 = scaffold_project()
+    assert created2 == {}
+
+
+def test_scaffold_init_fills_missing_without_overwrite(monkeypatch, tmp_path):
+    """create_if_exists=True 应补齐缺失项，但不覆盖已有 settings.yaml。"""
+    monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
+    from agent.config.settings import scaffold_project
+
+    (tmp_path / ".agent").mkdir()
+    (tmp_path / ".agent" / "settings.yaml").write_text(
+        "llm:\n  model: custom-model\n", encoding="utf-8"
+    )
+    created = scaffold_project(create_if_exists=True)
+    assert created.get("settings.yaml") is False  # 不覆盖
+    assert created.get("skills") and created.get("agents")  # 补齐缺失目录
+
+    content = (tmp_path / ".agent" / "settings.yaml").read_text(encoding="utf-8")
+    assert "custom-model" in content  # 原配置保留
+
+
+def test_cli_init_command_creates_skeleton(runner, monkeypatch, tmp_path):
+    """`agent init` 显式创建配置骨架。"""
+    monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
+    result = runner.invoke(app, ["init"])
+    assert result.exit_code == 0
+    assert (tmp_path / ".agent" / "settings.yaml").is_file()
+    assert (tmp_path / ".agent" / "skills").is_dir()
+    assert (tmp_path / ".agent" / "agents").is_dir()
+
+
 def test_parse_multi_selection_by_index_and_label():
     """回归：多选解析支持「编号(逗号分隔)」与「标签(逗号分隔)」，并去重保序。
 

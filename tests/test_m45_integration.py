@@ -91,6 +91,18 @@ async def test_build_system_prompt_static_prefix_stable_across_dates(monkeypatch
     assert "2026-01-01" in p1 and "2026-12-31" in p2    # 动态段日期各自变化
 
 
+async def test_build_system_prompt_includes_cwd(monkeypatch, tmp_path):
+    """动态段须注入当前工作目录路径；设置 AGENT_PROJECT_ROOT 时也展示项目根。"""
+    from pathlib import Path as _Path
+
+    monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
+    prompt = build_system_prompt(Settings())
+    assert "## 当前工作目录" in prompt
+    assert str(_Path.cwd()) in prompt
+    assert "AGENT_PROJECT_ROOT" in prompt
+    assert str(tmp_path) in prompt
+
+
 async def test_read_agents_md_priority_project_root_over_user(monkeypatch, tmp_path):
     """读取优先级：项目根 AGENTS.md > 用户级 AGENTS.md。"""
     proj = tmp_path / "proj"

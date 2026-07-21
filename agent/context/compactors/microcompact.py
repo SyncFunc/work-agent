@@ -7,8 +7,10 @@
 设计要点（见 milestones/M4.../4.2）：
 - 零 API 调用，纯字符串替换；消息条数不变，索引不变。
 - 只改 ``content``，保留 ``tool_call_id``，不拆散 ``tool_use`` / ``tool_result`` 配对。
-- 只操作 ``compact_boundary`` 之前的消息（已被压缩过的不再处理）。
-- ``keep_recent`` 默认 5：最近的工具结果保留，否则模型看不到当前正在改的代码。
+- 作用于**整个当前 conv**（``boundary = len(conv)``），而非仅 ``compact_boundary`` 之前：
+  边界之前的内容已被 auto-compact 压成摘要（无 ``role="tool"`` 长结果可清），且会话前期
+  ``compact_boundary=0`` 会使 Microcompact 整体失效；故独立于 auto-compact 边界处理全量。
+- ``keep_recent`` 默认 5：保留最近的工具结果，否则模型看不到当前正在改的代码。
 - 只压缩来自「大输出类工具」（bash/read/grep/glob/write/edit/find）的结果；通过
   ``tool_call_id`` 交叉 assistant 消息的 ``tool_calls`` 得到工具名，确保非大输出工具
   （如 AskUserQuestion 的回执）不被误压缩。
