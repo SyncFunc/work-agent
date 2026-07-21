@@ -114,6 +114,28 @@ class ContextManager:
         used_pct = total / self.effective_window if self.effective_window > 0 else 0.0
         return ContextUsage(fixed, dynamic, tools, msg_tokens, total, available, used_pct)
 
+    def format_usage(self) -> str:
+        """返回可读的上下文占用摘要（供 CLI 渲染 / ``/context`` 命令）。"""
+        usage = self.estimate_usage()
+        lines = [
+            "📊 上下文占用明细：",
+            f"  System Prompt 静态段：{usage.system_fixed:,} tokens",
+            f"  System Prompt 动态段：{usage.system_dynamic:,} tokens",
+            f"  Tools 列表：          {usage.tools:,} tokens",
+            f"  对话历史：            {usage.messages:,} tokens",
+            "  ─────────────────────────",
+            f"  总占用：              {usage.total:,} / {self.effective_window:,} tokens",
+            f"  剩余可用：            {usage.available:,} tokens",
+            f"  使用率：              {usage.used_pct:.1%}",
+        ]
+        if self.history:
+            last = self.history[-1]
+            lines.append(
+                f"  上次压缩：            {last.method} "
+                f"({last.before_tokens:,} → {last.after_tokens:,})"
+            )
+        return "\n".join(lines)
+
     def should_compact(self) -> bool:
         """是否需要触发压缩？"""
         usage = self.estimate_usage()

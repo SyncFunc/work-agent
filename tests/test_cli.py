@@ -312,3 +312,90 @@ def test_background_spawn_injects_summary(monkeypatch):
     assert msg.role == "user"
     assert "[Background Subagent general-purpose" in msg.content
     assert "background result summary" in msg.content
+
+
+# --------------------------------------------------------------------------- #
+# M4.6 CLI：/context /compact 命令 + 状态栏
+# --------------------------------------------------------------------------- #
+def test_chat_context_command_shows_usage(runner, monkeypatch):
+    """/context 打印上下文占用明细（分类/总占用/剩余/使用率）。"""
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/context\nexit\n")
+
+    assert result.exit_code == 0
+    assert "上下文占用明细" in result.output
+    assert "总占用" in result.output
+    assert "剩余可用" in result.output
+    assert "使用率" in result.output
+
+
+def test_chat_context_command_no_context_mgr(runner, monkeypatch):
+    """全部关闭上下文管理时，/context 提示未启用。"""
+    from agent.config.settings import load_settings as _real_load
+
+    def _disabled(*a, **k):
+        s = _real_load(*a, **k)
+        s.context.microcompact_enabled = False
+        s.context.auto_compact_enabled = False
+        s.context.session_memory_enabled = False
+        return s
+
+    monkeypatch.setattr("agent.cli.load_settings", _disabled)
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/context\nexit\n")
+
+    assert result.exit_code == 0
+    assert "上下文管理未启用" in result.output
+
+
+def test_chat_compact_command_triggers_compaction(runner, monkeypatch):
+    """/compact 触发压缩并打印完成结果。"""
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/compact\nexit\n")
+
+    assert result.exit_code == 0
+    assert "正在压缩上下文" in result.output
+    assert "压缩完成" in result.output
+
+
+def test_chat_compact_command_no_context_mgr(runner, monkeypatch):
+    """全部关闭上下文管理时，/compact 提示未启用。"""
+    from agent.config.settings import load_settings as _real_load
+
+    def _disabled(*a, **k):
+        s = _real_load(*a, **k)
+        s.context.microcompact_enabled = False
+        s.context.auto_compact_enabled = False
+        s.context.session_memory_enabled = False
+        return s
+
+    monkeypatch.setattr("agent.cli.load_settings", _disabled)
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="/compact\nexit\n")
+
+    assert result.exit_code == 0
+    assert "上下文管理未启用" in result.output
+
+
+def test_terminal_transport_status_line_colors():
+    """_status_line 按占比着色（>90% 红 / >70% 黄 / 否则绿），无 context_mgr 返回空。"""
+    from agent.context.manager import ContextManager
+    from agent.runtime.terminal_transport import TerminalTransport
+
+    def _make_cm(fixed: int, window: int = 1000) -> ContextManager:
+        cm = ContextManager(context_window=window, max_output_tokens=200)
+        cm._system_fixed = fixed
+        cm._tools = 0
+        cm._system_dynamic = 0
+        return cm
+
+    # effective_window = 1000 - 200 = 800
+    red = TerminalTransport(interactive=False, context_mgr=_make_cm(750))   # 93.75% → red
+    yellow = TerminalTransport(interactive=False, context_mgr=_make_cm(600))  # 75% → yellow
+    green = TerminalTransport(interactive=False, context_mgr=_make_cm(400))  # 50% → green
+    none = TerminalTransport(interactive=False)
+
+    assert "ctx:" in red._status_line() and "[red]" in red._status_line()
+    assert "ctx:" in yellow._status_line() and "[yellow]" in yellow._status_line()
+    assert "ctx:" in green._status_line() and "[green]" in green._status_line()
+    assert none._status_line() == ""

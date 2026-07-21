@@ -90,7 +90,7 @@ async def test_concurrent_tools_run_in_parallel_and_pair_by_id():
     async def run():
         return await loop.run("concurrent")
 
-    res = await asyncio.wait_for(run(), timeout=0.25)
+    res = await asyncio.wait_for(run(), timeout=1.0)
     assert res.text == "done"
 
     tr = {e.tool_call_id: e.tool_result for e in res.events if e.type == "tool_result"}

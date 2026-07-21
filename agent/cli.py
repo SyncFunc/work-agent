@@ -104,7 +104,7 @@ def run(
     reg = default_registry
     session = Session(model, reg, settings, tracer, plan_mode=plan, trace_store=trace_store)
 
-    transport = TerminalTransport(interactive=sys.stdin.isatty())
+    transport = TerminalTransport(interactive=sys.stdin.isatty(), context_mgr=session.context_mgr)
     try:
         res, err = asyncio.run(
             session.step(task, transport, yes=yes, fatal_plan_decline=True)
@@ -134,7 +134,8 @@ def chat() -> None:
 
     任意轮次用命令切换模式：/plan（探索） / exec（执行） / approve（批准计划并切执行）
     / mode（查看当前模式）。扩展命令：/skills（列出 skill）、/agents（列出 subagent 类型）、
-    /skill <name>（显式加载某 skill 到下一轮）。输入 exit/quit 退出。
+    /skill <name>（显式加载某 skill 到下一轮）、/context（查看上下文占用）、/compact（手动压缩）。
+    输入 exit/quit 退出。
     """
     settings = load_settings()
     try:
@@ -148,9 +149,9 @@ def chat() -> None:
     trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
     reg = default_registry
     session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store)
-    transport = TerminalTransport(interactive=True)
+    transport = TerminalTransport(interactive=True, context_mgr=session.context_mgr)
 
-    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；exit/quit 退出）。")
+    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；/context 查看占用；/compact 手动压缩；exit/quit 退出）。")
     try:
         asyncio.run(_chat_repl(session, transport, settings))
     except KeyboardInterrupt:
@@ -183,11 +184,14 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings) -
         # 每轮等待输入前刷出积压通知（后台 Subagent 完成/错误可能在空闲时到达）；
         # 通知由 TerminalTransport 在不在流式 Live 中的安全时机呈现，不会打断前台渲染。
         transport.flush_notifications()
+        # M4.6：prompt 前缀显示上下文占比状态栏（ctx: 45%），无 context_mgr 时为空。
+        status = transport._status_line()
+        prefix = f"[{status}] you" if status else "you"
         try:
             if ptk is not None:
-                task = await ptk.prompt_async("you: ")
+                task = await ptk.prompt_async(f"{prefix}: ")
             else:
-                task = typer.prompt("you")
+                task = typer.prompt(prefix)
         except (EOFError, KeyboardInterrupt):
             break
         cmd = task.strip().lower()
@@ -218,6 +222,31 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings) -
         if cmd in {"/mode"}:
             typer.echo(f"→ 当前模式：{'PLAN' if session.plan_mode else 'EXEC'}"
                        + (f"，计划：{session.plan_path}" if session.plan_path else ""), err=True)
+            continue
+        # ---- M4.6：上下文命令（/context /compact）----
+        if cmd in {"/context"}:
+            if session.context_mgr is not None:
+                typer.echo(session.context_mgr.format_usage(), err=True)
+            else:
+                typer.echo("→ 上下文管理未启用（settings.context.*_enabled 全为 false）", err=True)
+            continue
+        if cmd in {"/compact"}:
+            if session.context_mgr is not None:
+                typer.echo("→ 正在压缩上下文...", err=True)
+                ok = await session.context_mgr.compact()
+                if ok:
+                    # 压缩后自动以新 conv 替换会话历史（与 Session.step 末尾逻辑一致）。
+                    session.messages = session.context_mgr.conv
+                    usage = session.context_mgr.estimate_usage()
+                    typer.echo(
+                        f"✅ 压缩完成。当前占用：{usage.total:,} / "
+                        f"{session.context_mgr.effective_window:,} ({usage.used_pct:.1%})",
+                        err=True,
+                    )
+                else:
+                    typer.echo("⚠️ 压缩未执行（上下文尚小或连续失败已放弃）", err=True)
+            else:
+                typer.echo("→ 上下文管理未启用（settings.context.*_enabled 全为 false）", err=True)
             continue
         # ---- M5.4：Skill / Subagent 命令（仅改 Session 状态，不调模型）----
         if cmd in {"/skills"}:

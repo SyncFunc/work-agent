@@ -357,6 +357,17 @@ flowchart TD
 - **集成点**：`Session.step()` 每轮前 `set_conv(messages)`、每轮后 `should_compact()`→`compact()`→`messages = context_mgr.conv`；`Loop.run()` 每轮 `_decide` 前对 conv 投影 `apply_microcompact()`（绝不碰 `EventStream`）；`Loop._exec_tools` 对 `read/write/edit` 调 `track_file_access(path)` 供防漂移。
 - **测试**：`tests/test_m45_integration.py` 新增 9 用例（build_context_manager 开关 / session_memory 透传 / AGENTS.md 注入与优先级 / 静态前缀稳定 / Session 构建或跳过 context_mgr / Loop 接入 microcompact+文件跟踪），全绿。
 
+## M4.6 沉淀（CLI 命令 /context /compact + 状态栏）
+
+> 来源：`milestones/M4-上下文与记忆/4.6-CLI命令.md`。在 chat REPL 暴露上下文可观测命令与实时占比状态栏。
+
+- **`/context` 命令**：chat REPL 中 `cmd == "/context"` → 若 `session.context_mgr` 非空调 `context_mgr.format_usage()`（err 输出）；否则提示"上下文管理未启用（settings.context.*_enabled 全为 false）"。
+- **`/compact` 命令**：`cmd == "/compact"` → `await session.context_mgr.compact()`；成功后**以新 conv 替换会话历史** `session.messages = session.context_mgr.conv`（与 `Session.step` 末尾同步逻辑一致）。chat REPL 本就是 `async def _chat_repl`，故直接 `await`，无需 `asyncio.run()` 嵌套（比 4.6 文档原方案的嵌套更简洁且无事件循环冲突）。
+- **状态栏**：`TerminalTransport` 新增可选 `context_mgr` 构造参数 + `_status_line()` 方法，返回 `ctx: [color]NN%[/color]` 富文本；占比 >90% 红、>70% 黄、否则绿；无 `context_mgr` 返回空串。`chat`/`run` 创建 `TerminalTransport` 时注入 `session.context_mgr`；REPL 每轮 `prompt_async(f"{prefix}: ")` 的 `prefix` 由 `_status_line()` 拼接。
+- **`ContextManager.format_usage()`**：多行摘要（静态段/动态段/Tools/对话历史/总占用/剩余/使用率 + 最近一次 `history` 压缩记录），供 CLI 与测试复用。
+- **⚠️ 字段位置坑**：`ContextUsage` 只有 `total`/`used_pct` 等字段，`effective_window` 在 `ContextManager` 上；打印当前占用取 `session.context_mgr.effective_window` 而非 `usage.effective_window`。
+- **测试**：`tests/test_cli.py` 新增 5 用例（/context 明细 / 无 context_mgr 提示 / /compact 触发 / 无 context_mgr 提示 / 状态栏着色），全绿。
+
 ## M5 沉淀（SkillLoader + SubagentSpawner，落地后补全）
 
 > 来源：`milestones/M5-扩展能力/`（5.1~5.5）。当前仅文档完成，编码落地后在此汇总跨步骤接口/决策/坑。设计依据见 `knowledge/claude-code-subagents-skills.md`。

@@ -188,9 +188,11 @@ class SubagentPanelHub:
 class TerminalTransport(AgentTransport):
     """``AgentTransport`` 的 rich 终端实现：把 HITL 交互与事件流渲染统一到单一契约。"""
 
-    def __init__(self, *, interactive: bool) -> None:
+    def __init__(self, *, interactive: bool, context_mgr: "Any | None" = None) -> None:
         self._interactive = interactive
         self._console = Console()
+        # M4.6：可选上下文管理器，用于状态栏实时显示占用占比。
+        self._context_mgr = context_mgr
         self._saw_reasoning = False   # 本思考段是否已打印过 "💭 思考:" 头
         self._live = None             # 当前内容段的 Live（流式 Markdown 面板）
         self._buf = ""                # 当前内容段累积文本
@@ -228,6 +230,19 @@ class TerminalTransport(AgentTransport):
     # ------------------------------------------------------------------ #
     # 渲染：由 bind 订阅的事件流驱动（取代原 LoopPresenter 回调）
     # ------------------------------------------------------------------ #
+    def _status_line(self) -> str:
+        """生成状态栏信息（上下文占比），供 chat prompt 前缀展示。
+
+        - 未配置 ``context_mgr`` 时返回空串。
+        - 占比 >90% 红、>70% 黄、否则绿（rich 标记）。
+        """
+        if self._context_mgr is None:
+            return ""
+        usage = self._context_mgr.estimate_usage()
+        pct = usage.used_pct
+        color = "red" if pct > 0.9 else ("yellow" if pct > 0.7 else "green")
+        return f"ctx: [{color}]{pct:.0%}[/{color}]"
+
     def bind(self, stream: EventStream) -> None:
         """订阅 EventStream：loop 创建流后即调用，执行期事件实时到达本 sink。"""
         self._tc_by_id = {}
