@@ -197,6 +197,12 @@ class TerminalTransport(AgentTransport):
         self._tool_live = None        # 工具调用参数流式预览的 Live（write/edit 内容实时显示）
         self._tc_by_id: dict[str, Any] = {}   # tool_use 事件收集，供 tool_result 取工具名
         self._plan_steps: list[Any] | None = None  # 计划步骤（show_plan 时记录，progress 增量更新）
+        # 通知缓冲：notify() 只记录、不渲染；由 flush_notifications() 在不在流式 Live 中的
+        # 安全时机统一呈现（见 notify / flush_notifications / close）。
+        self._pending_notifications: list[str] = []
+        # 渲染缓冲：需要在「不在流式 Live / 不在 ptk 输入行」的安全时机才打印的内容
+        # （如后台 Subagent 的最终面板）。由 flush_notifications() 一并刷出。
+        self._pending_renderables: list[Any] = []
         # 子 agent 面板集（并行安全）：交互模式下创建一个顶层唯一 Live，所有层级的子 agent
         # 共用；非交互则不创建（子 agent 走降级渲染，见 agent/subagent.py）。
         # 用 _own_hub 记录「本传输自己拥有的 hub」：close 只停自己的，避免子 agent 的
@@ -457,6 +463,8 @@ class TerminalTransport(AgentTransport):
         # 不能在此停——否则会误关父 hub 连累其他并行子 agent）。
         if self._own_hub is not None:
             self._own_hub.stop_all()
+        # 收尾后再呈现积压通知（此时 Live 已停止，不会打断流式输出）
+        self.flush_notifications()
 
 
     def report_usage(self, usage: dict[str, int] | None, answer: str | None = None) -> None:
@@ -538,7 +546,31 @@ class TerminalTransport(AgentTransport):
         return ans.strip().lower() in {"y", "yes", "是"}
 
     def notify(self, message: str) -> None:
-        typer.echo(message, err=True)
+        """记录一条通知（不负责渲染）。
+
+        ``notify`` 的语义只是「发出一条通知信号」，不在调用点直接渲染（避免在流式 Live
+        进行中打断输出）。真正的呈现由 ``flush_notifications()`` 在不在 Live 中的安全时机完成
+        （本类在 ``close()`` 内自动触发；REPL 每轮等待输入前也会触发）。
+        """
+        self._pending_notifications.append(message)
+
+    def queue_render(self, renderable: Any) -> None:
+        """把一条需要安全时机渲染的内容（如后台 Subagent 最终面板）入队。
+
+        后台 Subagent 运行时用户正处于 prompt_toolkit 输入行，直接打印会与输入行争用终端
+        导致渲染错乱；故先入队，由 ``flush_notifications()`` 在不在流式 Live / 不在 ptk 输入行
+        的安全窗口统一打印。
+        """
+        self._pending_renderables.append(renderable)
+
+    def flush_notifications(self) -> None:
+        """把积压的通知与渲染内容输出到终端（应在不在流式 Live 中的安全时机调用）。"""
+        for msg in self._pending_notifications:
+            typer.echo(msg, err=True)
+        self._pending_notifications.clear()
+        for r in self._pending_renderables:
+            self._console.print(r)
+        self._pending_renderables.clear()
 
     # ------------------------------------------------------------------ #
     # M5.4：Skill / Subagent 列表面板（仅展示 name+描述等精简信息，不含正文）
@@ -631,7 +663,7 @@ class _SubAgentTransport(TerminalTransport):
     def __init__(
         self,
         parent: "AgentTransport | None", *,
-        name: str = "subagent", panel_height: int = 15,
+        name: str = "subagent", panel_height: int = 15, live: bool = True,
     ) -> None:
         interactive = bool(parent.interactive) if parent is not None else False
         super().__init__(interactive=interactive)
@@ -639,14 +671,19 @@ class _SubAgentTransport(TerminalTransport):
         self._name = name
         # 仅作信息性保留（旧测试引用）；渲染不再强制固定高度，改用终端动态预算
         self._panel_height = max(3, panel_height)
+        # live=True：注册进父 hub，用顶层唯一 Live 实时渲染（前台 subagent 用，此时用户不处于
+        #   输入提示行，不会与 prompt_toolkit 争用终端）。
+        # live=False：仅累积条目、不渲染；最终面板由 close() 交给父传输在「不在 ptk 输入行」的
+        #   安全时机打印（后台 subagent 用，运行时用户正处于输入提示行，直接打印会渲染错乱）。
+        self._use_live = live
         self._slot = None
         # 已定稿的带框条目：(rich renderable, 估计渲染行数)
         self._entries: list[tuple[Any, int]] = []
         self._stream_text = ""     # 当前流式模型输出（未定稿）
         self._reasoning_text = ""  # 当前流式思考（未定稿）
-        # 仅交互模式：把自身面板注册进父 hub（所有层级共用顶层唯一 Live）。
+        # 仅交互模式且 live=True：把自身面板注册进父 hub（所有层级共用顶层唯一 Live）。
         # 用 getattr 容错：测试用的假父传输可能没有 hub（此时退化为无面板渲染）。
-        if interactive and parent is not None:
+        if live and interactive and parent is not None:
             hub = getattr(parent, "subagent_hub", None)
             if hub is not None:
                 self._slot = hub.register(f"▶ subagent: {self._name}")
@@ -654,6 +691,13 @@ class _SubAgentTransport(TerminalTransport):
     @property
     def interactive(self) -> bool:
         return bool(self._parent.interactive) if self._parent is not None else False
+
+    def notify(self, message: str) -> None:
+        # 子 agent 的通知委派给父传输：统一进父的缓冲，由父在合适时机呈现，自身不渲染。
+        if self._parent is not None:
+            self._parent.notify(message)
+        else:
+            super().notify(message)
 
     @property
     def subagent_hub(self):
@@ -772,59 +816,93 @@ class _SubAgentTransport(TerminalTransport):
         self.subagent_hub.refresh()
 
     def on_text(self, text: str, kind: str) -> None:
-        if self._slot is None:
+        if self._slot is not None:
+            if kind == "reasoning":
+                self._reasoning_text += text
+            else:
+                self._stream_text += text
+            self._refresh_sub()
+        elif self._use_live:
+            # 交互但 hub 缺失（理论上极少）：退化为父级渲染
             return super().on_text(text, kind)
-        if kind == "reasoning":
-            self._reasoning_text += text
         else:
-            self._stream_text += text
-        self._refresh_sub()
+            # 后台非实时模式：仅累积，不在 ptk 提示期间渲染，避免与输入行争用终端
+            if kind == "reasoning":
+                self._reasoning_text += text
+            else:
+                self._stream_text += text
 
     def on_tool_call(self, tc) -> None:
-        if self._slot is None:
+        if self._slot is not None:
+            self._finalize_stream()
+            r, n = self._tool_call_panel(tc)
+            self._entries.append((r, n))
+            self._refresh_sub()
+        elif self._use_live:
             return super().on_tool_call(tc)
-        self._finalize_stream()
-        r, n = self._tool_call_panel(tc)
-        self._entries.append((r, n))
-        self._refresh_sub()
+        else:
+            self._finalize_stream()
+            r, n = self._tool_call_panel(tc)
+            self._entries.append((r, n))
 
     def on_tool_call_delta(self, index, name, args_raw) -> None:
-        if self._slot is None:
+        if self._slot is not None:
+            return  # 瞬时事件不单独渲染，避免面板抖动（定稿由 on_tool_call / on_tool_result 展示）
+        elif self._use_live:
             return super().on_tool_call_delta(index, name, args_raw)
-        # 瞬时事件不单独渲染，避免面板抖动（定稿由 on_tool_call / on_tool_result 展示）
+        # 后台非实时：忽略瞬时事件
 
     def on_tool_result(self, tc, res) -> None:
-        if self._slot is None:
+        if self._slot is not None:
+            self._finalize_stream()
+            if tc.name == SPAWN_SUBAGENT_TOOL_NAME:
+                return
+            if tc.name == UPDATE_PLAN_TOOL_NAME:
+                return  # 已在 on_tool_call 以「📋 计划更新」面板展示，避免重复
+            r, n = self._tool_result_panel(tc, res)
+            self._entries.append((r, n))
+            self._refresh_sub()
+        elif self._use_live:
             return super().on_tool_result(tc, res)
-        self._finalize_stream()
-        if tc.name == SPAWN_SUBAGENT_TOOL_NAME:
-            return
-        if tc.name == UPDATE_PLAN_TOOL_NAME:
-            return  # 已在 on_tool_call 以「📋 计划更新」面板展示，避免重复
-        r, n = self._tool_result_panel(tc, res)
-        self._entries.append((r, n))
-        self._refresh_sub()
+        else:
+            self._finalize_stream()
+            if tc.name in (SPAWN_SUBAGENT_TOOL_NAME, UPDATE_PLAN_TOOL_NAME):
+                return
+            r, n = self._tool_result_panel(tc, res)
+            self._entries.append((r, n))
 
     def on_plan_progress(self, ev) -> None:
-        if self._slot is None:
+        if self._slot is not None:
+            self._finalize_stream()
+            upd = ev.plan_update or {}
+            text = f"{upd.get('step_id', '?')} → {upd.get('status', '?')}"
+            p = Panel(text, title="📋 计划进度", border_style="magenta", expand=False)
+            self._entries.append((p, self._est_lines(text) + 2))
+            self._refresh_sub()
+        elif self._use_live:
             return super().on_plan_progress(ev)
-        self._finalize_stream()
-        upd = ev.plan_update or {}
-        text = f"{upd.get('step_id', '?')} → {upd.get('status', '?')}"
-        p = Panel(text, title="📋 计划进度", border_style="magenta", expand=False)
-        self._entries.append((p, self._est_lines(text) + 2))
-        self._refresh_sub()
+        else:
+            self._finalize_stream()
+            upd = ev.plan_update or {}
+            text = f"{upd.get('step_id', '?')} → {upd.get('status', '?')}"
+            p = Panel(text, title="📋 计划进度", border_style="magenta", expand=False)
+            self._entries.append((p, self._est_lines(text) + 2))
 
     def _on_decision_done(self) -> None:
-        if self._slot is None:
+        if self._slot is not None:
+            self._finalize_stream()
+            self._refresh_sub()
+        elif self._use_live:
             return super()._on_decision_done()
-        self._finalize_stream()
-        self._refresh_sub()
+        else:
+            self._finalize_stream()
 
     def report_usage(self, usage: dict[str, int] | None, answer: str | None = None) -> None:
-        if self._slot is None:
+        if self._slot is not None:
+            return  # 子 agent 不单独刷 token 面板，避免与条目挤占高度
+        elif self._use_live:
             return super().report_usage(usage, answer)
-        # 子 agent 不单独刷 token 面板，避免与条目挤占高度
+        # 后台非实时：不刷 token 面板
 
     def close(self) -> None:
         # 定稿并刷新后，把自身 slot 从 hub 注销（最后一个注销时 hub 自动 stop 其唯一 Live）
@@ -834,7 +912,40 @@ class _SubAgentTransport(TerminalTransport):
             if self.subagent_hub is not None:
                 self.subagent_hub.unregister(self._slot)
             self._slot = None
+        else:
+            # 后台非实时模式（live=False）：不在 ptk 输入行期间渲染，把累积条目定稿成最终面板，
+            # 交给父传输在「不在流式 Live / 不在 ptk 输入行」的安全时机打印（见 queue_render /
+            # flush_notifications）。
+            if not self._use_live and self._parent is not None:
+                self._finalize_stream()
+                panel = self._build_final_panel()
+                if panel is not None:
+                    # 父传输未必是 TerminalTransport（协议未声明 queue_render）；用 getattr 容错，
+                    # 无该方法时退化为直接打印（仅在非 ptk 争用环境下才有保障，生产父传输均支持）。
+                    qr = getattr(self._parent, "queue_render", None)
+                    if callable(qr):
+                        qr(panel)
+                    elif self._console is not None:
+                        self._console.print(panel)
         super().close()
+
+    def _build_final_panel(self):
+        """把累积的已定稿条目 + 当前流式思考/输出 组装成最终面板（不刷 Live、不打印）。"""
+        parts: list[tuple[Any, int]] = list(self._entries)
+        if self._reasoning_text:
+            rt = self._reasoning_text
+            parts.append((Panel("💭 " + rt, title="💭 思考", border_style="dim", expand=False), 0))
+        if self._stream_text:
+            st = self._stream_text
+            parts.append((Panel(Markdown(st), title="💬 模型输出", border_style="green", expand=False), 0))
+        if not parts:
+            return None
+        return Panel(
+            Group(*[r for r, _ in parts]),
+            title=f"▶ subagent: {self._name}",
+            border_style="blue",
+            expand=False,
+        )
 
     async def ask(self, question) -> str:
         if self._parent is not None and self._parent.interactive:

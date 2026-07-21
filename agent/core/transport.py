@@ -64,7 +64,12 @@ class AgentTransport(Protocol):
         ...
 
     def notify(self, message: str) -> None:
-        """输出一条提示/状态信息（非最终答案，如模式切换、计划未确认等）。"""
+        """记录一条提示/状态信息（非最终答案，如模式切换、计划未确认、后台任务完成等）。
+
+        语义上「notify」只是发出一个通知信号，**不直接负责渲染/输出**；具体呈现由传输实现
+        在合适时机（如不在流式 Live 中的安全窗口）完成。终端实现把它缓冲到
+        ``_pending_notifications``，由 ``flush_notifications()`` / ``close()`` 刷出。
+        """
         ...
 
     def show_skills(self, specs: list) -> None:

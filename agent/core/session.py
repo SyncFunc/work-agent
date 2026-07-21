@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 
 class Session:
-    def __init__(self, model, reg, settings, tracer=None, *, plan_mode: bool = False, plan_path=None, trace_store=None):
+    def __init__(self, model, reg, settings, tracer=None, *, plan_mode: bool = False, plan_path=None, trace_store=None, context_mgr=None):
         from pathlib import Path
 
         from agent.resilience.pipeline import build_sandbox_pipeline
@@ -113,6 +113,21 @@ class Session:
         self._sm_prev_len = 0
         self._sm_updating = False
 
+        # M4.5：上下文管理器（集成压缩 / 固定底座）。优先用注入的，否则依据配置构建。
+        # 至少启用一项压缩能力时才构建并介入（默认全开），全关则保持 None 零开销。
+        self.context_mgr = context_mgr
+        cfg = settings.context
+        if self.context_mgr is None and (
+            cfg.microcompact_enabled or cfg.auto_compact_enabled or cfg.session_memory_enabled
+        ):
+            from agent.context import build_context_manager
+            self.context_mgr = build_context_manager(
+                settings, model, session_memory=self.session_memory, tracer=tracer
+            )
+        # 压缩相关 span 挂在 Session 根 span 下，避免成为新的 root span（可观测性契约）。
+        if self.context_mgr is not None and self.root_span is not None:
+            self.context_mgr.root_span = self.root_span
+
     async def step(
         self,
         task: str,
@@ -123,6 +138,10 @@ class Session:
     ) -> tuple["AgentResult", int | None]:
         current_task = task
         while True:
+            # M4.5：每轮 step 前把当前消息投影交给 ContextManager（压缩作用对象）。
+            if self.context_mgr is not None:
+                self.context_mgr.set_conv(self.messages)
+
             res = await self.loop.run(
                 current_task,
                 self.messages,
@@ -131,6 +150,7 @@ class Session:
                 plan_path=self.plan_path,
                 transport=transport,
                 parent_span=self.root_span,
+                context_mgr=self.context_mgr,
             )
             self.messages = list(res.messages or self.messages)
             self.clarify_total = res.clarify_total
@@ -140,6 +160,14 @@ class Session:
 
             # M4.4：本轮结束后检查是否触发后台 Session Memory 增量更新（零成本首选）
             self._maybe_trigger_session_memory(transport)
+
+            # M4.5：本轮结束后检查并触发压缩；压缩后自动以新 conv 替换会话历史。
+            if self.context_mgr is not None:
+                self.context_mgr.set_conv(self.messages)
+                if self.context_mgr.should_compact():
+                    await self.context_mgr.compact()
+                    self.messages = self.context_mgr.conv
+
 
             # ① 澄清回填
             if res.needs_clarification:
@@ -208,7 +236,8 @@ class Session:
         - 若传入 ``on_done(success: bool)``，在任务收尾（成功/失败）时回调，
           用于释放串行化锁等。
 
-        复用 M5.4 后台 Subagent 机制：独立 loop/context/沙箱/权限，主上下文只拿摘要。
+        复用 M5.4 后台 Subagent 机制：与聊天 REPL 共享同一事件循环（同一 loop/context/沙箱/
+        权限），主上下文只拿摘要。后台任务在用户思考/输入期间由事件循环调度推进。
         """
         if self.subagent_spawner is None:
             transport.notify("subagents 未启用（settings.subagents.enabled=false）")
@@ -218,10 +247,11 @@ class Session:
             transport.notify(f"未找到 subagent: {agent_name}")
             return None
         task_id = f"bg_{uuid.uuid4().hex[:8]}"
+        spawner = self.subagent_spawner  # 局部绑定，供 _run 协程内使用（绕过类型收窄限制）
 
         async def _run() -> None:
             try:
-                result = await self.subagent_spawner.spawn(
+                result = await spawner.spawn(
                     spec, task,
                     depth=0,
                     parent_span=parent_span or self.root_span,
@@ -230,6 +260,7 @@ class Session:
                     parent_transport=transport,
                     parent_sandbox=self.loop.sandbox,
                     parent_gate=self.loop.gate,
+                    live=False,
                 )
                 if result_sink is not None:
                     result_sink(agent_name, task, result.text)

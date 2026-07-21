@@ -232,6 +232,7 @@ class SubagentSpawner:
         parent_messages: list[Message] | None = None,
         parent_sandbox: Any | None = None,
         parent_gate: ApprovalGate | None = None,
+        live: bool = True,
     ) -> AgentResult:
         """构造独立 AgentLoop（独立 EventStream + fork 可选），跑 run()，返回摘要。"""
         if depth >= self.max_depth:
@@ -248,7 +249,7 @@ class SubagentSpawner:
 
         sub_transport = _SubAgentTransport(
             parent=parent_transport, name=spec.name,
-            panel_height=spec.panel_height,
+            panel_height=spec.panel_height, live=live,
         )
 
         # max_turns 限制：克隆 settings 覆盖循环上限

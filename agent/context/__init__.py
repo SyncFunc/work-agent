@@ -18,12 +18,18 @@ from agent.context.compactors.session_memory import (
     SessionMemory,
     SessionMemoryConfig,
 )
-from agent.context.manager import CompactRecord, ContextManager, ContextUsage
+from agent.context.manager import (
+    CompactRecord,
+    ContextManager,
+    ContextUsage,
+    build_context_manager,
+)
 
 __all__ = [
     "ContextManager",
     "ContextUsage",
     "CompactRecord",
+    "build_context_manager",
     "Compactor",
     "Microcompact",
     "AutoCompact",

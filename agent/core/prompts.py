@@ -14,13 +14,18 @@ frontmatter 约定字段：
 
 from __future__ import annotations
 
+import os
 import re
+import subprocess
 from dataclasses import dataclass, field
+from datetime import date
 from pathlib import Path
 from typing import Any
 
 import yaml
 from jinja2 import StrictUndefined, Template
+
+from agent.runtime.sandbox import SandboxProfile
 
 # 包内 prompts 目录：agent/prompts/（随包发布，hatchling 打包 agent 时一并包含）
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
@@ -68,3 +73,106 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
     if not m:
         return "", text
     return m.group(1), m.group(2)
+
+
+# --------------------------------------------------------------------------- #
+# M4.5：System Prompt 静态段 / 动态段分离 + 固定底座（AGENTS.md）
+# --------------------------------------------------------------------------- #
+def _read_agents_md(settings) -> str | None:
+    """读取项目级 ``AGENTS.md`` 固定底座内容（永不压缩，每次投影重新注入）。
+
+    位置优先级（高 → 低）：
+        1) 项目根 ``<AGENT_PROJECT_ROOT>/<agents_md_path>``（用户可编辑，应 commit）
+        2) 项目级 ``<AGENT_PROJECT_ROOT>/.agent/AGENTS.md``（自动维护）
+        3) 用户级 ``<AGENT_USER_CONFIG_DIR or ~/.agent>/AGENTS.md``
+
+    ``settings.context.agents_md_enabled`` 为 False 时直接返回 None。
+    """
+    if not getattr(settings, "context", None) or not settings.context.agents_md_enabled:
+        return None
+    root = Path(os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd())
+    user_root = Path(os.environ.get("AGENT_USER_CONFIG_DIR") or Path.home() / ".agent")
+    rel = settings.context.agents_md_path or "AGENTS.md"
+    candidates = [
+        root / rel,
+        root / ".agent" / "AGENTS.md",
+        user_root / "AGENTS.md",
+    ]
+    for p in candidates:
+        try:
+            if p.is_file():
+                return p.read_text(encoding="utf-8").strip()
+        except Exception:
+            continue
+    return None
+
+
+def _build_dynamic_segment(settings) -> str:
+    """构建 System Prompt 动态段（每轮更新，不进 prompt cache）。
+
+    含：当前日期（外移出静态段以改善缓存命中）、AGENTS.md 固定底座、
+    以及 Git 仓库状态（分支 + 简短 status）。
+    """
+    parts: list[str] = []
+    # 日期：移出静态段，避免每轮变化破坏稳定前缀的缓存命中。
+    parts.append(f"## 当前日期\n{date.today().isoformat()}\n")
+
+    # AGENTS.md 固定底座：永不压缩，每次从磁盘重新读取注入首条 <system-reminder>。
+    if settings.context.agents_md_enabled:
+        agents_content = _read_agents_md(settings)
+        if agents_content:
+            parts.append(
+                f"<system-reminder>\n## AGENTS.md\n{agents_content}\n</system-reminder>\n"
+            )
+
+    # Git 仓库状态（最佳努力，失败静默跳过）。
+    try:
+        branch = subprocess.check_output(
+            ["git", "branch", "--show-current"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        status = subprocess.check_output(
+            ["git", "status", "--short"],
+            text=True, stderr=subprocess.DEVNULL,
+        ).strip()
+        if branch or status:
+            parts.append(f"## Git 状态\n分支：{branch}\n{status[:1000]}\n")
+    except Exception:
+        pass
+
+    return "\n".join(parts)
+
+
+def build_system_prompt(
+    settings,
+    *,
+    plan_mode: bool = False,
+    has_plan: bool = False,
+    clarify_enabled: bool = True,
+    skills_catalog: str = "",
+    agents_catalog: str = "",
+) -> str:
+    """构建完整 System Prompt（静态段 + 动态段），稳定前缀在前以复用 prompt cache。
+
+    静态段来自 ``system.md`` 渲染（身份 / 安全约束 / 工具规范 / 模式指引 / skill·agent 目录），
+    动态段（日期 / AGENTS.md / Git 状态）追加其后且每轮重新生成。
+    """
+    try:
+        _net_allowed = SandboxProfile(settings.sandbox.profile) == SandboxProfile.DANGER_FULL
+    except ValueError:
+        _net_allowed = False
+    static = load_prompt("system").render(
+        clarify_enabled=clarify_enabled,
+        plan_mode=plan_mode,
+        has_plan=has_plan,
+        sandbox_profile=settings.sandbox.profile,
+        approval_mode=settings.approval.mode,
+        network_allowed=_net_allowed,
+        sandbox_exec_policy=list(settings.approval.exec_policy),
+        skills_catalog=skills_catalog,
+        agents_catalog=agents_catalog,
+    )
+    dynamic = _build_dynamic_segment(settings)
+    if dynamic:
+        return static + "\n\n" + dynamic
+    return static

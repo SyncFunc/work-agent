@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import time
+from typing import cast
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -23,7 +24,7 @@ from agent.context.compactors.microcompact import Microcompact, PLACEHOLDER
 from agent.context.compactors.session_memory import SessionMemory
 from agent.context.tokens import _estimate_tokens
 from agent.core.model import Message
-from agent.obs.tracer import Tracer, _span
+from agent.obs.tracer import Span, Tracer, _span
 
 
 @dataclass
@@ -53,6 +54,14 @@ class CompactRecord:
 _COMPACT_TRIGGER_PCT = 0.93
 
 
+class _Unset:
+    """哨兵类型：区分「未传入 microcompact（用默认）」与「显式禁用（None）」。"""
+
+
+# 哨兵实例：缺省 → 构造默认 Microcompact；显式 None → 禁用。
+_UNSET = _Unset()
+
+
 class ContextManager:
     def __init__(
         self,
@@ -64,10 +73,11 @@ class ContextManager:
         system_dynamic_tokens: int = 0,
         tools_tokens: int = 15_000,
         microcompact_keep_recent: int = 5,
-        microcompact: Microcompact | None = None,
+        microcompact: "Microcompact | None | _Unset" = _UNSET,
         auto_compact: AutoCompact | None = None,
         session_memory: SessionMemory | None = None,
         tracer: Tracer | None = None,
+        root_span: "Span | None" = None,
     ):
         self.conv: list[Message] = []
         self.context_window = context_window
@@ -80,10 +90,17 @@ class ContextManager:
         self._system_fixed = system_fixed_tokens
         self._system_dynamic = system_dynamic_tokens
         self._tools = tools_tokens
-        self.microcompact = microcompact or Microcompact(keep_recent=microcompact_keep_recent)
+        # microcompact：缺省（_UNSET）→ 构造默认 Microcompact；显式 None → 禁用。
+        self.microcompact: Microcompact | None
+        if microcompact is _UNSET:
+            self.microcompact = Microcompact(keep_recent=microcompact_keep_recent)
+        else:
+            self.microcompact = cast("Microcompact | None", microcompact)
         self.auto_compact: AutoCompact | None = auto_compact
         self.session_memory: SessionMemory | None = session_memory
         self.tracer = tracer
+        # root_span：Session 根 span，压缩相关 span 挂在其下（避免成为新的 root span）。
+        self.root_span: Span | None = root_span
         self.recent_files: list[str] = []  # 最近操作的文件路径（防漂移用）
 
     def estimate_usage(self) -> ContextUsage:
@@ -112,11 +129,12 @@ class ContextManager:
         Microcompact 作用于**整个当前 conv**（boundary = len(conv)），每次 API 请求前
         清除较旧的大输出类工具结果，保留最近 ``keep_recent`` 个。它独立于 auto-compact
         的 ``compact_boundary``：auto-compacted 区域通常是摘要而非 tool 结果，不会被误伤。
-        空 conv 直接原样返回。
+        空 conv / 未配置 microcompact 直接原样返回。
         """
-        if not self.conv:
+        if not self.conv or self.microcompact is None:
             return self.conv
-        with _span(self.tracer, "compact.microcompact", kind="compact") as mc_span:
+        with _span(self.tracer, "compact.microcompact", kind="compact",
+                   parent=self.root_span) as mc_span:
             out = await self.microcompact.compact(self.conv, len(self.conv))
             if mc_span is not None:
                 repl = sum(1 for m in out if m.role == "tool" and m.content == PLACEHOLDER)
@@ -152,7 +170,8 @@ class ContextManager:
         ① Microcompact（零成本）→ ② 仍超阈值则 ③a 优先 Session Memory Compact
         （复用摘要，零 API 调用）；无摘要时 ③b 降级 Auto Compact（1 次调用）。
         """
-        with _span(self.tracer, "context.compact", kind="compact") as cspan:
+        with _span(self.tracer, "context.compact", kind="compact",
+                   parent=self.root_span) as cspan:
             if cspan is not None:
                 cspan.log("trigger_pct", round(self.estimate_usage().used_pct, 4))
             # ① Microcompact（零成本）
@@ -247,3 +266,36 @@ class ContextManager:
     def get_active_messages(self) -> list[Message]:
         """获取 boundary 之后的有效消息（压缩前原文 + 压缩后消息）。"""
         return list(self.conv)
+
+
+def build_context_manager(
+    settings,
+    model,
+    *,
+    session_memory: "SessionMemory | None" = None,
+    tracer: "Tracer | None" = None,
+) -> "ContextManager":
+    """从 ``Settings`` 构造 ``ContextManager``（M4.5 集成入口）。
+
+    依据 ``settings.context`` 的子开关决定各压缩器是否启用：
+    - ``microcompact_enabled`` → 构造 ``Microcompact``（零成本，每轮请求前清除旧 tool 结果）；
+    - ``auto_compact_enabled`` → 构造 ``AutoCompact(model)``（1 次调用兜底摘要）；
+    - ``session_memory`` 由调用方（Session）依据 ``session_memory_enabled`` 先构造后传入
+      （依赖 Auto Compact 开启，见 M4.4）。
+    """
+    cfg = settings.context
+    microcompact = (
+        Microcompact(keep_recent=cfg.microcompact_keep_recent)
+        if cfg.microcompact_enabled else None
+    )
+    auto_compact = AutoCompact(model, tracer=tracer) if cfg.auto_compact_enabled else None
+    return ContextManager(
+        context_window=cfg.context_window,
+        max_output_tokens=cfg.max_output_tokens,
+        compact_buffer=cfg.compact_buffer,
+        microcompact_keep_recent=cfg.microcompact_keep_recent,
+        microcompact=microcompact,
+        auto_compact=auto_compact,
+        session_memory=session_memory,
+        tracer=tracer,
+    )

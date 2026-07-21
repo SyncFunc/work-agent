@@ -151,9 +151,43 @@ def chat() -> None:
     transport = TerminalTransport(interactive=True)
 
     typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；exit/quit 退出）。")
+    try:
+        asyncio.run(_chat_repl(session, transport, settings))
+    except KeyboardInterrupt:
+        pass
+    typer.echo("")
+    # 退出前持久化最终 trace
+    if tracer is not None and trace_store is not None:
+        trace_store.save_trace(tracer)
+    _print_trace(tracer)
+
+
+async def _chat_repl(session: Session, transport: TerminalTransport, settings) -> None:
+    """异步 REPL 主循环：单一事件循环驱动前台 step 与后台 Subagent 并发。
+
+    - 交互 TTY：用 prompt_toolkit 的 ``prompt_async`` 等待输入，等待期间事件循环仍
+      可调度后台 Subagent（``spawn_background`` 用 ``asyncio.create_task`` 挂到本 loop），
+      因此后台任务在用户思考/输入时持续推进，真正「后台」运行。
+    - 非交互（管道/CliRunner）：退化为同步 ``typer.prompt``（此时后台在等待输入期间不
+      运行，但在前台 step 的 await 期间仍会推进）。
+    - 后台 Subagent 的完成/错误通知由其自身 ``transport.notify`` 负责（渲染是 transport 层
+      的职责，Session 不持有任何渲染逻辑）。
+    """
+    from prompt_toolkit import PromptSession
+
+    # 仅在「真正 TTY」时用 prompt_async：等待输入期间事件循环仍能调度后台 Subagent。
+    # 非 TTY（管道 / CliRunner）退化为同步 typer.prompt，否则 prompt_toolkit 在
+    # 无终端环境下会卡死。
+    ptk = PromptSession() if (transport.interactive and sys.stdin.isatty()) else None
     while True:
+        # 每轮等待输入前刷出积压通知（后台 Subagent 完成/错误可能在空闲时到达）；
+        # 通知由 TerminalTransport 在不在流式 Live 中的安全时机呈现，不会打断前台渲染。
+        transport.flush_notifications()
         try:
-            task = typer.prompt("you")
+            if ptk is not None:
+                task = await ptk.prompt_async("you: ")
+            else:
+                task = typer.prompt("you")
         except (EOFError, KeyboardInterrupt):
             break
         cmd = task.strip().lower()
@@ -249,9 +283,7 @@ def chat() -> None:
             continue
 
         try:
-            res, err = asyncio.run(
-                session.step(task, transport, yes=False, fatal_plan_decline=False)
-            )
+            res, err = await session.step(task, transport, yes=False, fatal_plan_decline=False)
         except Exception as e:  # 任何未捕获异常（真实 API 错误等）优雅退出
             transport.close()
             typer.echo(f"error: {type(e).__name__}: {e}", err=True)
@@ -267,11 +299,8 @@ def chat() -> None:
             typer.echo("（需要交互澄清但环境非交互，已退出）", err=True)
             break
 
-    typer.echo("")
-    # 退出前持久化最终 trace
-    if tracer is not None and trace_store is not None:
-        trace_store.save_trace(tracer)
-    _print_trace(tracer)
+    # 退出前再刷一次，避免最后一轮命令产生的通知丢失
+    transport.flush_notifications()
 
 
 @app.command()

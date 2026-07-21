@@ -26,9 +26,9 @@ def _make_loader(tmp_path: Path, *, with_project: bool = True, with_user: bool =
         proj.mkdir(exist_ok=True)
     else:
         proj = tmp_path / "proj"
-    user = tmp_path / "user" if with_user else None
-    if with_user:
-        user.mkdir(exist_ok=True)
+    # 始终用隔离的临时 user 根目录，避免扫描真实 ~/.agent/skills 造成环境依赖。
+    user = tmp_path / "user"
+    user.mkdir(exist_ok=True)
     return SkillLoader(proj, user_root=user)
 
 

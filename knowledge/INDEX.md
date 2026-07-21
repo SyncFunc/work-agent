@@ -345,6 +345,18 @@ flowchart TD
 - **跨会话 Recall（4.4.6）**：`Session.collect_other_session_summaries() -> list[(session_id, summary)]` 收集同项目其它 session 的 `summary.md`，供新会话注入参考（标注「背景参考」由 M4.6/M6 接线）；当前 session 自身排除。
 - **测试**：`tests/test_context.py` 追加 11 用例（load None / save-load 往返 + 权限 / should_update 四情形 / compact 有摘要 / compact 无摘要 / 保留原文约束 / ContextManager 优先走 Session Memory 且 Auto Compact 未被调用 / 无摘要降级 Auto / 内置 `session-memory` agent 强隔离 / **Session 后台 Subagent 复用端到端**：触发后记忆子 agent 跑完、摘要落盘、主对话不被污染、串行锁释放）。全量增量运行 `pytest tests/test_context.py` **58 passed**。
 
+## M4.5 沉淀（集成与固定底座）
+
+> 来源：`milestones/M4-上下文与记忆/4.5-集成与固定底座.md`。把 `ContextManager` 接入 `Session`/`Loop`/`CLI` 主流程；落地固定底座（AGENTS.md + System Prompt 静态/动态分离），为 prompt caching 奠定基础。
+
+- **唯一集成入口 `build_context_manager(settings, model, *, session_memory, tracer)`**（`agent/context/manager.py` + 导出到 `agent/context`）：按 `settings.context` 子开关派生压缩器——`microcompact_enabled`→`Microcompact`(否则 `None` 禁用)；`auto_compact_enabled`→`AutoCompact(model)`(否则 `None`)；`session_memory` 由 `Session` 先构造后注入。全关时 `Session` 不构建 `context_mgr`（保持 `None`，零开销）。
+- **⚠️ 坑：`_UNSET` 哨兵区分"缺省"与"显式禁用"**：`ContextManager.__init__` 的 `microcompact` 形参默认用模块级 `_UNSET` 哨兵——缺省→构造默认 `Microcompact`，显式 `None`→禁用。若用 `None` 当默认值，`build_context_manager(microcompact_enabled=False)` 会把"禁用"误判为"未指定"而重新构造默认实例（回归：`test_build_context_manager_respects_switches`）。
+- **⚠️ 坑：压缩 span 必须挂 `Session.root_span` 下**：`ContextManager` 新增 `root_span` 字段；`apply_microcompact` 与 `compact` 的 `_span` 调用传 `parent=self.root_span`；`Session` 构建 `context_mgr` 后执行 `self.context_mgr.root_span = self.root_span`。否则 microcompact span 会成为新 root span，破坏「每 Session 仅一个 root span」契约（回归 `test_session_shares_single_root_span`）。
+- **固定底座 AGENTS.md**：项目根 `AGENTS.md`（用户可编辑、应 commit）。读取优先级 项目根 `AGENTS.md` > 项目级 `.agent/AGENTS.md` > 用户级 `~/.agent/AGENTS.md`；`agents_md_enabled=False` 不读不注入。永不压缩，每次投影从磁盘重读注入 system prompt 动态段首条 `<system-reminder>`。
+- **System Prompt 静态/动态分离**（`agent/core/prompts.py` 新增 `build_system_prompt`/`_build_dynamic_segment`/`_read_agents_md`）：静态段 = `system.md` 渲染（身份/安全/工具规范/模式/skill·agent 目录），稳定前缀在前复用 prompt cache；动态段 = 当前日期 + Git 状态 + AGENTS.md，每轮重新生成追加在后。**日期外移出静态段**以改善缓存命中（验证：两日期下静态前缀完全一致）。
+- **集成点**：`Session.step()` 每轮前 `set_conv(messages)`、每轮后 `should_compact()`→`compact()`→`messages = context_mgr.conv`；`Loop.run()` 每轮 `_decide` 前对 conv 投影 `apply_microcompact()`（绝不碰 `EventStream`）；`Loop._exec_tools` 对 `read/write/edit` 调 `track_file_access(path)` 供防漂移。
+- **测试**：`tests/test_m45_integration.py` 新增 9 用例（build_context_manager 开关 / session_memory 透传 / AGENTS.md 注入与优先级 / 静态前缀稳定 / Session 构建或跳过 context_mgr / Loop 接入 microcompact+文件跟踪），全绿。
+
 ## M5 沉淀（SkillLoader + SubagentSpawner，落地后补全）
 
 > 来源：`milestones/M5-扩展能力/`（5.1~5.5）。当前仅文档完成，编码落地后在此汇总跨步骤接口/决策/坑。设计依据见 `knowledge/claude-code-subagents-skills.md`。
@@ -400,11 +412,14 @@ flowchart TD
 
 > 来源：`milestones/M5-扩展能力/5.4-CLI命令.md` 的「后台 Subagent」增强部分。代码 `agent/core/session.py`/`agent/cli.py` + `tests/test_cli.py` 新增 4 用例。
 
-- **Session 接口**：`spawn_background(agent_name, task, transport, *, parent_span=None) -> str | None`——启动后台 Subagent 任务，返回 task_id（失败返回 None）。内部用 `asyncio.ensure_future` 调度，自动处理有/无运行中事件循环两种情况。完成后自动注入 `[Background Subagent <name> — <task>]\n<summary>` 到 `session.messages`。`list_background_tasks() -> list[dict]` 返回任务列表。
-- **任务管理**：`Session._bg_tasks: dict[str, asyncio.Task]` 持有运行中的后台任务；任务完成后自动从字典移除。
+- **Session 接口**：`spawn_background(agent_name, task, transport, *, parent_span=None) -> str | None`——启动后台 Subagent 任务，返回 task_id（失败返回 None）。内部用 `asyncio.ensure_future` 调度到**当前运行中的事件循环**（chat 异步 REPL 的共享 loop），兜底 `try/except RuntimeError` 才新建 loop。完成后默认注入 `[Background Subagent <name> — <task>]\n<summary>` 到 `session.messages`（或经 `result_sink` 消费）。`list_background_tasks() -> list[dict]` 返回任务列表。
+- **任务管理**：`Session._bg_tasks: dict[str, asyncio.Task]` 持有运行中的后台任务；任务完成后自动从字典移除。**`Session` 不持有任何渲染/通知缓冲**——完成通知走 `transport.notify(...)`。
+- **分层约束（务必注意）**：`Session`（core 层）**不构造也不依赖 `TerminalTransport`**；后台子 agent 直接复用传入的 `transport` 作 `parent_transport`。`AgentTransport.notify` 的语义只是「**记录一条通知信号，不负责渲染**」——`TerminalTransport.notify` 把消息缓冲进 `self._pending_notifications`，由 `flush_notifications()` 在**不在流式 Live 中的安全时机**刷出（`close()` 内自动触发 + REPL 每轮等待输入前调用）；`_SubAgentTransport.notify` 委派给 `self._parent.notify`，使子 agent 通知也汇入父缓冲。这样渲染职责干净留在 transport 层，既不打断前台流式渲染，也避免把渲染逻辑泄漏进 core。
 - **CLI 命令**：`/agent <name> <task>`（第一个空格分隔 name 与 task）、`/agent`（提示用法）、`/bg`（展示运行中后台任务）。所有命令 `continue`，**不调模型**。
-- **测试技巧**：后台任务测试需在 `asyncio.run()` 内创建事件循环（`spawn_background` 依赖运行中的 loop）；`CliRunner` 测试 `/agent` 命令时 CliRunner 不提供事件循环，`spawn_background` 内部 `try/except RuntimeError` 回退创建新 loop。
-- **验收**：`tests/test_cli.py` 新增 4 用例全绿。全量 `pytest` 16 passed（CLI 文件），无回归。
+- **异步 REPL / 共享 loop（M5.4.1 后续修复，务必注意）**：`chat` 改为 `asyncio.run(_chat_repl())`，前台 `await session.step(...)` 与后台 `asyncio.ensure_future(_run())` **共享同一运行中的 loop**——后台任务在用户思考/输入期间被真正调度推进（旧同步 REPL 每轮开关 loop，自建 loop 永不 `run()` 导致后台卡死）。TTY 用 `prompt_toolkit.prompt_async` 等待输入（等待期 loop 仍可调度后台），**非 TTY 必须退化为同步 `typer.prompt`**（按 `sys.stdin.isatty()` 判定，否则 `prompt_async` 在无终端环境卡死）。REPL 每轮等待输入前 + 退出前调用 `transport.flush_notifications()` 刷出积压通知。
+- **后台 Subagent 渲染策略（live=False，务必注意）—— 修复 rich Live 与 ptk 输入行争用终端**：`SubagentPanelHub` 的顶层唯一 rich `Live` 与 prompt_toolkit `prompt_async` 输入行**不能共存于同一终端**。后台 Subagent 运行时用户正处于 `you:` 提示行，二者抢光标转义序列会：① 横幅画成「两层」叠影；② `you:` 提示乱码、看似卡死。**前台 Subagent**（模型调 `spawn_subagent`，step 内执行、ptk 未活动）不受影响，仍 `live=True` 实时渲染。修复做法：`Session.spawn_background` 调 `spawner.spawn(..., live=False)`；`_SubAgentTransport(live=False)` **不注册 hub 槽**，所有 `on_*` 仅把条目累积进 `self._entries`/流式缓冲、绝不碰终端；结束时 `close()` 用 `_build_final_panel()` 定稿成**一个**最终面板，经 `parent.queue_render(panel)` 入队；`TerminalTransport.queue_render` 把面板缓冲进 `self._pending_renderables`，由 `flush_notifications()` 在「不在流式 Live / 不在 ptk 输入行」的安全时机 `console.print`。**坑**：布尔开关原名 `self._live` 与父类 `TerminalTransport.self._live`（流式 Live 实例）冲突，已改名 `self._use_live`，切勿改回 `self._live`。
+- **测试技巧**：后台任务测试需在 `asyncio.run()` 内（有运行中的 loop）创建并 `await` 任务；chat 的 `CliRunner` 测试现在也走 `asyncio.run(_chat_repl())`，`/agent` 期间**已有**运行中的 loop（非旧文档说的「回退新建 loop」）。`test_background_spawn_injects_summary` 在 `asyncio.run` 内 `await sess._bg_tasks[task_id]` 等待完成。
+- **验收**：`tests/test_cli.py` 4 用例 + `tests/test_context.py` M4.4 端到端用例全绿；全量 `pytest` 333 passed（唯一失败 `test_skills.py::test_discover_ignores_dir_without_skill_md` 为预先存在、与本次改动无关的环境问题）。
 
 ### M5.5 测试与验收（落地）
 

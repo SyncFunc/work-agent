@@ -31,13 +31,14 @@ from agent.core.intent import Question, extract_clarify
 from agent.core.model import Decision, Message, Model, ToolCall
 from agent.core.plan import Plan, PlanStep, PlanStore
 from agent.core.transport import AgentTransport
-from agent.core.prompts import load_prompt
+from agent.core.prompts import build_system_prompt
 from agent.obs.tracer import Tracer, _span
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, UnknownTool
 from agent.runtime.sandbox import ExecRequest, Executor, SandboxProfile
 
 if TYPE_CHECKING:
+    from agent.context import ContextManager
     from agent.skills.loader import SkillLoader
     from agent.subagent import SubagentSpawner
 
@@ -116,6 +117,7 @@ class AgentLoop:
         transport: "AgentTransport | None" = None,
         system_prompt: str | None = None,
         parent_span=None,
+        context_mgr: "ContextManager | None" = None,
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
@@ -123,9 +125,16 @@ class AgentLoop:
         self._run_pp = pp
         self._transport = transport
         self._run_system_prompt = system_prompt
+        self._context_mgr = context_mgr
 
         conv = list(messages) if messages else []
         conv.append(Message(role="user", content=task))
+
+        # M4.5：每轮 _decide 前执行零成本 Microcompact（清除较旧的 tool 结果，保留最近 N 个）。
+        # 作用于本次 run 的 conv 投影，绝不触碰 EventStream（审计真相不可变）。
+        if self._context_mgr is not None:
+            self._context_mgr.set_conv(conv)
+            conv = await self._context_mgr.apply_microcompact()
         stream = EventStream()
         if transport is not None:
             transport.bind(stream)
@@ -201,7 +210,9 @@ class AgentLoop:
                         messages=conv, clarify_total=ct, usage=usage_total,
                     )
 
-                results = await self._exec_tools(decision.tool_calls, stream)
+                results = await self._exec_tools(
+                    decision.tool_calls, stream, context_mgr=self._context_mgr
+                )
 
                 callset = frozenset(
                     (tc.name, _canonical(tc.arguments)) for tc in decision.tool_calls
@@ -297,25 +308,18 @@ class AgentLoop:
         return registry_tools + control
 
     def _system_prompt(self, *, plan_mode: bool = False, plan_path: str | None = None) -> str:
-        prompt = load_prompt("system")
-        try:
-            _net_allowed = SandboxProfile(self.settings.sandbox.profile) == SandboxProfile.DANGER_FULL
-        except ValueError:
-            _net_allowed = False
         catalog = ""
         if self.skill_loader is not None:
             catalog = self.skill_loader.catalog_prompt()
         agents_catalog = ""
         if self.subagent_spawner is not None:
             agents_catalog = self.subagent_spawner.catalog_prompt()
-        return prompt.render(
-            clarify_enabled=self.settings.clarify.enabled,
+        # M4.5：静态段（system.md）+ 动态段（日期/Git/AGENTS.md），稳定前缀在前以复用 prompt cache。
+        return build_system_prompt(
+            self.settings,
             plan_mode=plan_mode,
             has_plan=bool(plan_path),
-            sandbox_profile=self.settings.sandbox.profile,
-            approval_mode=self.settings.approval.mode,
-            network_allowed=_net_allowed,
-            sandbox_exec_policy=list(self.settings.approval.exec_policy),
+            clarify_enabled=self.settings.clarify.enabled,
             skills_catalog=catalog,
             agents_catalog=agents_catalog,
         )
@@ -328,7 +332,8 @@ class AgentLoop:
         return None
 
     async def _exec_tools(
-        self, calls: list[ToolCall], stream: EventStream
+        self, calls: list[ToolCall], stream: EventStream,
+        context_mgr: "ContextManager | None" = None,
     ) -> list[ToolResult]:
         if not calls:
             return []
@@ -414,6 +419,14 @@ class AgentLoop:
         for tc in calls:
             stream.append(Event(type="tool_use", tool_use=tc))
         results = list(await asyncio.gather(*(_one(tc) for tc in calls)))
+
+        # M4.5：记录 read/write/edit 的文件访问，供压缩防漂移（_anti_drift 重读最近文件）。
+        if context_mgr is not None:
+            for tc in calls:
+                if tc.name in ("read", "write", "edit"):
+                    p = (tc.arguments or {}).get("path")
+                    if p:
+                        context_mgr.track_file_access(p)
         return results
 
     # ------------------------------------------------------------------ #
