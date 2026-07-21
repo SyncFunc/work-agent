@@ -11,11 +11,13 @@ from __future__ import annotations
 import asyncio
 import io
 import os
+import re
 import sys
 import time
 from typing import cast
 
 import typer
+from prompt_toolkit.formatted_text import FormattedText
 from rich.console import Console
 from rich.panel import Panel
 from rich.tree import Tree
@@ -32,6 +34,12 @@ from agent.runtime.terminal_transport import TerminalTransport
 import agent.tools  # 导入即把 read/write/bash 登记到 default_registry（副作用）
 
 _ = agent.tools  # 显式引用，保留副作用导入，避免未使用告警
+
+# 状态栏渲染辅助：rich 标记经 prompt_toolkit 时不能直接渲染，需剥离或转 FormattedText。
+_RICH_TAG = re.compile(r"\[/?[a-zA-Z_]+\]")
+# 解析 _status_line() 输出：ctx: [green]10%[/green]
+_STATUS_RE = re.compile(r"ctx:\s*\[(\w+)\]([\d.]+%)\[/\1\]")
+_STATUS_COLOR = {"green": "ansigreen", "yellow": "ansiyellow", "red": "ansired"}
 
 
 # Windows 控制台/管道默认 GBK 编码，rich 输出 emoji（💭/💬/🔧 等）会抛 UnicodeEncodeError
@@ -184,13 +192,24 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings) -
         # 每轮等待输入前刷出积压通知（后台 Subagent 完成/错误可能在空闲时到达）；
         # 通知由 TerminalTransport 在不在流式 Live 中的安全时机呈现，不会打断前台渲染。
         transport.flush_notifications()
-        # M4.6：prompt 前缀显示上下文占比状态栏（ctx: 45%），无 context_mgr 时为空。
+        # M4.6 修复：状态栏含 rich 标记，但 prompt_toolkit 的 prompt 不直接渲染 rich markup，
+        # 会原样打印 ``[green]`` 等标签。交互模式改为 prompt_toolkit 的 FormattedText（着色），
+        # 非交互模式（CliRunner/管道）剥离标记仅显示纯文本。
         status = transport._status_line()
-        prefix = f"[{status}] you" if status else "you"
         try:
             if ptk is not None:
-                task = await ptk.prompt_async(f"{prefix}: ")
+                if status:
+                    m = _STATUS_RE.match(status)
+                    col = m.group(1) if m else "green"
+                    pct = m.group(2) if m else status
+                    ft_color = _STATUS_COLOR.get(col, "ansigreen")
+                    ft = FormattedText([(ft_color, f"ctx: {pct} "), ("", "| you: ")])
+                else:
+                    ft = FormattedText([("", "you")])
+                task = await ptk.prompt_async(message=ft)
             else:
+                status_plain = _RICH_TAG.sub("", status)
+                prefix = f"{status_plain} | you" if status_plain else "you"
                 task = typer.prompt(prefix)
         except (EOFError, KeyboardInterrupt):
             break
@@ -328,6 +347,18 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings) -
             typer.echo("（需要交互澄清但环境非交互，已退出）", err=True)
             break
 
+    # 退出前：若有后台 Subagent 仍在运行，等待其正常收尾（最多 30s），避免被 asyncio.run 粗暴取消
+    # 导致正在执行的工具中断、文件/状态不一致（见 Session.shutdown_background）。
+    running = session.list_background_tasks()
+    if running:
+        typer.echo(
+            f"⏳ 正在等待 {len(running)} 个后台 Subagent 完成（最多 30s）...", err=True
+        )
+        cancelled = await session.shutdown_background(timeout=30.0)
+        if cancelled:
+            typer.echo(
+                f"⚠️ 以下后台 Subagent 超时未结束，已取消：{', '.join(cancelled)}", err=True
+            )
     # 退出前再刷一次，避免最后一轮命令产生的通知丢失
     transport.flush_notifications()
 

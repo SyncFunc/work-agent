@@ -52,19 +52,39 @@ class AutoCompact:
     - 连续失败 > max_failures 次则放弃（防止无限重试浪费 token）。
     """
 
-    def __init__(self, model: Model, max_failures: int = 3, tracer: Tracer | None = None) -> None:
+    def __init__(
+        self,
+        model: Model,
+        max_failures: int = 3,
+        tracer: Tracer | None = None,
+        recent_keep: int = 8,
+    ) -> None:
         self.model = model
         self.max_failures = max_failures
         self.failure_count = 0
         self.tracer = tracer
+        # 首次压缩（boundary=0）时保留的最近消息条数：压缩更早的历史，保留最近上下文。
+        self.recent_keep = max(1, recent_keep)
 
     async def compact(self, conv: list[Message], boundary: int) -> list[Message]:
-        """把 boundary 之前的历史压缩为摘要，返回替换后的消息列表。"""
+        """把 boundary 之前的历史压缩为摘要，返回替换后的消息列表。
+
+        修复：``boundary <= 0`` 时（首次压缩，尚无已压缩边界）不再直接 no-op，
+        而是自动取 ``len(conv) - recent_keep`` 作为压缩点，压缩更早的历史、保留最近
+        ``recent_keep`` 条消息，使第一次超阈值也能真正生成摘要。
+        """
         with _span(self.tracer, "compact.auto_compact", kind="compact") as ac_span:
             if ac_span is not None:
                 ac_span.log("boundary", boundary)
                 ac_span.log("conv_len", len(conv))
-            if boundary <= 0 or boundary > len(conv):
+            # 首次压缩：boundary<=0 表示尚无「已压缩边界」，自动切分保留最近上下文。
+            if boundary <= 0:
+                if len(conv) <= self.recent_keep:
+                    if ac_span is not None:
+                        ac_span.log("skip", "conv 过短无需压缩，原样返回", level="warn")
+                    return conv
+                boundary = max(1, len(conv) - self.recent_keep)
+            if boundary > len(conv):
                 if ac_span is not None:
                     ac_span.log("skip", "boundary 越界，原样返回", level="warn")
                 return conv

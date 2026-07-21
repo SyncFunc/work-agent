@@ -303,6 +303,25 @@ class Session:
             for tid, t in self._bg_tasks.items()
         ]
 
+    async def shutdown_background(self, timeout: float = 30.0) -> list[str]:
+        """退出前优雅关闭后台 Subagent：等待其完成（最多 timeout 秒），超时则取消。
+
+        直接被 ``asyncio.run`` 取消会粗暴中断正在执行的工具，可能导致文件/状态不一致；
+        这里尽量让后台任务正常收尾。返回因超时被取消的任务名列表（供 CLI 通知）。
+        """
+        running = [t for t in self._bg_tasks.values() if not t.done()]
+        if not running:
+            return []
+        done, pending = await asyncio.wait(running, timeout=timeout)
+        cancelled: list[str] = []
+        for t in pending:
+            t.cancel()
+            cancelled.append(t.get_name() if hasattr(t, "get_name") else "?")
+        if pending:
+            # 等取消收尾，避免 asyncio.run 关闭循环时报 "task was destroyed but pending"
+            await asyncio.gather(*pending, return_exceptions=True)
+        return cancelled
+
     # ------------------------------------------------------------------ #
     # M4.4：Session Memory 增量更新（复用 M5.4.1 后台 Subagent 机制）
     # ------------------------------------------------------------------ #

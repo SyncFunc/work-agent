@@ -618,8 +618,32 @@ async def test_compact_trace_noop_when_tracer_none():
     assert len(m.history) == 1
 
 
+async def test_auto_compact_first_compaction_boundary_zero():
+    """M4.6/修复：compact_boundary=0（首次压缩）不再 no-op，真正压缩更早历史。
+
+    此前 boundary<=0 直接返回原 conv，导致第一次超阈值永不生成摘要；修复后自动保留
+    最近 ``recent_keep`` 条消息、压缩更早部分。
+    """
+    model = _fake_model([Decision(text="<summary>最早的摘要</summary>")])
+    ac = AutoCompact(model)
+    m = ContextManager(auto_compact=ac)
+    # 10 条大消息，远超阈值（compact_boundary 默认 0）
+    conv = [_msg("user", _big_cjk(20_000)) for _ in range(10)]
+    m.set_conv(conv)
+    assert m.compact_boundary == 0
+    ok = await m.compact()
+    assert ok is True
+    # 产生了 auto_compact 记录
+    assert any(r.method == "auto_compact" for r in m.history)
+    # 压缩后 conv 明显变短（10 条 → 1 摘要 + 最近 recent_keep 条）
+    assert len(m.conv) < len(conv)
+    # 最近消息被保留（摘要之后仍有原文）
+    assert any("最早的摘要" in (x.content or "") for x in m.conv)
+
+
 # --------------------------------------------------------------------------- #
 # M4.4 Session Memory Compact
+
 # --------------------------------------------------------------------------- #
 def _sm_config(**kw) -> SessionMemoryConfig:
     return SessionMemoryConfig(**kw)

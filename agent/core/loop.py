@@ -31,7 +31,8 @@ from agent.core.intent import Question, extract_clarify
 from agent.core.model import Decision, Message, Model, ToolCall
 from agent.core.plan import Plan, PlanStep, PlanStore
 from agent.core.transport import AgentTransport
-from agent.core.prompts import build_system_prompt
+from agent.context.tokens import _estimate_tokens
+from agent.core.prompts import _build_system_parts
 from agent.obs.tracer import Tracer, _span
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, UnknownTool
@@ -98,6 +99,7 @@ class AgentLoop:
         self.subagent_spawner = subagent_spawner
         self._agent_span = None  # 由 run() 内的 _span 上下文设置；直接调工具时回退为 None
         self._transport = None    # 由 run() 设置；直接调工具时回退为 None
+        self._context_mgr = None  # 由 run() 设置；直接调 _system_prompt 时回退为 None
         # 嵌套深度：主 loop 从 0 起；子 loop 由 SubagentSpawner 设置
         self._current_depth: int = 0
         # 子 agent 是否允许控制/虚拟工具（use_skill / spawn_subagent 等）；
@@ -118,6 +120,7 @@ class AgentLoop:
         system_prompt: str | None = None,
         parent_span=None,
         context_mgr: "ContextManager | None" = None,
+        name: str = "",
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
@@ -147,7 +150,9 @@ class AgentLoop:
         # agent.run 的 parent 由 parent_span 显式指定：主循环=session.root_span，
         # 子 agent=调用方的 agent.run span。不再依赖 contextvar 隐式状态，也不需 reset。
         # 并行安全：子 agent 各自独立 asyncio.Task + 显式 parent。
-        with _span(self.tracer, "agent.run", kind="agent", parent=parent_span) as self._agent_span:
+        # name（子 agent 类型，如 explore/general-purpose）附加在 span 名上，便于 trace 区分不同子 agent。
+        span_name = f"agent.run:{name}" if name else "agent.run"
+        with _span(self.tracer, span_name, kind="agent", parent=parent_span) as self._agent_span:
             for i in range(self.settings.loop.max_iterations):
                 decision = await self._decide(conv, stream, plan_mode=pm, plan_path=pp, system_prompt=self._run_system_prompt)
                 if decision.usage:
@@ -315,7 +320,7 @@ class AgentLoop:
         if self.subagent_spawner is not None:
             agents_catalog = self.subagent_spawner.catalog_prompt()
         # M4.5：静态段（system.md）+ 动态段（日期/Git/AGENTS.md），稳定前缀在前以复用 prompt cache。
-        return build_system_prompt(
+        static, dynamic = _build_system_parts(
             self.settings,
             plan_mode=plan_mode,
             has_plan=bool(plan_path),
@@ -323,6 +328,14 @@ class AgentLoop:
             skills_catalog=catalog,
             agents_catalog=agents_catalog,
         )
+        # M4.6 修复：把真实静态/动态段 token 数回填给 ContextManager，
+        # 使 /context 的「动态段」不再恒为 0（此前 _system_dynamic 从未被写入）。
+        if self._context_mgr is not None:
+            self._context_mgr._system_fixed = _estimate_tokens(static)
+            self._context_mgr._system_dynamic = _estimate_tokens(dynamic)
+        if dynamic:
+            return static + "\n\n" + dynamic
+        return static
 
     @staticmethod
     def _find_tool_args(decision: Decision, name: str) -> dict[str, Any] | None:

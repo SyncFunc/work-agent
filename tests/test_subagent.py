@@ -255,8 +255,8 @@ async def test_trace_parent_links_child_span():
             BUILTIN_GENERAL, "sub", base_registry=_registry(), base_model=model,
             parent_span=parent,
         )
-    # 子 agent.run 的 parent_id == parent.id
-    child_root = next(s for s in tracer.spans if s.name == "agent.run")
+    # 子 agent.run:<name> 的 parent_id == parent.id（M4.6 修复：span 名带 spec.name 以便区分子 agent）
+    child_root = next(s for s in tracer.spans if s.name == f"agent.run:{BUILTIN_GENERAL.name}")
     assert child_root.parent_id == parent.id
     # 子 model.act 的父是子 agent.run（间接挂到 parent 下）
     model_spans = [s for s in tracer.spans if s.name == "model.act"]
@@ -280,7 +280,8 @@ async def test_trace_parent_parallel_safe():
                 parent_span=parent)),
         )
     assert all(r.text == "x" for r in results)
-    child_roots = [s for s in tracer.spans if s.name == "agent.run"]
+    # 子 agent span 名带 spec.name（agent.run:general-purpose），便于区分不同子 agent
+    child_roots = [s for s in tracer.spans if s.name == f"agent.run:{BUILTIN_GENERAL.name}"]
     assert len(child_roots) == 2
     assert all(c.parent_id == parent.id for c in child_roots)
 

@@ -374,12 +374,29 @@ flowchart TD
 
 - **端到端套件 `tests/test_integration.py`（5 例）**：`test_microcompact_in_loop`（AgentLoop.run + context_mgr 自动微压缩）、`test_auto_compact_in_session`（Session.step 每轮后触发 Auto Compact）、`test_full_compaction_pipeline`（Microcompact→Auto Compact→防漂移 完整跑通）、`test_compact_preserves_pairing`（压缩后 tool_use/tool_result 配对守恒）、`test_agents_md_injected`（AGENTS.md 抵达 system prompt 动态段）。
 - **Loop 回归 `tests/test_loop.py::test_loop_integration_with_context_mgr`**：注入 context_mgr 后工具执行与最终答案正常、conv 被投影。
-- **⚠️ `compact_boundary` 语义（测试必懂）**：`mark_boundary()` 无参（设 `compact_boundary=len(conv)`）；测试中要让 AutoCompact 真正压缩旧历史，需 `set_conv(conv)` 后直接 `cm.compact_boundary = N`（落在旧/新历史间），且 `[boundary:]` 仍超阈值（`should_compact` 只统计 `[boundary:]`）。`boundary=0` 时 AutoCompact 是 no-op——首次触发不真压缩旧历史，是当前设计行为。
+- **⚠️ `compact_boundary` 语义（测试必懂）**：`mark_boundary()` 无参（设 `compact_boundary=len(conv)`）；测试中要让 AutoCompact 真正压缩旧历史，需 `set_conv(conv)` 后直接 `cm.compact_boundary = N`（落在旧/新历史间），且 `[boundary:]` 仍超阈值（`should_compact` 只统计 `[boundary:]`）。**已修复**：`boundary<=0`（首次压缩）不再 no-op，AutoCompact 自动取 `len(conv)-recent_keep`（默认 8，保留最近 8 条）作为压缩点，真正压缩更早历史；conv 过短（≤recent_keep）才原样返回。
 - **Microcompact 计数**：`keep_recent` 默认 5；8 个可压缩工具结果 → 最旧 3 个转 `PLACEHOLDER`；`tool_call_id` 配对始终保留，消息条数不变。
 - **`AutoCompact` 擦除被压缩区**：microcompact 的占位符随后被 auto_compact 整区替换为单条摘要，断言「摘要 + history 记 auto_compact + [Anti-Drift]」而非残留占位符。
 - **防漂移**：`track_file_access(path)` + `compact()` 末尾 `_anti_drift()` 重读最近 ≤5 文件追加 `[Anti-Drift]`（测试用 `tmp_path` 真实文件）。
 - **flaky 修复**：原 `test_concurrent_tools_run_in_parallel_and_pair_by_id` 把两个并发 0.1s sleep 用 `asyncio.wait_for(timeout=0.25)` 包住，负载下偶发超时；放宽到 1.0s 消除抖动（不影响并发验证意图）。
 - **全量**：`pytest -q` 全绿（348 用例），M1/M2/M3 零回归。
+
+## M4 事后修复（5 项 post-M4.7 缺陷，2026-07-21）
+
+> 用户验收发现的 5 个问题，统一修复并补测试，全量 359 通过。
+
+1. **状态栏原始标签渲染**：`TerminalTransport._status_line()` 返回含 rich 标记（`[green]10%[/green]`）的字符串，但 chat REPL 把它拼进 `prompt_toolkit` 的 `prompt_async(f"{prefix}: ")`，ptk 不渲染 rich 标记 → 终端打印出原始 `[green]` 标签。
+   - 修复：`agent/cli.py` 交互模式改用 `prompt_toolkit.formatted_text.FormattedText`（映射 `green→ansigreen`/`yellow→ansiyellow`/`red→ansired`）着色；非交互（CliRunner/管道）用 `_RICH_TAG` 正则剥离标记显示纯文本 `ctx: 10% | you`。
+2. **`/context` 动态段恒为 0**：`ContextManager._system_dynamic` 从未被写入（默认 0），因为动态 System Prompt 段（日期/AGENTS.md/Git）的 token 数没回填。
+   - 修复：`agent/core/prompts.py` 抽出 `_build_system_parts()` 返回 `(static, dynamic)`；`AgentLoop._system_prompt()` 在每次构建 system prompt 时把 `_estimate_tokens(static/dynamic)` 回填 `context_mgr._system_fixed/_system_dynamic`，使 `/context` 动态段显示真实值。
+3. **trace 无法区分不同子 agent**：`AgentLoop.run()` 的 span 名硬编码 `agent.run`，所有子 agent 同名无法区分。
+   - 修复：`run()` 新增 `name` 参数；`SubagentSpawner.spawn` 传 `name=spec.name`；span 名为 `agent.run:{name}`（如 `agent.run:explore`/`agent.run:general-purpose`）；主循环 name 默认空 → 仍为 `agent.run`。既有 `test_subagent.py` 两处断言已同步更新。
+4. **`compact_boundary=0` 时 AutoCompact no-op**：`AutoCompact.compact` 在 `boundary<=0` 时直接返回原 conv，导致**首次**超阈值永不真正生成摘要（仅 microcompact 生效）。
+   - 修复：`AutoCompact.__init__` 新增 `recent_keep=8`；`boundary<=0` 时若 `len(conv)>recent_keep` 自动取 `boundary=max(1, len(conv)-recent_keep)` 压缩更早历史、`conv` 过短才原样返回。`SessionMemory.compact` 本就支持 `boundary=0`（保留最近原文），无需改。
+5. **exit 时后台 Subagent 仍在运行**：chat 退出 `break` 后 `asyncio.run` 会粗暴取消未完成任务，可能中断正在执行的工具导致状态不一致。
+   - 修复：`Session.shutdown_background(timeout=30)` 优雅关闭——`asyncio.wait` 等待完成，超时则 `cancel()` 并 `gather` 收尾；`agent/cli.py` chat 退出前提示并调用（超时任务列表通知用户）。Ctrl+C（KeyboardInterrupt）仍交给 `asyncio.run` 硬取消。
+
+- **测试**：`tests/test_cli.py` 新增 `test_chat_status_bar_no_raw_rich_markup`、`test_shutdown_background_cancels_pending`；`tests/test_context.py` 新增 `test_auto_compact_first_compaction_boundary_zero`；`tests/test_integration.py` 新增 `test_dynamic_segment_tokens_populated`、`test_subagent_trace_named_span`；`tests/test_subagent.py` 两处 trace 断言更新为 `agent.run:{name}`。
 
 ## M5 沉淀（SkillLoader + SubagentSpawner，落地后补全）
 

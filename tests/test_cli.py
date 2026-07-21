@@ -399,3 +399,41 @@ def test_terminal_transport_status_line_colors():
     assert "ctx:" in yellow._status_line() and "[yellow]" in yellow._status_line()
     assert "ctx:" in green._status_line() and "[green]" in green._status_line()
     assert none._status_line() == ""
+
+
+def test_chat_status_bar_no_raw_rich_markup(runner, monkeypatch):
+    """M4.6 修复：状态栏的 rich 标记不应以原始文本泄漏到 prompt（非交互模式应为纯文本）。"""
+    _patch_model(monkeypatch, FakeModel([]))
+    result = runner.invoke(app, ["chat"], input="exit\n")
+
+    assert result.exit_code == 0
+    # 原始 rich 标记绝不能出现在输出里（此前会打印 [green]10%[/green]）。
+    assert "[green]" not in result.output
+    assert "[red]" not in result.output
+    assert "[yellow]" not in result.output
+    # 状态栏仍以纯文本形式展示（ctx: NN%）。
+    assert "ctx:" in result.output
+
+
+def test_shutdown_background_cancels_pending():
+    """M4.6 修复：退出时仍在运行的后台 Subagent 应被优雅取消（而非被 asyncio.run 粗暴中断）。"""
+    import asyncio
+
+    from agent.config.settings import Settings
+    from agent.core.model import FakeModel
+    from agent.core.session import Session
+
+    sess = Session(FakeModel([]), _make_registry(), Settings(), tracer=None)
+
+    async def _run():
+        async def _slow():
+            await asyncio.sleep(30)
+
+        t = asyncio.create_task(_slow(), name="bg1")
+        sess._bg_tasks["bg1"] = t
+        cancelled = await sess.shutdown_background(timeout=0.05)
+        return t, cancelled
+
+    t, cancelled = asyncio.run(_run())
+    assert "bg1" in cancelled
+    assert t.cancelled() or t.done()

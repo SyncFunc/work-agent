@@ -273,6 +273,7 @@ class SubagentSpawner:
                 transport=sub_transport,
                 system_prompt=spec.system_prompt or None,
                 parent_span=parent_span,
+                name=spec.name,
             )
         finally:
             # loop.run 不会关闭 transport；必须显式关闭，否则子 agent 面板 slot 不注销、

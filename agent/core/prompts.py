@@ -143,7 +143,7 @@ def _build_dynamic_segment(settings) -> str:
     return "\n".join(parts)
 
 
-def build_system_prompt(
+def _build_system_parts(
     settings,
     *,
     plan_mode: bool = False,
@@ -151,12 +151,8 @@ def build_system_prompt(
     clarify_enabled: bool = True,
     skills_catalog: str = "",
     agents_catalog: str = "",
-) -> str:
-    """构建完整 System Prompt（静态段 + 动态段），稳定前缀在前以复用 prompt cache。
-
-    静态段来自 ``system.md`` 渲染（身份 / 安全约束 / 工具规范 / 模式指引 / skill·agent 目录），
-    动态段（日期 / AGENTS.md / Git 状态）追加其后且每轮重新生成。
-    """
+) -> tuple[str, str]:
+    """构建静态段与动态段（分别返回），供 ``build_system_prompt`` 拼接，也供上下文计量使用。"""
     try:
         _net_allowed = SandboxProfile(settings.sandbox.profile) == SandboxProfile.DANGER_FULL
     except ValueError:
@@ -173,6 +169,31 @@ def build_system_prompt(
         agents_catalog=agents_catalog,
     )
     dynamic = _build_dynamic_segment(settings)
+    return static, dynamic
+
+
+def build_system_prompt(
+    settings,
+    *,
+    plan_mode: bool = False,
+    has_plan: bool = False,
+    clarify_enabled: bool = True,
+    skills_catalog: str = "",
+    agents_catalog: str = "",
+) -> str:
+    """构建完整 System Prompt（静态段 + 动态段），稳定前缀在前以复用 prompt cache。
+
+    静态段来自 ``system.md`` 渲染（身份 / 安全约束 / 工具规范 / 模式指引 / skill·agent 目录），
+    动态段（日期 / AGENTS.md / Git 状态）追加其后且每轮重新生成。
+    """
+    static, dynamic = _build_system_parts(
+        settings,
+        plan_mode=plan_mode,
+        has_plan=has_plan,
+        clarify_enabled=clarify_enabled,
+        skills_catalog=skills_catalog,
+        agents_catalog=agents_catalog,
+    )
     if dynamic:
         return static + "\n\n" + dynamic
     return static

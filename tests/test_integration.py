@@ -179,3 +179,45 @@ async def test_agents_md_injected(tmp_path, monkeypatch):
     assert "AGENTS.md" in prompt
     assert "使用 pytest 跑测试" in prompt
     assert "禁止直接 push 到 main" in prompt
+
+
+async def test_dynamic_segment_tokens_populated():
+    """M4.6 修复：/context 动态段不再恒为 0——loop 把真实动态段 token 回填给 ContextManager。"""
+    from agent.core.loop import AgentLoop
+
+    cm = ContextManager()
+    model = FakeModel([
+        Decision(tool_calls=[ToolCall(id="e1", name="echo", arguments={"x": 1})]),
+        Decision(text="echo done"),
+    ])
+    loop = AgentLoop(model, default_registry, Settings(), tracer=None)
+    await loop.run("use echo", context_mgr=cm)
+
+    # 动态段含日期（始终存在）→ 真实 token 数 > 0；静态段（system.md）也应 > 0。
+    assert cm._system_dynamic > 0
+    assert cm._system_fixed > 0
+
+
+async def test_subagent_trace_named_span():
+    """M4.6 修复：trace 能区分不同子 agent——agent.run span 名带 spec.name（如 explore）。"""
+    from agent.obs.tracer import Tracer
+    from agent.subagent import SubagentSpawner
+
+    tracer = Tracer()
+    spawner = SubagentSpawner(Settings(), tracer=tracer)
+    child_model = FakeModel([Decision(text="explore result")])
+    # 模拟主循环 agent.run span 作为父（子 agent 的 parent_span 指向它）。
+    with tracer.span("agent.run", kind="agent") as parent:
+        loop = AgentLoop(
+            child_model, default_registry, Settings(),
+            subagent_spawner=spawner, tracer=tracer,
+        )
+        await loop.run("find", name="explore", parent_span=parent)
+
+    names = {s.name for s in tracer.spans}
+    # 主循环 span 名保持 agent.run；子 agent 的 span 名为 agent.run:explore，便于区分。
+    assert "agent.run" in names
+    assert "agent.run:explore" in names
+    # 子 agent span 的父应是主 agent.run span。
+    child = next(s for s in tracer.spans if s.name == "agent.run:explore")
+    assert child.parent_id == parent.id
