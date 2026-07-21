@@ -368,6 +368,19 @@ flowchart TD
 - **⚠️ 字段位置坑**：`ContextUsage` 只有 `total`/`used_pct` 等字段，`effective_window` 在 `ContextManager` 上；打印当前占用取 `session.context_mgr.effective_window` 而非 `usage.effective_window`。
 - **测试**：`tests/test_cli.py` 新增 5 用例（/context 明细 / 无 context_mgr 提示 / /compact 触发 / 无 context_mgr 提示 / 状态栏着色），全绿。
 
+## M4.7 沉淀（测试与验收）
+
+> 来源：`milestones/M4-上下文与记忆/4.7-测试与验收.md`。M4 全量测试 + 端到端 + 回归。
+
+- **端到端套件 `tests/test_integration.py`（5 例）**：`test_microcompact_in_loop`（AgentLoop.run + context_mgr 自动微压缩）、`test_auto_compact_in_session`（Session.step 每轮后触发 Auto Compact）、`test_full_compaction_pipeline`（Microcompact→Auto Compact→防漂移 完整跑通）、`test_compact_preserves_pairing`（压缩后 tool_use/tool_result 配对守恒）、`test_agents_md_injected`（AGENTS.md 抵达 system prompt 动态段）。
+- **Loop 回归 `tests/test_loop.py::test_loop_integration_with_context_mgr`**：注入 context_mgr 后工具执行与最终答案正常、conv 被投影。
+- **⚠️ `compact_boundary` 语义（测试必懂）**：`mark_boundary()` 无参（设 `compact_boundary=len(conv)`）；测试中要让 AutoCompact 真正压缩旧历史，需 `set_conv(conv)` 后直接 `cm.compact_boundary = N`（落在旧/新历史间），且 `[boundary:]` 仍超阈值（`should_compact` 只统计 `[boundary:]`）。`boundary=0` 时 AutoCompact 是 no-op——首次触发不真压缩旧历史，是当前设计行为。
+- **Microcompact 计数**：`keep_recent` 默认 5；8 个可压缩工具结果 → 最旧 3 个转 `PLACEHOLDER`；`tool_call_id` 配对始终保留，消息条数不变。
+- **`AutoCompact` 擦除被压缩区**：microcompact 的占位符随后被 auto_compact 整区替换为单条摘要，断言「摘要 + history 记 auto_compact + [Anti-Drift]」而非残留占位符。
+- **防漂移**：`track_file_access(path)` + `compact()` 末尾 `_anti_drift()` 重读最近 ≤5 文件追加 `[Anti-Drift]`（测试用 `tmp_path` 真实文件）。
+- **flaky 修复**：原 `test_concurrent_tools_run_in_parallel_and_pair_by_id` 把两个并发 0.1s sleep 用 `asyncio.wait_for(timeout=0.25)` 包住，负载下偶发超时；放宽到 1.0s 消除抖动（不影响并发验证意图）。
+- **全量**：`pytest -q` 全绿（348 用例），M1/M2/M3 零回归。
+
 ## M5 沉淀（SkillLoader + SubagentSpawner，落地后补全）
 
 > 来源：`milestones/M5-扩展能力/`（5.1~5.5）。当前仅文档完成，编码落地后在此汇总跨步骤接口/决策/坑。设计依据见 `knowledge/claude-code-subagents-skills.md`。

@@ -10,10 +10,11 @@ from pathlib import Path
 import pytest
 
 from agent.config.settings import Settings
+from agent.context import ContextManager
 from agent.core.control_tools import SPAWN_SUBAGENT_TOOL_NAME, USE_SKILL_TOOL_NAME
 from agent.core.events import EventStream
 from agent.core.loop import AgentLoop, LoopStalled
-from agent.core.model import Decision, FakeModel, RecordingModel, ToolCall
+from agent.core.model import Decision, FakeModel, Message, RecordingModel, ToolCall
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.runtime.sandbox import FakeExecutor, SandboxProfile
@@ -524,6 +525,27 @@ async def test_spawn_subagent_returns_summary():
     assert res.ok
     assert res.output.startswith("[Subagent explore]")
     assert "explore result" in res.output
+
+
+# --------------------------------------------------------------------------- #
+# M4.7 回归：AgentLoop 集成 ContextManager 后不破坏既有行为
+# --------------------------------------------------------------------------- #
+async def test_loop_integration_with_context_mgr():
+    """Loop 集成 ContextManager 后不破坏既有行为（工具执行 + 最终答案正常，conv 被投影）。"""
+    cm = ContextManager()  # 默认启用 microcompact
+    model = FakeModel([
+        Decision(tool_calls=[ToolCall(id="e1", name="echo", arguments={"x": 42})]),
+        Decision(text="echo done"),
+    ])
+    loop = AgentLoop(model, _make_registry(), _settings(), tracer=None)
+    res = await loop.run("use echo", context_mgr=cm)
+
+    assert res.text == "echo done"          # 最终答案正常
+    assert cm.conv                          # ContextManager 已投影 conv（microcompact 已处理）
+    # conv 含工具调用与结果（既有行为未被破坏）
+    roles = [m.role for m in cm.conv]
+    assert "tool" in roles
+    assert any(m.tool_call_id == "e1" for m in cm.conv if m.role == "tool")
 
 
 async def test_spawn_subagent_depth_limit_returns_error():
