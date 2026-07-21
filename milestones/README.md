@@ -1,7 +1,7 @@
 # 里程碑总览
 
 > 开发模式详见根目录 `CODEBUDDY.MD`。**每个里程碑一个文件夹 `milestones/<Mx-名称>/`，每步一个 `.md` 文件**，均含「实现方案 / 验收标准 / 知识沉淀」三要素。
-> 当前进度：M1 已完成、M2 已完成、M3 已完成、M4 部分完成（M4.1–M4.4 已落地，M4.5–M4.7 待启动）、M5 已完成（5.1–5.5 全编码 + 后台 Agent 介绍，全量 `pytest` 314 passed）、M6 待启动（启动前用 `milestones/template.md` 建文件夹与步骤文件）、M7 待启动（设计期已组织为多步里程碑，待编码落地）。
+> 当前进度：M1 已完成、M2 已完成、M3 已完成、M4 部分完成（M4.1–M4.4 已落地，M4.5–M4.7 待启动）、M5 已完成（5.1–5.5 全编码 + 后台 Agent 介绍，全量 `pytest` 314 passed）、M6 待启动（启动前用 `milestones/template.md` 建文件夹与步骤文件）、M7 已完成（M7.1–M7.6 全部落地，agentrunner 守护进程分离 + WS 协议 + CLI 客户端 + 多会话切换，全量 `pytest` 380 passed）。
 
 | 里程碑 | 目标 | 关键交付 | 状态 |
 |---|---|---|---|
@@ -11,7 +11,7 @@
 | **M4 上下文与记忆** | 长任务不爆窗口 | `ContextManager` + Microcompact + Auto Compact(9段摘要) + Session Memory + AGENTS.md 固定底座 + `/context` `/compact` 命令 | 🟡 部分完成（M4.1–M4.4 已落地，test_context 通过；M4.5–M4.7 待启动） |
 | **M5 扩展能力** | 可组合可伸缩 | `SkillLoader` + `SubagentSpawner` + CLI 命令 + 测试验收 | 🟢 已完成（Skill 双轨加载/触发目录 + Subagent 内置 explore/plan/general-purpose + 主循环集成/工具白名单 + CLI `/skills`/`/agents`/`/skill`/`/agent`/`/bg` + 全量测试 314 passed） |
 | **M6 生产化** | 可恢复可观测可测 | 会话恢复 + 测试金字塔 + CI | ⚪ 待启动 |
-| **M7 agentrunner 守护进程分离** | 渲染层与 agentrunner 完全分离为守护进程 + 前端 | daemon + WS 协议 + CLI 客户端 + 多会话切换 | ⚪ 待启动（设计期已组织为多步里程碑） |
+| **M7 agentrunner 守护进程分离** | 渲染层与 agentrunner 完全分离为守护进程 + 前端 | daemon + WS 协议 + CLI 客户端 + 多会话切换 | 🟢 已完成（M7.1–M7.6 全部落地，全量 `pytest` 380 passed） |
 
 ## M1 步骤文件
 
@@ -32,10 +32,10 @@
 
 > agentrunner 守护进程分离重构已组织为 **M7 里程碑**（见下「M7 步骤文件」），不再以 standalone 文档形式存在。
 
-## M7 步骤文件（设计期已组织为多步里程碑，待编码落地）
+## M7 步骤文件（M7.1–M7.6 已全部编码落地，全量 `pytest` 380 passed）
 
 - 设计依据：既有传输层重构 `milestones/M-refactor-统一传输层与事件线格式.md` 已落地（`AgentTransport` + `EventStream`）。
-- `milestones/M7-agentrunner守护进程分离/README.md` — 里程碑计划与步骤索引（目标 / 前置 / 架构 / 全局约定[含两修复点] / 步骤索引）。
+- `milestones/M7-agentrunner守护进程分离/README.md` — 里程碑计划与步骤索引（目标 / 前置 / 架构 / 全局约定[含两修复点] / 步骤索引 / 里程碑级知识沉淀）。
 - `milestones/M7-agentrunner守护进程分离/M7.1-daemon骨架.md`
 - `milestones/M7-agentrunner守护进程分离/M7.2-协议层.md`
 - `milestones/M7-agentrunner守护进程分离/M7.3-CLI客户端.md`

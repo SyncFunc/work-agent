@@ -142,9 +142,9 @@
 - **回归保障**：`tests/test_loop.py` 的 presenter 录制测试改为事件订阅式 `_EventRecordingTransport`；`_Spy` 改为订阅 `tool_call_delta` 事件；`tests/test_cli.py` 用 `TerminalTransport`；`tests/test_plan.py` 的 `_FakeUI` 补 `bind`（loop.run 会订阅）。全量 `pytest` 85 passed。
 - **对 M2 约束**：M2 的审批 HITL 回调（M2.5 文档）应加在统一协议 `AgentTransport`（而非新建第三个协议、也非旧 `SessionUI`）；gate 经窄协议 `ApprovalUI` 消费（`AgentTransport` 结构满足）；审批/沙箱门控接入 `loop` 时直接读 `ToolSpec.risk`/事件，不依赖任何 presenter。
 
-## 重构沉淀（agentrunner 守护进程分离 + 通信协议 → 已组织为 M7 里程碑）
+## 重构沉淀（agentrunner 守护进程分离 + 通信协议 → 已落地为 M7 里程碑 ✅）
 
-> 来源：与既有重构（统一传输层）比对后的 client-server 落地化重构设计，已组织为多步里程碑 `milestones/M7-agentrunner守护进程分离/`（`README.md` + `M7.1`–`M7.6`，每步含实现方案/验收标准/知识沉淀）。本次（设计期）已落地两处修复：① `agent/core/events.py` 的 `Event.type` 注释补全实际产出的类型集合（`decision|clarify|plan|plan_progress|tool_use|tool_result|final|error|text|tool_call_delta`）；② 给 `Event` 新增 `transient: bool = False` 字段（`to_dict`/`from_dict` 不计，向后兼容），`EventStream.emit` 分发前置 `transient=True`，使 daemon 回放缓冲可据此仅收持久化事件、排除瞬时 `tool_call_delta`，避免参数预览重复渲染。
+> 来源：与既有重构（统一传输层）比对后的 client-server 落地化重构设计，已组织并**全部落地**为多步里程碑 `milestones/M7-agentrunner守护进程分离/`（`README.md` + `M7.1`–`M7.6`，每步含实现方案/验收标准/知识沉淀）。设计期已落地两处修复并编码验证：① `agent/core/events.py` 的 `Event.type` 注释补全实际产出的类型集合（`decision|clarify|plan|plan_progress|tool_use|tool_result|final|error|text|tool_call_delta`）；② 给 `Event` 新增 `transient: bool = False` 字段（`to_dict`/`from_dict` 不计，向后兼容），`EventStream.emit` 分发前置 `transient=True`，使 daemon 回放缓冲可据此仅收持久化事件、排除瞬时 `tool_call_delta`，避免参数预览重复渲染。**后续 M7.1–M7.6 已编码落地**：`EventType(str, Enum)` 取代注释、daemon/WS/HTTP、`BridgeTransport` HITL future、CLI 客户端、session 切换回放、`dispatch_command` 共享。全量 `pytest` **380 passed**（较 M7 前 314 +66），core 不变性核验：`git log --oneline -- agent/core/` 显示 M7 阶段仅 M7.1 触碰 core。
 
 - **agentrunner / 渲染层完全分离**：daemon（`SessionRegistry` + `BridgeTransport` + WS/HTTP server）常驻，前端（CLI/Web）仅渲染+输入；二者经 WebSocket 协议交互。core（loop/session/transport/events）**零/极小改动**——新增只在 `agent/daemon/`（新增）与 `agent/cli.py`（新增 `daemon`/`client` 子命令 + 抽取共享命令分发）。
 - **通信协议铁律**：事件直接复用 `Event.to_dict()`/`from_dict()` 经 `event` 消息转发；HITL（`ask`/`confirm_plan`/`approve`/`show_*`）由服务端 `BridgeTransport` 封装为带 `id` 的请求消息、`await asyncio.Future`，客户端回传同 `id` 应答 `set_result` 唤醒。新增实时渲染仍走 `EventStream` 事件（不回退给 loop 加回调）。
