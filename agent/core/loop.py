@@ -26,7 +26,7 @@ from agent.core.control_tools import (
     SPAWN_SUBAGENT_TOOL_NAME,
     collect_control_tools,
 )
-from agent.core.events import Event, EventStream
+from agent.core.events import Event, EventStream, EventType
 from agent.core.intent import Question, extract_clarify
 from agent.core.model import Decision, Message, Model, ToolCall
 from agent.core.plan import Plan, PlanStep, PlanStore
@@ -158,14 +158,14 @@ class AgentLoop:
                 if decision.usage:
                     for k, v in decision.usage.items():
                         usage_total[k] = usage_total.get(k, 0) + v
-                stream.append(Event(type="decision", decision=decision))
+                stream.append(Event(type=EventType.DECISION, decision=decision))
 
                 # ① 澄清闸门
                 if self.settings.clarify.enabled and (cq := extract_clarify(decision)) is not None:
                     ct += 1
                     if self._agent_span is not None:
                         self._agent_span.log("clarify", f"round {ct}: {len(cq)} questions")
-                    stream.append(Event(type="clarify", questions=[q.to_dict() for q in cq]))
+                    stream.append(Event(type=EventType.CLARIFY, questions=[q.to_dict() for q in cq]))
                     if ct <= self.settings.clarify.max_rounds:
                         clarify_calls = [
                             tc for tc in decision.tool_calls
@@ -191,7 +191,7 @@ class AgentLoop:
                                for s in ppp.get("steps", [])],
                     )
                     path = PlanStore.write_plan(plan, self.settings.plan.file)
-                    stream.append(Event(type="plan", text=plan.body, plan_path=path))
+                    stream.append(Event(type=EventType.PLAN, text=plan.body, plan_path=path))
                     present_calls = [tc for tc in decision.tool_calls if tc.name == PRESENT_PLAN_TOOL_NAME]
                     conv.append(Message(role="assistant", tool_calls=present_calls))
                     for tc in present_calls:
@@ -208,7 +208,7 @@ class AgentLoop:
 
                 if decision.is_final:
                     text = decision.text or ""
-                    stream.append(Event(type="final", text=text))
+                    stream.append(Event(type=EventType.FINAL, text=text))
                     conv.append(Message(role="assistant", content=text))
                     return AgentResult(
                         text=text, events=stream, iterations=i + 1,
@@ -237,7 +237,7 @@ class AgentLoop:
 
                 conv.append(Message(role="assistant", tool_calls=decision.tool_calls))
                 for tc, res in zip(decision.tool_calls, results):
-                    stream.append(Event(type="tool_result", tool_call_id=tc.id, tool_result=res))
+                    stream.append(Event(type=EventType.TOOL_RESULT, tool_call_id=tc.id, tool_result=res))
                     conv.append(
                         Message(role="tool", content=res.output or res.error, tool_call_id=tc.id)
                     )
@@ -254,7 +254,7 @@ class AgentLoop:
         )
         if self._agent_span is not None:
             self._agent_span.log("soft_limit", notice, level="warn")
-        stream.append(Event(type="final", text=notice))
+        stream.append(Event(type=EventType.FINAL, text=notice))
         return AgentResult(
             text=notice, events=stream, iterations=self.settings.loop.max_iterations,
             messages=conv, clarify_total=ct, usage=usage_total, soft_limit_hit=True,
@@ -276,11 +276,11 @@ class AgentLoop:
                 mspan.log("conv_len", len(conv))
                 mspan.log("plan_mode", plan_mode)
             async for ev in self.model.stream(full, tools=self._model_tools(plan_mode=plan_mode, plan_path=plan_path)):
-                if ev.type == "text" and ev.text:
-                    stream.append(Event(type="text", text=ev.text, kind=ev.kind or "content"))
-                elif ev.type == "tool_call_delta":
+                if ev.type == EventType.TEXT and ev.text:
+                    stream.append(Event(type=EventType.TEXT, text=ev.text, kind=ev.kind or "content"))
+                elif ev.type == EventType.TOOL_CALL_DELTA:
                     stream.emit(Event(
-                        type="tool_call_delta", tc_index=ev.tc_index,
+                        type=EventType.TOOL_CALL_DELTA, tc_index=ev.tc_index,
                         tc_name=ev.tc_name, tc_args=ev.tc_args,
                     ))
                 elif ev.type == "done":
@@ -372,7 +372,7 @@ class AgentLoop:
                     except (KeyError, ValueError) as e:
                         return ToolResult(ok=False, error=str(e))
                     stream.append(Event(
-                        type="plan_progress",
+                        type=EventType.PLAN_PROGRESS,
                         plan_path=self._run_pp or self.settings.plan.file,
                         plan_update={"step_id": step_id, "status": status, "note": note},
                     ))
@@ -430,7 +430,7 @@ class AgentLoop:
                         return ToolResult(ok=False, error=f"{type(e).__name__}: {e}")
 
         for tc in calls:
-            stream.append(Event(type="tool_use", tool_use=tc))
+            stream.append(Event(type=EventType.TOOL_USE, tool_use=tc))
         results = list(await asyncio.gather(*(_one(tc) for tc in calls)))
 
         # M4.5：记录 read/write/edit 的文件访问，供压缩防漂移（_anti_drift 重读最近文件）。

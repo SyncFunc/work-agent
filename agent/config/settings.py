@@ -150,6 +150,18 @@ class SubagentsConfig(BaseModel):
     auto_allow: bool = False
 
 
+class DaemonConfig(BaseModel):
+    """守护进程（M7 agentrunner 分离）配置。
+
+    仅绑定回环地址；端口/健康检查端口可配；可选本机 token 鉴权。
+    """
+
+    host: str = "127.0.0.1"
+    port: int = 18789
+    health_port: int = 18790
+    token: str = ""  # 非空时要求客户端 hello 携带相同 token（本机鉴权，可选）
+
+
 # --------------------------------------------------------------------------- #
 # 主 Settings
 # --------------------------------------------------------------------------- #
@@ -168,6 +180,7 @@ class Settings(BaseSettings):
     context: ContextConfig = ContextConfig()
     skills: SkillsConfig = SkillsConfig()
     subagents: SubagentsConfig = SubagentsConfig()
+    daemon: DaemonConfig = DaemonConfig()
 
 
 

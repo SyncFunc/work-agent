@@ -26,6 +26,7 @@ from rich.tree import Tree
 from agent.config.settings import load_settings
 from agent.core.model import Message, create_model
 from agent.core.session import Session
+from agent.core.session_command import dispatch_command
 from agent.obs.tracer import Tracer
 from agent.obs.store import TraceStore
 from agent.runtime.registry import default_registry
@@ -228,119 +229,10 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings) -
         cmd = task.strip().lower()
         if cmd in {"exit", "quit"}:
             break
-        if cmd in {"/plan"}:
-            session.plan_mode = True
-            typer.echo("→ 已切换到 PLAN 模式（探索，不修改任何文件）", err=True)
+        # M7.5：命令分发抽为共享函数（进程内与 daemon 协议路径共用，单一来源）。
+        if await dispatch_command(session, task, transport, settings):
             continue
-        if cmd in {"/exec"}:
-            session.plan_mode = False
-            # 若尚无已知计划但计划文件已落盘（如刚 /plan 产出未显式批准），自动载人，
-            # 使 EXEC 模式能按 plan_path 下发 update_plan（推进步骤进度）。
-            if session.plan_path is None and os.path.isfile(settings.plan.file):
-                session.plan_path = settings.plan.file
-            typer.echo("→ 已切换到 EXEC 模式（可执行）", err=True)
-            continue
-        if cmd in {"/approve"}:
-            # 同上：自动载人已落盘计划，避免「已展示未批准」状态下丢失 plan_path。
-            if session.plan_path is None and os.path.isfile(settings.plan.file):
-                session.plan_path = settings.plan.file
-            if session.plan_path:
-                session.plan_mode = False
-                typer.echo(f"→ 已批准计划并切到 EXEC 模式：{session.plan_path}", err=True)
-            else:
-                typer.echo("→ 当前没有待批准的计划（先用 /plan 让模型产出计划）", err=True)
-            continue
-        if cmd in {"/mode"}:
-            typer.echo(f"→ 当前模式：{'PLAN' if session.plan_mode else 'EXEC'}"
-                       + (f"，计划：{session.plan_path}" if session.plan_path else ""), err=True)
-            continue
-        # ---- M4.6：上下文命令（/context /compact）----
-        if cmd in {"/context"}:
-            if session.context_mgr is not None:
-                typer.echo(session.context_mgr.format_usage(), err=True)
-            else:
-                typer.echo("→ 上下文管理未启用（settings.context.*_enabled 全为 false）", err=True)
-            continue
-        if cmd in {"/compact"}:
-            if session.context_mgr is not None:
-                typer.echo("→ 正在压缩上下文...", err=True)
-                ok = await session.context_mgr.compact()
-                if ok:
-                    # 压缩后自动以新 conv 替换会话历史（与 Session.step 末尾逻辑一致）。
-                    session.messages = session.context_mgr.conv
-                    usage = session.context_mgr.estimate_usage()
-                    typer.echo(
-                        f"✅ 压缩完成。当前占用：{usage.total:,} / "
-                        f"{session.context_mgr.effective_window:,} ({usage.used_pct:.1%})",
-                        err=True,
-                    )
-                else:
-                    typer.echo("⚠️ 压缩未执行（上下文尚小或连续失败已放弃）", err=True)
-            else:
-                typer.echo("→ 上下文管理未启用（settings.context.*_enabled 全为 false）", err=True)
-            continue
-        # ---- M5.4：Skill / Subagent 命令（仅改 Session 状态，不调模型）----
-        if cmd in {"/skills"}:
-            transport.show_skills(session.list_skills())
-            continue
-        if cmd in {"/agents"}:
-            transport.show_agents(session.list_agents())
-            continue
-        if cmd in {"/skill"}:
-            typer.echo("用法: /skill <name>  —— 显式加载某 skill 到下一轮对话", err=True)
-            continue
-        if cmd.startswith("/skill "):
-            name = task.strip()[len("/skill "):].strip()  # 保留原名大小写
-            if session.skill_loader is None:
-                typer.echo("skills 未启用（settings.skills.enabled=false）", err=True)
-            else:
-                spec = session.skill_loader.get(name)
-                if spec is None:
-                    typer.echo(f"未找到 skill: {name}", err=True)
-                else:
-                    # 等价于模型调 use_skill：把渲染后的正文作为 user 消息注入下一轮
-                    session.messages.append(Message(
-                        role="user", content=f"[Skill {name}]\n{spec.render_body()}"
-                    ))
-                    typer.echo(f"已加载 skill: {name}", err=True)
-            continue
-        # ---- M5.4 后台 Subagent 命令 ----
-        if cmd in {"/agent"}:
-            typer.echo("用法: /agent <name> <task>  —— 后台启动一个 Subagent", err=True)
-            continue
-        if cmd.startswith("/agent "):
-            rest = task.strip()[len("/agent "):].strip()
-            # 解析 agent_name 和 task：第一个空格前是 name，之后是 task
-            space_idx = rest.find(" ")
-            if space_idx < 0:
-                typer.echo("用法: /agent <name> <task>  —— name 和 task 之间用空格分隔", err=True)
-            else:
-                agent_name = rest[:space_idx]
-                agent_task = rest[space_idx + 1:].strip()
-                if not agent_task:
-                    typer.echo("用法: /agent <name> <task>  —— task 不能为空", err=True)
-                else:
-                    task_id = session.spawn_background(
-                        agent_name, agent_task, transport,
-                        parent_span=session.loop._agent_span,
-                    )
-                    if task_id is not None:
-                        typer.echo(
-                            f"→ 后台 Subagent [{agent_name}] 已启动（task_id: {task_id}），"
-                            f"完成后将自动通知。可用 /bg 查看状态。",
-                            err=True,
-                        )
-            continue
-        if cmd in {"/bg"}:
-            tasks = session.list_background_tasks()
-            if not tasks:
-                typer.echo("→ 当前没有运行中的后台任务", err=True)
-            else:
-                typer.echo(f"→ 后台任务数: {len(tasks)}", err=True)
-                for t in tasks:
-                    status = "✅ 已完成" if t["done"] else "🔄 运行中"
-                    typer.echo(f"  {t['id']}: {status}", err=True)
-            continue
+
 
         try:
             res, err = await session.step(task, transport, yes=False, fatal_plan_decline=False)
@@ -457,6 +349,34 @@ def health(
         if has_degraded:
             raise typer.Exit(code=1)
         raise typer.Exit(code=0)
+
+
+@app.command()
+def daemon(
+    port: int = typer.Option(None, "--port", "-p", help="daemon 监听端口（覆盖 settings.daemon.port）"),
+) -> None:
+    """启动 agentrunner 守护进程（常驻），前端经 WebSocket 连接；仅绑 127.0.0.1。"""
+    from agent.daemon.server import start_daemon
+
+    settings = load_settings()
+    if port:
+        settings.daemon.port = port
+    start_daemon(settings)
+
+
+@app.command()
+def client(
+    port: int = typer.Option(None, "--port", "-p", help="daemon 端口（覆盖 settings.daemon.port）"),
+    session: str = typer.Option(None, "--session", "-s", help="attach 指定会话 id"),
+    resume: bool = typer.Option(False, "--resume", help="恢复最近会话"),
+    run: str = typer.Option(None, "--run", help="一次性模式：发单条任务后等 close 退出"),
+) -> None:
+    """连接 daemon 的 CLI 客户端（复用终端渲染 + HITL 回传）。"""
+    from agent.daemon.client import run_client
+
+    settings = load_settings()
+    p = port or settings.daemon.port
+    asyncio.run(run_client(p, session_id=session, resume=resume, run_task=run))
 
 
 if __name__ == "__main__":

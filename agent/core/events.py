@@ -12,10 +12,33 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any
 
 from agent.core.model import Decision, ToolCall
 from agent.runtime.registry import ToolResult
+
+
+class EventType(str, Enum):
+    """``Event.type`` 的强类型枚举（同时即 JSON 取值，因继承自 ``str``）。
+
+    实际由 loop 产出的集合：
+    - ``DECISION`` / ``CLARIFY`` / ``PLAN`` / ``PLAN_PROGRESS`` /
+      ``TOOL_USE`` / ``TOOL_RESULT`` / ``FINAL`` / ``ERROR``
+    - ``TEXT``（模型文本增量，append 入档持久化）
+    - ``TOOL_CALL_DELTA``（工具参数增量，emit 瞬时、不入档，``transient=True``）
+    """
+
+    DECISION = "decision"
+    CLARIFY = "clarify"
+    PLAN = "plan"
+    PLAN_PROGRESS = "plan_progress"
+    TOOL_USE = "tool_use"
+    TOOL_RESULT = "tool_result"
+    FINAL = "final"
+    ERROR = "error"
+    TEXT = "text"
+    TOOL_CALL_DELTA = "tool_call_delta"
 
 
 # --------------------------------------------------------------------------- #
@@ -55,7 +78,8 @@ def _tool_result_from_dict(d: dict[str, Any]) -> ToolResult:
 class Event:
     """事件流中的一条记录。顺序由 `seq` 唯一确定（append 时自动写入）。"""
 
-    type: str  # decision | tool_use | tool_result | final | error | plan | plan_progress
+    type: EventType  # 事件类型，强类型枚举（见 EventType）
+    transient: bool = False  # 瞬时事件标记：emit 路径置 True，不进 to_dict/from_dict，不进回放缓冲
     ts: float = 0.0  # 写入时由 EventStream 填充（from_json 重建时保留原值）
 
     decision: Decision | None = None
@@ -75,7 +99,7 @@ class Event:
     seq: int = -1  # 构造时留空，append 时由 EventStream 自动写入（放最后以满足 dataclass 默认值顺序约束）
 
     def to_dict(self) -> dict[str, Any]:
-        d: dict[str, Any] = {"seq": self.seq, "type": self.type, "ts": self.ts}
+        d: dict[str, Any] = {"seq": self.seq, "type": self.type.value, "ts": self.ts}
         if self.decision is not None:
             d["decision"] = _decision_to_dict(self.decision)
         if self.tool_use is not None:
@@ -108,7 +132,7 @@ class Event:
     def from_dict(cls, d: dict[str, Any]) -> "Event":
         return cls(
             seq=d["seq"],
-            type=d["type"],
+            type=EventType(d["type"]),
             ts=d.get("ts", 0.0),
             decision=_decision_from_dict(d["decision"]) if "decision" in d else None,
             tool_use=_tool_call_from_dict(d["tool_use"]) if "tool_use" in d else None,
@@ -170,6 +194,7 @@ class EventStream:
         与 ``append`` 不同，``emit`` 只把事件推给订阅者，不写入 ``_events``，因此不影响
         ``to_json`` / 重放，也不改变「持久化事件序列」的既有不变量（测试据此断言 type 顺序）。
         """
+        ev.transient = True  # 标记为瞬时，回放缓冲（如 daemon 环形缓冲）据此排除
         for sink in self._sinks:
             sink(ev)
 

@@ -336,8 +336,8 @@ async def test_sub_transport_renders_independent_stream():
     child_stream = EventStream()
     sub.bind(child_stream)
     # 往子 stream 投递事件，应被 sub 渲染（父 transport 不应收到）
-    from agent.core.events import Event
-    child_stream.append(Event(type="text", text="hello", kind="content"))
+    from agent.core.events import Event, EventType
+    child_stream.append(Event(type=EventType.TEXT, text="hello", kind="content"))
     assert len(parent.rendered) == 0
 
 

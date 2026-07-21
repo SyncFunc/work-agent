@@ -39,7 +39,7 @@ from agent.core.control_tools import (
     UPDATE_PLAN_TOOL_NAME,
     SPAWN_SUBAGENT_TOOL_NAME,
 )
-from agent.core.events import Event, EventStream
+from agent.core.events import Event, EventStream, EventType
 from agent.core.intent import Question
 from agent.core.transport import AgentTransport
 from agent.runtime.approval import Action
@@ -250,24 +250,24 @@ class TerminalTransport(AgentTransport):
 
     def _on_event(self, ev: Event) -> None:
         t = ev.type
-        if t == "text":
+        if t == EventType.TEXT:
             self.on_text(ev.text or "", ev.kind or "content")
-        elif t == "tool_use":
+        elif t == EventType.TOOL_USE:
             if ev.tool_use is not None:
                 self._tc_by_id[ev.tool_use.id] = ev.tool_use
                 self.on_tool_call(ev.tool_use)
-        elif t == "tool_call_delta":
+        elif t == EventType.TOOL_CALL_DELTA:
             # 瞬时事件（不入档）：write/edit 参数生成中实时预览
             self.on_tool_call_delta(ev.tc_index or 0, ev.tc_name or "", ev.tc_args or "")
-        elif t == "tool_result":
+        elif t == EventType.TOOL_RESULT:
             # tool_result 事件只带 tool_call_id + ToolResult；工具名从 tool_use 收集而来
             if ev.tool_call_id is not None:
                 tc = self._tc_by_id.get(ev.tool_call_id)
                 if tc is not None and ev.tool_result is not None:
                     self.on_tool_result(tc, ev.tool_result)
-        elif t == "plan_progress":
+        elif t == EventType.PLAN_PROGRESS:
             self.on_plan_progress(ev)
-        elif t == "decision":
+        elif t == EventType.DECISION:
             # 一轮模型决策结束收尾（澄清/计划闸门提前返回时工具回调不触发，统一在此定稿）
             self._on_decision_done()
         # clarify / plan / final 等由 HITL（show_questions/show_plan）或已流式文本覆盖，忽略

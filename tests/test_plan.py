@@ -16,7 +16,7 @@ from agent.core.control_tools import (
     PRESENT_PLAN_TOOL_NAME,
     UPDATE_PLAN_TOOL_NAME,
 )
-from agent.core.events import Event, EventStream
+from agent.core.events import Event, EventStream, EventType
 from agent.core.loop import AgentLoop
 from agent.core.model import Decision, FakeModel, ToolCall
 from agent.core.plan import Plan, PlanStore, PlanStep
@@ -252,8 +252,8 @@ async def test_plan_mode_mutating_bash_not_blocked_by_plan_mode(tmp_path):
 
 def test_plan_events_roundtrip():
     es = EventStream()
-    es.append(Event(type="plan", text="b", plan_path="/tmp/p.md"))
-    es.append(Event(type="plan_progress", plan_path="/tmp/p.md",
+    es.append(Event(type=EventType.PLAN, text="b", plan_path="/tmp/p.md"))
+    es.append(Event(type=EventType.PLAN_PROGRESS, plan_path="/tmp/p.md",
                     plan_update={"step_id": "S1", "status": "done", "note": "ok"}))
     rebuilt = EventStream.from_json(es.to_json())
 
