@@ -159,7 +159,7 @@ flowchart LR
 |---|---|---|
 | M6.1 | [6.1-SessionStore基础设施.md](./6.1-SessionStore基础设施.md) | sqlite schema + 写入 sink + `load`/`list_sessions` + **fork 血缘/复制**；统一 `session_id`（修复 daemon 与 Session 双 id） |
 | M6.2 | [6.2-会话恢复流程.md](./6.2-会话恢复流程.md) | `rebuild_messages` 事件→Message + 中断检测 + M7 冷启动衔接 + **fork 恢复** + `resume`/`fork` 命令 ✅ |
-| M6.3 | [6.3-测试分层重构.md](./6.3-测试分层重构.md) | unit/integration/e2e 分层 + marker + prompt 快照 + tool tapes 录制重放 |
+| M6.3 | [6.3-测试分层重构.md](./6.3-测试分层重构.md) | unit/integration/e2e 分层 + marker + prompt 快照 + tool tapes 录制重放 ✅ |
 | M6.4 | [6.4-CI工作流.md](./6.4-CI工作流.md) | GitHub Actions（lint+type+cov+快慢分离）+ dev 依赖补全 |
 | M6.5 | [6.5-端到端验收.md](./6.5-端到端验收.md) | **resume 跨重启 + fork 跨重启** + CI 绿 + 覆盖率报告 + 回归零 |
 

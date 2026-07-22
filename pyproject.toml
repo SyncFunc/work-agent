@@ -30,6 +30,14 @@ packages = ["agent"]
 asyncio_mode = "auto"
 testpaths = ["tests"]
 pythonpath = ["."]
+# 默认跳过慢测（e2e / 非确定）；`pytest -m slow` 单独跑；Tier1/Tier2 每次 commit 必跑。
+addopts = "-m 'not slow'"
+markers = [
+    "unit: 快速、确定、零成本的单元测试（默认跑）",
+    "integration: 集成测试（loop+tools / daemon over websockets，默认跑）",
+    "e2e: 端到端测试（完整会话跨重启，非确定或慢）",
+    "slow: 慢 / 非确定测试（nightly 或手动，默认跳过）",
+]
 
 [tool.basedpyright]
 # 采用业界通行的 standard 模式：保留有价值的类型检查（未定义、参数不匹配、返回类型等），

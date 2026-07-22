@@ -134,6 +134,18 @@ class SessionStore:
         items = [json.loads(r["json"]) for r in rows]
         return EventStream.from_json(json.dumps(items, ensure_ascii=False))
 
+    def _next_seq(self, session_id: str) -> int:
+        """该会话下一个全局事件序号（MAX(seq)+1，无记录则 0）。
+
+        用于续跑/恢复时让新 run 的事件以「会话级全局 seq」落盘，避免与既有前缀
+        的 per-run seq（0,1,2…）碰撞被 ``INSERT OR REPLACE`` 覆盖。
+        """
+        with self._conn() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(seq), -1) FROM events WHERE session_id=?", (session_id,)
+            ).fetchone()
+        return (row[0] + 1) if row and row[0] is not None else 0
+
     def get_session(self, session_id: str) -> dict[str, Any] | None:
         with self._conn() as conn:
             row = conn.execute(
@@ -182,11 +194,23 @@ class SessionStoreSink:
 
     用法：``stream.subscribe(SessionStoreSink(store, session_id))``。``loop.run`` 在
     创建 ``EventStream`` 后订阅它，无需改动循环主逻辑即可持久化。
+
+    关键：落盘时用「会话级全局 seq」覆盖事件自带的 per-run seq（每个新 run 的
+    ``EventStream`` 从 0 重新开始），否则续跑/恢复时新事件 seq 会与既有前缀碰撞
+    被 ``INSERT OR REPLACE`` 覆盖，破坏事件流完整性。
     """
 
     def __init__(self, store: SessionStore, session_id: str) -> None:
         self._store = store
         self._session_id = session_id
+        self._seq: int | None = None  # 惰性初始化为该会话 DB 最大 seq + 1
 
     def __call__(self, ev: Event) -> None:
+        if ev.transient:
+            return
+        if self._seq is None:
+            self._seq = self._store._next_seq(self._session_id)
+        # 用会话级全局 seq 覆盖事件自带 seq（同一 Event 对象，in-memory 流同步更新）
+        ev.seq = self._seq
+        self._seq += 1
         self._store.append_event(self._session_id, ev)
