@@ -24,6 +24,7 @@ dev = [
     "pytest-cov>=5.0",
     "ruff>=0.5",
     "pytest-xdist>=3.5",
+    "basedpyright>=1.10",
 ]
 
 [tool.hatch.build.targets.wheel]
