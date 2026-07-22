@@ -18,14 +18,19 @@
 from __future__ import annotations
 
 import argparse
+import io
 import sys
 from pathlib import Path
 
 # Windows 默认控制台为 GBK，直接 print 中文/✓ 会抛 UnicodeEncodeError。
 # 强制 stdout/stderr 走 UTF-8，保证跨平台（CI Linux 本就是 UTF-8）不崩。
+# 仅在确实是 TextIOWrapper 时调用 reconfigure（sys.stdout 类型被标注为 TextIO
+# 协议，没有 reconfigure；实际运行时是 TextIOWrapper，isinstance 收窄后类型正确）。
 try:
-    sys.stdout.reconfigure(encoding="utf-8")
-    sys.stderr.reconfigure(encoding="utf-8")
+    if isinstance(sys.stdout, io.TextIOWrapper):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if isinstance(sys.stderr, io.TextIOWrapper):
+        sys.stderr.reconfigure(encoding="utf-8")
 except Exception:  # pragma: no cover - 仅非 CPython/老版本兜底
     pass
 

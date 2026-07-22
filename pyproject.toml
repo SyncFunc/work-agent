@@ -50,6 +50,9 @@ markers = [
 # reportUnknownMemberType 等）。如需更严格，可改为 "strict" 并逐项标注。
 typeCheckingMode = "standard"
 pythonVersion = "3.12"
+# 仅对生产代码（agent）与脚本（scripts）做类型检查；tests 通过 pytest 实跑保证正确，
+# 其大量 mock/fake 故意与协议不完全一致，纳入会引入与运行时无关的类型噪音。
+include = ["agent", "scripts"]
 
 # ---- ruff：lint + format（CI 门禁之一）----
 [tool.ruff]
