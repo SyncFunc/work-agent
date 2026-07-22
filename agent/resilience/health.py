@@ -67,9 +67,7 @@ class HealthChecker:
         return HealthStatus(healthy=overall_healthy, checks=checks, timestamp=time.time())
 
     @staticmethod
-    async def _run_check(
-        name: str, fn: Callable[[], Awaitable[CheckResult]]
-    ) -> CheckResult:
+    async def _run_check(name: str, fn: Callable[[], Awaitable[CheckResult]]) -> CheckResult:
         start = time.time()
         try:
             result = await fn()

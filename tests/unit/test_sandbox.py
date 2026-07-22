@@ -128,16 +128,19 @@ def test_local_executor_blocks_oob_write_via_filter():
     assert res.error is not None and "越界写" in res.error
 
 
-def test_local_executor_allows_in_workspace_write():
+def test_local_executor_allows_in_workspace_write(tmp_path: Path):
     # cwd 内的写操作在 workspace-write 下允许（CommandFilter 不拦）
-    ex = LocalExecutor(workspace=Path.cwd())
-    res = asyncio.run(ex.run(_req("echo data > ./sandbox_test_tmp.txt")))
+    # 注意：写目标必须落在 tmp_path，避免测试在仓库根目录留下散文件
+    ex = LocalExecutor(workspace=tmp_path)
+    res = asyncio.run(ex.run(_req("echo data > ./sandbox_test_tmp.txt", cwd=tmp_path)))
     assert res.ok, res.error
 
 
-def test_local_executor_readonly_blocks_any_write():
-    ex = LocalExecutor(workspace=Path.cwd())
-    res = asyncio.run(ex.run(_req("echo x > ./f.txt", profile=SandboxProfile.READ_ONLY)))
+def test_local_executor_readonly_blocks_any_write(tmp_path: Path):
+    ex = LocalExecutor(workspace=tmp_path)
+    res = asyncio.run(
+        ex.run(_req("echo x > ./f.txt", profile=SandboxProfile.READ_ONLY, cwd=tmp_path))
+    )
     assert not res.ok
     assert res.error is not None and "read-only" in res.error
 

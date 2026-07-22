@@ -54,3 +54,23 @@ def make_registry():
 @pytest.fixture
 def settings_factory():
     return _settings
+
+
+def pytest_sessionfinish(session, exitstatus):  # noqa: ANN001, ANN201, ARG001
+    """测试结束后自动清理仓库根散文件，避免误提交。
+
+    排除 ``coverage.xml``：CI 的 fast 门禁在 ``pytest --cov`` 之后还要把它当
+    artifact 上传，故此处不删；其余散文件（a.txt / x / _*.txt …）一律清掉。
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    script = Path(__file__).resolve().parent.parent / "scripts" / "cleanup_test_artifacts.py"
+    if script.exists():
+        subprocess.run(
+            [sys.executable, str(script), "--exclude", "coverage.xml"],
+            check=False,
+            encoding="utf-8",
+            text=True,
+        )

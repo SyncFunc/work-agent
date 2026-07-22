@@ -64,9 +64,7 @@ def test_resume_full_session_across_daemon_restart(tmp_path):
 
     # 续跑：resume 后继续一个任务，正常产出最终答案
     asyncio.run(restored.step("continue", TerminalTransport(interactive=False)))
-    assert any(
-        m.role == "assistant" and m.content == "again" for m in restored.messages
-    )
+    assert any(m.role == "assistant" and m.content == "again" for m in restored.messages)
 
 
 @pytest.mark.slow
@@ -103,6 +101,4 @@ def test_resume_interrupted_turn_across_daemon_restart(tmp_path):
     assert "中断" in restored.messages[-1].content
     # 续跑不崩溃，产出最终答案
     asyncio.run(restored.step("please finish", TerminalTransport(interactive=False)))
-    assert any(
-        m.role == "assistant" and m.content == "recovered" for m in restored.messages
-    )
+    assert any(m.role == "assistant" and m.content == "recovered" for m in restored.messages)

@@ -13,6 +13,22 @@ tmp_out.txt
 tmp_pytest.txt
 pytest_out.txt
 
+# 覆盖率报告（CI 生成，勿提交；CI 以 artifact 形式上传）
+coverage.xml
+
+# 测试/调试散落产物（根目录里人工或测试漏写的残留）
+sandbox_test_tmp.txt
+f.txt
+_m63_out.txt
+_m63b.txt
+_m63c.txt
+# 任意以 _ 开头的调试 dump（如 _mNN_*.txt）
+_*.txt
+# 根目录随手建的调试文件
+/x
+# 通用临时文件
+*.tmp
+
 # Python
 __pycache__/
 *.pyc

@@ -82,8 +82,8 @@ def test_fork_across_daemon_restart_lineage(tmp_path):
     # 子事件流以父前缀（fork 时复制）开头
     assert child_after[: len(parent_prefix)] == parent_prefix
     # 父续跑新增、子续跑新增均非空
-    parent_new = parent_after[len(parent_prefix):]
-    child_new = child_after[len(parent_prefix):]
+    parent_new = parent_after[len(parent_prefix) :]
+    child_new = child_after[len(parent_prefix) :]
     assert parent_new and child_new
     # 互不串台：父续跑的最终答案不在子流，子续跑的最终答案不在父流
     assert all(e.type != EventType.FINAL or e.text != "p2" for e in child_new)
