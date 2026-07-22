@@ -6,10 +6,15 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 from agent.core.loop import AgentLoop
-from agent.core.model import Decision, ToolCall
-from agent.testing.recorded_model import RecordedModel
+from agent.core.model import Decision, FakeModel, ToolCall
+from agent.testing.recorded_model import (
+    RecordedModel,
+    decisions_from_eventstream,
+    dump_tape,
+)
 from tests.conftest import _make_registry, _settings
 
 
@@ -53,3 +58,46 @@ def test_tool_tape_error_branch_graceful_degradation():
     assert "unknown tool" in (tr.tool_result.error or "")
     # 模型在下一轮收到该错误并已优雅恢复（降级而非崩溃）
     assert result.text == "recovered"
+
+
+def test_real_tape_file_replays():
+    """真实 tape 文件回放：从 ``fixtures/tapes`` 加载录制产物，RecordedModel 回放，
+    工具调用顺序 / 参数 / 最终文本与录制时一致（零 LLM、零网络）。"""
+    tape_path = Path(__file__).parent / "fixtures" / "tapes" / "echo_one.json"
+    model = RecordedModel.from_tape(tape_path)
+    result = asyncio.run(AgentLoop(model, _make_registry(), _settings()).run("replay"))
+
+    uses = [e.tool_use for e in result.events if e.type == "tool_use"]
+    assert [u.name for u in uses] == ["echo"]
+    assert uses[0].arguments == {"msg": "hello"}
+    assert result.text == "done"
+
+
+def test_record_replay_roundtrip(tmp_path):
+    """录制闭环全链路：用 FakeModel 真实跑一轮 loop → 从 EventStream 提取决策 →
+    落盘 tape → 重新加载 → RecordedModel 回放 → 行为完全一致（工具顺序/参数/最终文本）。
+
+    证明「录制→落盘→回放」链路可工作且回放结果与原运行等价；该链路不依赖真实 LLM，
+    nightly 真实 LLM 录制时走的是同一套 ``decisions_from_eventstream`` / ``dump_tape``。
+    """
+    script = [
+        Decision(tool_calls=[ToolCall(id="t1", name="echo", arguments={"msg": "rec"})]),
+        Decision(text="final answer"),
+    ]
+    loop = AgentLoop(FakeModel(script), _make_registry(), _settings())
+    result = asyncio.run(loop.run("do something"))
+
+    decisions = decisions_from_eventstream(result.events)
+    assert decisions  # 至少含初次决策
+    tape_path = tmp_path / "replay.json"
+    dump_tape(decisions, tape_path)
+
+    replay = asyncio.run(
+        AgentLoop(RecordedModel.from_tape(tape_path), _make_registry(), _settings()).run(
+            "do something"
+        )
+    )
+    orig = [e.tool_use for e in result.events if e.type == "tool_use"]
+    new = [e.tool_use for e in replay.events if e.type == "tool_use"]
+    assert [(t.name, t.arguments) for t in orig] == [(t.name, t.arguments) for t in new]
+    assert replay.text == result.text

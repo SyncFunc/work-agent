@@ -1,0 +1,12 @@
+[
+  {
+    "text": null,
+    "tool_calls": [
+      {"id": "t1", "name": "echo", "arguments": {"msg": "hello"}}
+    ]
+  },
+  {
+    "text": "done",
+    "tool_calls": []
+  }
+]
