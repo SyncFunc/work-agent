@@ -13,18 +13,23 @@
 from __future__ import annotations
 
 import os
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable
 
 from agent.core.model import Message
 
+if TYPE_CHECKING:
+    from agent.config.settings import Settings
+    from agent.core.session import SessionLike
+    from agent.core.transport import AgentTransport
+
 
 async def dispatch_command(
-    session: Any,
+    session: "SessionLike",
     raw: str,
-    transport: Any,
-    settings: Any,
+    transport: "AgentTransport",
+    settings: "Settings",
     *,
-    feedback: Callable[[str], None] | None = None,
+    feedback: "Callable[[str], None] | None" = None,
 ) -> bool:
     """分发一条 ``/`` 命令；返回 True=已处理（含未知 slash 命令）。
 

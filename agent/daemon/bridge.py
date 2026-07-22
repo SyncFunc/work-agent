@@ -16,7 +16,7 @@ from __future__ import annotations
 import asyncio
 import uuid
 from dataclasses import asdict
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from agent.core.events import Event
 from agent.core.intent import Question
@@ -24,6 +24,11 @@ from agent.core.transport import AgentTransport
 from agent.runtime.approval import Action
 
 from agent.daemon.protocol import MsgType
+
+if TYPE_CHECKING:
+    from agent.core.events import EventStream
+    from agent.core.loop import AgentResult
+    from agent.core.plan import PlanStep
 
 
 def _action_to_dict(a: Action) -> dict[str, Any]:
@@ -36,11 +41,11 @@ def _action_to_dict(a: Action) -> dict[str, Any]:
     }
 
 
-def _plan_step_to_dict(s: Any) -> dict[str, Any]:
+def _plan_step_to_dict(s: "PlanStep") -> dict[str, Any]:
     return asdict(s)
 
 
-def _spec_to_dict(s: Any) -> dict[str, Any]:
+def _spec_to_dict(s: object) -> dict[str, Any]:
     if hasattr(s, "to_dict"):
         return s.to_dict()  # type: ignore[attr-defined]
     return {k: v for k, v in vars(s).items() if not k.startswith("_")}
@@ -49,7 +54,7 @@ def _spec_to_dict(s: Any) -> dict[str, Any]:
 class BridgeTransport(AgentTransport):
     """服务端 AgentTransport 实现：事件转发 + HITL future 闭环。"""
 
-    def __init__(self, handle: Any) -> None:
+    def __init__(self, handle: "SessionHandle") -> None:
         self.handle = handle
         self._pending: dict[str, asyncio.Future] = {}
         self._pending_sends: list[asyncio.Task] = []  # 在飞的事件转发任务（flush 用）
@@ -83,7 +88,7 @@ class BridgeTransport(AgentTransport):
             )
         )
 
-    def resolve(self, rid: str, value: Any) -> None:
+    def resolve(self, rid: str, value: object) -> None:
         """server 收到客户端应答时调用，唤醒等待中的 ``ask`` / ``confirm_plan`` / ``approve``。"""
         fut = self._pending.pop(rid, None)
         if fut is not None and not fut.done():
@@ -102,7 +107,7 @@ class BridgeTransport(AgentTransport):
     def show_questions(self, questions: list[Question]) -> None:
         self._send(MsgType.SHOW_QUESTIONS, {"questions": [q.to_dict() for q in questions]})
 
-    def show_plan(self, res: Any) -> None:
+    def show_plan(self, res: "AgentResult") -> None:
         self._send(
             MsgType.SHOW_PLAN,
             {
@@ -138,7 +143,7 @@ class BridgeTransport(AgentTransport):
     # ------------------------------------------------------------------ #
     # 事件订阅：实时转发 + 持久化缓冲（仅非 transient）
     # ------------------------------------------------------------------ #
-    def bind(self, stream: Any) -> None:
+    def bind(self, stream: "EventStream") -> None:
         stream.subscribe(self._on_event)
 
     def _on_event(self, ev: Event) -> None:

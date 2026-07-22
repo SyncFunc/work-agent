@@ -18,25 +18,48 @@ import asyncio
 import time
 import uuid
 from collections import deque
-from typing import Any, Callable
+from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
 
 from agent.core.events import Event
 from agent.daemon.protocol import MsgType
 
+if TYPE_CHECKING:
+    from agent.core.session import SessionLike
+    from agent.daemon.bridge import BridgeTransport
+
+
 DEFAULT_BUFFER_SIZE = 200
+
+
+@runtime_checkable
+class ConnLike(Protocol):
+    """daemon 连接的最小接口（server 的 ``Connection`` 与测试用 ``Conn`` 共用）。"""
+
+    session_id: str | None
+
+    async def send(
+        self,
+        type: "MsgType | str",
+        payload: dict[str, Any] | None = None,
+        *,
+        id: str | None = None,
+        session: str | None = None,
+    ) -> None: ...
 
 
 class SessionHandle:
     """单个会话的句柄（daemon 内部管理单元）。"""
 
-    def __init__(self, session_id: str, name: str, session: Any, transport: Any) -> None:
+    def __init__(
+        self, session_id: str, name: str, session: "SessionLike | None", transport: "BridgeTransport | None"
+    ) -> None:
         self.session_id = session_id
         self.name = name or session_id[:8]
-        self.session = session
-        self.transport = transport  # AgentTransport 实现（BridgeTransport 等）
+        self.session: SessionLike | None = session
+        self.transport: BridgeTransport | None = transport  # AgentTransport 实现（BridgeTransport 等）
         # 回放缓冲：仅持久化事件（M7.4 修复点②）。O(1) 追加与截断，防内存膨胀。
         self.event_buffer: deque[Event] = deque(maxlen=DEFAULT_BUFFER_SIZE)
-        self.attached_conn: Any | None = None
+        self.attached_conn: ConnLike | None = None
         self.running = False
         self.busy = False  # 同步标志：避免并发 task.send 竞态
         self.last_activity = time.time()
@@ -49,19 +72,20 @@ class SessionRegistry:
     def __init__(
         self,
         *,
-        session_factory: Callable[[], Any] | None = None,
-        transport_factory: Callable[[SessionHandle], Any] | None = None,
+        session_factory: "Callable[[], SessionLike] | None" = None,
+        transport_factory: "Callable[[SessionHandle], BridgeTransport] | None" = None,
     ) -> None:
         self._sessions: dict[str, SessionHandle] = {}
         self._session_factory = session_factory
         self._transport_factory = transport_factory
+        self._token: str = ""  # hello 鉴权令牌（可选；由 start_daemon 注入）
 
     def new(
         self,
         name: str | None = None,
         *,
-        session_factory: Callable[[], Any] | None = None,
-        transport_factory: Callable[[SessionHandle], Any] | None = None,
+        session_factory: "Callable[[], SessionLike] | None" = None,
+        transport_factory: "Callable[[SessionHandle], BridgeTransport] | None" = None,
     ) -> SessionHandle:
         sid = uuid.uuid4().hex
         sf = session_factory or self._session_factory
@@ -78,7 +102,7 @@ class SessionRegistry:
             return None
         return self._sessions.get(session_id)
 
-    def attach(self, conn: Any, session_id: str) -> SessionHandle | None:
+    def attach(self, conn: "ConnLike", session_id: str) -> SessionHandle | None:
         """把连接 ``conn`` attach 到会话；若已被别的连接占用则顶替（通知旧连接）。"""
         handle = self._sessions.get(session_id)
         if handle is None:
@@ -96,7 +120,7 @@ class SessionRegistry:
         conn.session_id = session_id
         return handle
 
-    def detach(self, conn: Any) -> str | None:
+    def detach(self, conn: "ConnLike") -> str | None:
         """把连接 ``conn`` 从当前会话 detach，返回被 detach 的 session_id。"""
         sid = getattr(conn, "session_id", None)
         if sid is None:
@@ -107,7 +131,7 @@ class SessionRegistry:
         conn.session_id = None
         return sid
 
-    def switch(self, conn: Any, session_id: str) -> SessionHandle | None:
+    def switch(self, conn: "ConnLike", session_id: str) -> SessionHandle | None:
         """切换 = 先 detach 当前，再 attach 目标。"""
         self.detach(conn)
         return self.attach(conn, session_id)

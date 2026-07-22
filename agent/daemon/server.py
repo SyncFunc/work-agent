@@ -15,7 +15,7 @@ import json
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import websockets  # 仅 daemon 路径 import
 
@@ -23,16 +23,22 @@ from agent.daemon.protocol import (
     DAEMON_VERSION,
     PROTOCOL_VERSION,
     MsgType,
+    WsConnection,
     make_message,
     parse_message,
 )
 from agent.daemon.registry import SessionHandle, SessionRegistry
 
+if TYPE_CHECKING:
+    from agent.config.settings import Settings
+    from agent.core.session import Session
+    from agent.daemon.bridge import BridgeTransport
+
 
 class Connection:
     """对单个前端 WebSocket 连接的轻量包装。"""
 
-    def __init__(self, ws: Any) -> None:
+    def __init__(self, ws: WsConnection) -> None:
         self.ws = ws
         self.session_id: str | None = None
         # 串行化出站消息：保证 FINAL 事件先于 CLOSE 到达（避免 CLOSE 抢占事件）。
@@ -53,7 +59,7 @@ class Connection:
 # --------------------------------------------------------------------------- #
 # 默认会话 / 传输工厂（真实 daemon 使用；测试可注入 fake）
 # --------------------------------------------------------------------------- #
-def _default_session_factory(settings: Any) -> Any:
+def _default_session_factory(settings: Settings) -> Session:
     from agent.core.model import create_model
     from agent.core.session import Session
     from agent.obs.store import TraceStore
@@ -73,7 +79,7 @@ def _default_session_factory(settings: Any) -> Any:
     )
 
 
-def _default_transport_factory(handle: SessionHandle) -> Any:
+def _default_transport_factory(handle: SessionHandle) -> BridgeTransport:
     from agent.daemon.bridge import BridgeTransport
 
     return BridgeTransport(handle)
@@ -82,7 +88,7 @@ def _default_transport_factory(handle: SessionHandle) -> Any:
 # --------------------------------------------------------------------------- #
 # 路由
 # --------------------------------------------------------------------------- #
-async def _handler(ws: Any, registry: SessionRegistry) -> None:
+async def _handler(ws: WsConnection, registry: SessionRegistry) -> None:
     conn = Connection(ws)
     try:
         async for raw in ws:
@@ -98,7 +104,7 @@ async def _handler(ws: Any, registry: SessionRegistry) -> None:
         registry.detach(conn)
 
 
-async def _route(conn: Connection, registry: SessionRegistry, mtype: str | None, payload: dict, mid: str | None) -> None:
+async def _route(conn: Connection, registry: SessionRegistry, mtype: str | None, payload: dict[str, Any], _mid: str | None) -> None:
     if mtype == MsgType.HELLO.value:
         token = payload.get("token", "")
         expected = getattr(registry, "_token", "") or ""
@@ -129,7 +135,7 @@ async def _route(conn: Connection, registry: SessionRegistry, mtype: str | None,
     elif mtype == MsgType.SESSION_LIST.value:
         await conn.send(MsgType.SESSION_LIST_RESP, {"sessions": registry.list_info()})
     elif mtype == MsgType.TASK_SEND.value:
-        await _task_send(conn, registry, payload.get("text", ""), yes=payload.get("yes", False), plan=payload.get("plan", False))
+        await _task_send(conn, registry, payload.get("text", ""), yes=payload.get("yes", False), _plan=payload.get("plan", False))
     elif mtype == MsgType.ANSWER.value:
         _resolve(conn, registry, payload.get("id"), payload.get("text", ""))
     elif mtype == MsgType.CONFIRM_PLAN.value:
@@ -172,7 +178,14 @@ async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> N
     await conn.send(MsgType.REPLAY_END, {}, session=sid)
 
 
-async def _task_send(conn, registry, text, *, yes, plan) -> None:
+async def _task_send(
+    conn: Connection,
+    registry: SessionRegistry,
+    text: str,
+    *,
+    yes: bool,
+    _plan: bool,
+) -> None:
     sid = conn.session_id
     if sid is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": "attach first"})
@@ -181,12 +194,18 @@ async def _task_send(conn, registry, text, *, yes, plan) -> None:
     if handle is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid})
         return
+    if handle.session is None:
+        await conn.send(MsgType.ERROR, {"code": "no_session", "message": "session not initialized"})
+        return
     if handle.transport is None:
         await conn.send(MsgType.ERROR, {"code": "no_transport", "message": "session has no transport"})
         return
     if handle.busy:
         await conn.send(MsgType.ERROR, {"code": "busy", "message": "session is busy"})
         return
+    # 捕获已 narrowing 的 session/transport，供闭包 _run 使用（避免跨闭包丢失类型收窄）。
+    session = handle.session
+    transport = handle.transport
     # 同步置 busy：避免并发 task.send 竞态（配合每会话 Lock 双重保险）。
     handle.busy = True
 
@@ -195,15 +214,15 @@ async def _task_send(conn, registry, text, *, yes, plan) -> None:
         handle.last_activity = time.time()
         try:
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
-                res, _err = await handle.session.step(
-                    text, handle.transport, yes=yes, fatal_plan_decline=False
+                res, _err = await session.step(
+                    text, transport, yes=yes, fatal_plan_decline=False
                 )
             # 等待所有在飞事件转发完成，保证 FINAL 等事件先于 CLOSE 落地（顺序正确性）。
-            await handle.transport.flush()
+            await transport.flush()
             if res is not None:
-                handle.transport.report_usage(res.usage, res.text)
+                transport.report_usage(res.usage, res.text)
         except Exception as e:  # step 异常优雅处理，不断开连接
-            handle.transport.notify(f"step error: {type(e).__name__}: {e}")
+            transport.notify(f"step error: {type(e).__name__}: {e}")
         finally:
             handle.running = False
             handle.busy = False
@@ -215,7 +234,7 @@ async def _task_send(conn, registry, text, *, yes, plan) -> None:
     asyncio.ensure_future(_run())
 
 
-def _resolve(conn: Connection, registry: SessionRegistry, rid: str | None, value: Any) -> None:
+def _resolve(conn: Connection, registry: SessionRegistry, rid: str | None, value: object) -> None:
     sid = conn.session_id
     if sid is None or rid is None:
         return
@@ -232,6 +251,12 @@ async def _command(conn: Connection, registry: SessionRegistry, name: str, args:
     if handle is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid})
         return
+    if handle.session is None:
+        await conn.send(MsgType.ERROR, {"code": "no_session", "message": "session not initialized"})
+        return
+    if handle.transport is None:
+        await conn.send(MsgType.ERROR, {"code": "no_transport", "message": "session has no transport"})
+        return
     if name == "switch":
         await _switch(conn, registry, args)
         return
@@ -247,7 +272,7 @@ async def _command(conn: Connection, registry: SessionRegistry, name: str, args:
 def create_ws_server(registry: SessionRegistry, host: str, port: int):
     """创建 WebSocket 服务（返回 websockets server，便于测试在临时端口启动）。"""
 
-    async def _h(ws):
+    async def _h(ws: WsConnection):
         await _handler(ws, registry)
 
     return websockets.serve(_h, host, port)
@@ -266,7 +291,7 @@ class _HealthHandler(BaseHTTPRequestHandler):
             self.send_response(404)
             self.end_headers()
 
-    def log_message(self, *a) -> None:  # 静默
+    def log_message(self, format: str, *args: object) -> None:  # 静默
         pass
 
 
@@ -277,12 +302,12 @@ def _start_health_server(host: str, port: int) -> HTTPServer:
     return httpd
 
 
-async def _serve(settings: Any, registry: SessionRegistry, stop_event: asyncio.Event) -> None:
+async def _serve(settings: Settings, registry: SessionRegistry, stop_event: asyncio.Event) -> None:
     async with create_ws_server(registry, settings.daemon.host, settings.daemon.port):
         await stop_event.wait()
 
 
-def start_daemon(settings: Any) -> None:
+def start_daemon(settings: Settings) -> None:
     """启动守护进程：HTTP /health（独立端口）+ WebSocket 服务；直到 Ctrl-C。"""
     registry = SessionRegistry(
         session_factory=lambda: _default_session_factory(settings),

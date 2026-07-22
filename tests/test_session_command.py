@@ -20,6 +20,7 @@ class FakeSession:
         self.subagent_spawner = None
         self.messages: list = []
         self.loop = SimpleNamespace(_agent_span=None)
+        self.settings = load_settings()
 
     def list_skills(self):
         return []
@@ -32,6 +33,9 @@ class FakeSession:
 
     def spawn_background(self, *a, **k):
         return None
+
+    async def step(self, *a, **k):
+        return (None, None)
 
 
 async def test_dispatch_plan_and_mode():

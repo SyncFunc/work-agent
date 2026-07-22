@@ -11,8 +11,10 @@ from types import SimpleNamespace
 import pytest
 import websockets
 
+from agent.config.settings import load_settings
 from agent.core.events import Event, EventType, EventStream
 from agent.core.intent import Question
+from agent.core.loop import AgentResult
 from agent.daemon.bridge import BridgeTransport
 from agent.daemon.protocol import MsgType, make_message, parse_message
 from agent.daemon.registry import SessionRegistry, SessionHandle
@@ -22,6 +24,15 @@ from agent.daemon.server import create_ws_server
 class FakeSession:
     """最小可驱动会话：发出 TEXT + 瞬时 TOOL_CALL_DELTA + 向 transport 提问 + FINAL。"""
 
+    def __init__(self) -> None:
+        self.plan_mode = False
+        self.plan_path = None
+        self.context_mgr = None
+        self.skill_loader = None
+        self.messages: list = []
+        self.loop = SimpleNamespace(_agent_span=None)
+        self.settings = load_settings()
+
     async def step(self, task, transport, *, yes=False, fatal_plan_decline=False):
         stream = EventStream()
         transport.bind(stream)
@@ -29,10 +40,11 @@ class FakeSession:
         stream.emit(Event(type=EventType.TOOL_CALL_DELTA, tc_index=0, tc_name="write", tc_args='{"x":'))
         ans = await transport.ask(Question("choose", options=["a", "b"]))
         stream.append(Event(type=EventType.FINAL, text=f"ans={ans}"))
-        return SimpleNamespace(
-            text=f"ans={ans}", usage={"total_tokens": 5}, events=stream,
-            plan=None, plan_path=None, plan_steps=None, needs_plan_confirm=False,
-            clarify_total=0,
+        return AgentResult(
+            text=f"ans={ans}",
+            events=stream,
+            iterations=1,
+            usage={"total_tokens": 5},
         ), None
 
 

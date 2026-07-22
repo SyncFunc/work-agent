@@ -10,7 +10,7 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import TYPE_CHECKING
+from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
 
 from agent.core.loop import AgentLoop
 from agent.core.model import Message
@@ -21,8 +21,46 @@ from agent.obs.store import TraceStore
 from agent.obs.tracer import Span
 
 if TYPE_CHECKING:
+    from collections.abc import Awaitable
+
+    from agent.config.settings import Settings
+    from agent.context import ContextManager
     from agent.core.intent import Question
     from agent.core.loop import AgentResult
+    from agent.skills.loader import SkillLoader
+
+
+@runtime_checkable
+class SessionLike(Protocol):
+    """``Session`` 的结构化契约（M7：daemon / dispatch_command 借此解耦具体 Session）。
+
+    仅声明 daemon 路径与命令分发实际用到的成员，使测试用的轻量替身（FakeSession）
+    也能静态满足，而无需继承具体 ``Session``。
+    """
+
+    plan_mode: bool
+    plan_path: str | None
+    context_mgr: "ContextManager | None"
+    messages: list["Message"]
+    skill_loader: "SkillLoader | None"
+    loop: Any
+    settings: "Settings"
+
+    def step(
+        self,
+        task: str,
+        transport: "AgentTransport",
+        *,
+        yes: bool = False,
+        fatal_plan_decline: bool = False,
+    ) -> "Awaitable[tuple[AgentResult, int | None]]": ...
+
+    def list_skills(self) -> list: ...
+    def list_agents(self) -> list: ...
+    def list_background_tasks(self) -> list[dict]: ...
+    def spawn_background(
+        self, agent_name: str, task: str, transport: "AgentTransport", *, parent_span: Any = None
+    ) -> str | None: ...
 
 
 class Session:

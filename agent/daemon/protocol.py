@@ -24,7 +24,9 @@ from __future__ import annotations
 
 import json
 from enum import Enum
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
+
+from collections.abc import AsyncIterator
 
 DAEMON_VERSION = "0.1.0"
 PROTOCOL_VERSION = "1.0"
@@ -63,6 +65,22 @@ class MsgType(str, Enum):
     USAGE = "usage"
     CLOSE = "close"
     ERROR = "error"
+
+
+@runtime_checkable
+class WsConnection(Protocol):
+    """WebSocket 连接的最小接口（server / client 共用，屏蔽 websockets 版本差异）。
+
+    只要求能 ``send`` 字符串消息并支持 ``async for`` 读取字符串消息。
+    """
+
+    async def send(self, message: str) -> None:
+        ...
+
+    def __aiter__(self) -> AsyncIterator[Any]:
+        # 异步迭代产出消息（daemon 走文本模式为 str；websockets 也可能在其它模式产出 bytes，
+        # 故此处用 Any 以兼容不同连接实现与测试替身）。
+        ...
 
 
 def make_message(

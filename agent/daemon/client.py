@@ -14,17 +14,21 @@ from __future__ import annotations
 import asyncio
 import sys
 from types import SimpleNamespace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 import websockets  # 仅 daemon/client 路径 import
 
 from agent.config.settings import load_settings
-from agent.core.events import Event
+from agent.core.events import Event, EventStream
 from agent.core.intent import Question
+from agent.core.loop import AgentResult
 from agent.core.plan import PlanStep
-from agent.daemon.protocol import MsgType, make_message, parse_message
+from agent.daemon.protocol import MsgType, WsConnection, make_message, parse_message
 from agent.runtime.approval import Action
 from agent.runtime.terminal_transport import TerminalTransport
+
+if TYPE_CHECKING:
+    from agent.config.settings import Settings
 
 
 def _dict_to_action(d: dict[str, Any]) -> Action:
@@ -37,15 +41,18 @@ def _dict_to_action(d: dict[str, Any]) -> Action:
     )
 
 
-def _fake_plan_result(p: dict[str, Any]) -> Any:
-    return SimpleNamespace(
+def _fake_plan_result(p: dict[str, Any]) -> AgentResult:
+    return AgentResult(
+        text="",
+        events=EventStream(),
+        iterations=0,
         plan=p.get("plan"),
         plan_path=p.get("plan_path"),
         plan_steps=[PlanStep(**s) for s in p.get("plan_steps", [])],
     )
 
 
-def _dict_to_spec(d: dict[str, Any]) -> Any:
+def _dict_to_spec(d: dict[str, Any]) -> SimpleNamespace:
     return SimpleNamespace(**d)
 
 
@@ -73,13 +80,13 @@ async def _prompt_line(transport: TerminalTransport) -> str:
 
 
 async def _run(
-    ws: Any,
+    ws: WsConnection,
     *,
     session_id: str | None = None,
     resume: bool = False,
     run_task: str | None = None,
-    settings: Any = None,
-    transport: Any = None,
+    settings: "Settings | None" = None,
+    transport: TerminalTransport | None = None,
 ) -> None:
     settings = settings or load_settings()
     if transport is None:
