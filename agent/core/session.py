@@ -16,6 +16,8 @@ from agent.core.loop import AgentLoop
 from agent.core.model import Message
 from agent.core.transport import AgentTransport
 from agent.context import SessionMemory, SessionMemoryConfig
+from agent.context.session_recovery import rebuild_messages
+from agent.core.events import EventStream
 from agent.context.tokens import _estimate_tokens
 from agent.obs.store import TraceStore
 from agent.obs.tracer import Span
@@ -75,6 +77,9 @@ class Session:
         self.settings = settings
         self.tracer = tracer
         self.trace_store: TraceStore | None = trace_store
+        # M6.2 会话恢复：冷启动从 sqlite 重建时，把完整（未压缩）EventStream 挂到这里，
+        # 供 daemon 冷启动把最近 K 条事件播种进 event_buffer（仅当本会话是被恢复而非新建时非空）。
+        self.event_stream: "EventStream | None" = None
         # 会话级根 span：整条 session 的 trace 树锚点（所有 run 都挂在其下）。
         # tracer 为 None 时不创建（无观测路径）；否则直接 new Span 并挂到 tracer，
         # 生命周期跨多轮，不用 _span 上下文管理器（避免 per-step 关闭）。
@@ -172,6 +177,53 @@ class Session:
         # 压缩相关 span 挂在 Session 根 span 下，避免成为新的 root span（可观测性契约）。
         if self.context_mgr is not None and self.root_span is not None:
             self.context_mgr.root_span = self.root_span
+
+    # ------------------------------------------------------------------ #
+    # M6.2 会话恢复：从 SessionStore 重建（冷启动 / resume / fork）
+    # ------------------------------------------------------------------ #
+    @classmethod
+    def from_store(
+        cls,
+        model,
+        reg,
+        settings,
+        store,
+        session_id: str,
+        tracer=None,
+        *,
+        trace_store=None,
+        context_mgr=None,
+    ) -> "Session":
+        """从 ``SessionStore`` 恢复一个已有会话（sqlite 中存在该 ``session_id``）。
+
+        流程：``load`` 完整（未压缩）EventStream → ``rebuild_messages`` 重放为
+        ``messages`` → 注入会话。``event_stream`` 同时持有，供 daemon 冷启动播种
+        ``event_buffer``。``create`` 幂等，不破坏既有元数据行。
+
+        不变量（M4 双轨）：EventStream 始终是完整未压缩序列；压缩由运行时
+        ``ContextManager`` 下一轮重算，绝不从压缩态恢复。
+        """
+        stream = store.load(session_id)
+        if stream is None:
+            raise ValueError(f"session not found in store: {session_id}")
+        meta = store.get_session(session_id) or {}
+        sess = cls(
+            model,
+            reg,
+            settings,
+            tracer,
+            plan_mode=bool(meta.get("plan_mode")),
+            plan_path=meta.get("plan_path"),
+            trace_store=trace_store,
+            context_mgr=context_mgr,
+            session_id=session_id,
+            session_store=store,
+        )
+        sess.event_stream = stream
+        # 重建的消息直接用于下一轮 step；若末轮中断，rebuild_messages 已丢弃悬空
+        # assistant 并注入续跑提示，保证 messages 合法、可续跑。
+        sess.messages = rebuild_messages(stream)
+        return sess
 
     async def step(
         self,

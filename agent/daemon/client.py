@@ -147,10 +147,17 @@ async def _run(
     if session_id:
         await ws.send(make_message(MsgType.SESSION_ATTACH, {"session_id": session_id}))
     elif resume:
-        # 恢复最近会话：取 list 第一个
-        await ws.send(make_message(MsgType.SESSION_LIST))
-        # 简化：resume 时直接用 session.new（daemon 当前不持久化历史会话清单到磁盘）
-        await ws.send(make_message(MsgType.SESSION_NEW))
+        # 恢复最近会话：从 SessionStore 取最近更新的 session_id 并 attach
+        # （daemon 重启后该会话可能不在内存，但 attach 路径会经 restore_factory 冷启动恢复）。
+        from agent.context.session_store import SessionStore
+
+        store = SessionStore(settings.obs.sessions_db_path)
+        infos = store.list_sessions()
+        if infos:
+            target = infos[0]["session_id"]  # list_sessions 按 updated_at 倒序
+            await ws.send(make_message(MsgType.SESSION_ATTACH, {"session_id": target}))
+        else:
+            await ws.send(make_message(MsgType.SESSION_NEW))
     else:
         await ws.send(make_message(MsgType.SESSION_NEW))
 

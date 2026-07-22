@@ -159,7 +159,8 @@ def chat() -> None:
 
     任意轮次用命令切换模式：/plan（探索） / exec（执行） / approve（批准计划并切执行）
     / mode（查看当前模式）。扩展命令：/skills（列出 skill）、/agents（列出 subagent 类型）、
-    /skill <name>（显式加载某 skill 到下一轮）、/context（查看上下文占用）、/compact（手动压缩）。
+    /skill <name>（显式加载某 skill 到下一轮）、/context（查看上下文占用）、/compact（手动压缩）、
+    /resume <id>（切换到已持久化的会话）、/fork <id>（从某会话派生新分支）。
     输入 exit/quit 退出。
     """
     _ensure_scaffold()
@@ -180,9 +181,9 @@ def chat() -> None:
     session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store, session_id=session_id, session_store=session_store)
     transport = TerminalTransport(interactive=True, context_mgr=session.context_mgr)
 
-    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；/context 查看占用；/compact 手动压缩；exit/quit 退出）。")
+    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；/context 查看占用；/compact 手动压缩；/resume <id> 恢复会话；/fork <id> 派生分支；exit/quit 退出）。")
     try:
-        asyncio.run(_chat_repl(session, transport, settings))
+        asyncio.run(_chat_repl(session, transport, settings, session_store=session_store))
     except KeyboardInterrupt:
         pass
     typer.echo("")
@@ -192,7 +193,64 @@ def chat() -> None:
     _print_trace(tracer)
 
 
-async def _chat_repl(session: Session, transport: TerminalTransport, settings) -> None:
+def _build_session_from_store(settings, store, session_id: str) -> Session:
+    """从 SessionStore 恢复一个已持久化会话（M6.2）。不存在则报错退出。"""
+    if store.get_session(session_id) is None:
+        typer.echo(f"未找到会话: {session_id}", err=True)
+        raise typer.Exit(1)
+    tracer = Tracer() if settings.obs.enabled else None
+    model = _build_model(settings, tracer=tracer)
+    trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
+    return Session.from_store(model, default_registry, settings, store, session_id, tracer=tracer, trace_store=trace_store)
+
+
+def _fork_session_from_store(settings, store, session_id: str, name: str | None = None) -> Session:
+    """从父会话 fork 出新分支并恢复（M6.2）。"""
+    if store.get_session(session_id) is None:
+        typer.echo(f"未找到会话: {session_id}", err=True)
+        raise typer.Exit(1)
+    new_id = store.fork(session_id, name=name)
+    typer.echo(f"已 fork 新会话 {new_id}（父: {session_id}）", err=True)
+    return _build_session_from_store(settings, store, new_id)
+
+
+@app.command()
+def resume(
+    session_id: str = typer.Argument(..., help="要恢复的会话 id"),
+) -> None:
+    """恢复一个已持久化的会话并进入 chat（M6.2）。"""
+    _ensure_scaffold()
+    settings = load_settings()
+    store = SessionStore(settings.obs.sessions_db_path)
+    session = _build_session_from_store(settings, store, session_id)
+    transport = TerminalTransport(interactive=True, context_mgr=session.context_mgr)
+    typer.echo(f"已恢复会话 {session_id}（{len(session.messages)} 条消息）")
+    try:
+        asyncio.run(_chat_repl(session, transport, settings, session_store=store))
+    except KeyboardInterrupt:
+        pass
+    _print_trace(None)
+
+
+@app.command()
+def fork(
+    session_id: str = typer.Argument(..., help="要 fork 的父会话 id"),
+    name: str = typer.Option(None, "--name", "-n", help="分支名"),
+) -> None:
+    """从某会话派生新分支并进入 chat（M6.2）。"""
+    _ensure_scaffold()
+    settings = load_settings()
+    store = SessionStore(settings.obs.sessions_db_path)
+    session = _fork_session_from_store(settings, store, session_id, name=name)
+    transport = TerminalTransport(interactive=True, context_mgr=session.context_mgr)
+    try:
+        asyncio.run(_chat_repl(session, transport, settings, session_store=store))
+    except KeyboardInterrupt:
+        pass
+    _print_trace(None)
+
+
+async def _chat_repl(session: Session, transport: TerminalTransport, settings, session_store=None) -> None:
     """异步 REPL 主循环：单一事件循环驱动前台 step 与后台 Subagent 并发。
 
     - 交互 TTY：用 prompt_toolkit 的 ``prompt_async`` 等待输入，等待期间事件循环仍
@@ -237,6 +295,20 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings) -
         cmd = task.strip().lower()
         if cmd in {"exit", "quit"}:
             break
+        # M6.2：会话切换命令需在 REPL 内 rebind 局部 session 变量（dispatch_command
+        # 无法改调用方的 session 引用，故在此前置拦截）。
+        if cmd.startswith("/resume "):
+            sid = task.strip()[len("/resume "):].strip()
+            session = _build_session_from_store(settings, session_store, sid)
+            transport._context_mgr = session.context_mgr
+            typer.echo(f"已恢复会话 {sid}（{len(session.messages)} 条消息）", err=True)
+            continue
+        if cmd.startswith("/fork "):
+            sid = task.strip()[len("/fork "):].strip()
+            session = _fork_session_from_store(settings, session_store, sid)
+            transport._context_mgr = session.context_mgr
+            typer.echo(f"已进入 fork 分支（{len(session.messages)} 条消息）", err=True)
+            continue
         # M7.5：命令分发抽为共享函数（进程内与 daemon 协议路径共用，单一来源）。
         if await dispatch_command(session, task, transport, settings):
             continue

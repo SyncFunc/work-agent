@@ -59,7 +59,7 @@ class Connection:
 # --------------------------------------------------------------------------- #
 # 默认会话 / 传输工厂（真实 daemon 使用；测试可注入 fake）
 # --------------------------------------------------------------------------- #
-def _default_session_factory(settings: Settings, session_id: str) -> Session:
+def _default_session_factory(settings: Settings, store, session_id: str) -> Session:
     from agent.core.model import create_model
     from agent.core.session import Session
     from agent.obs.store import TraceStore
@@ -69,6 +69,10 @@ def _default_session_factory(settings: Settings, session_id: str) -> Session:
     tracer = Tracer() if settings.obs.enabled else None
     model = create_model(settings, tracer=tracer)
     trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
+    # M6.2 冷启动：该 session_id 已存在于 sqlite → 从 store 恢复（重建 messages + event_stream）；
+    # 否则新建（并落初始行）。同一工厂同时服务新建与恢复两条路径。
+    if store.get_session(session_id) is not None:
+        return Session.from_store(model, default_registry, settings, store, session_id, tracer=tracer, trace_store=trace_store)
     return Session(
         model,
         default_registry,
@@ -77,6 +81,7 @@ def _default_session_factory(settings: Settings, session_id: str) -> Session:
         plan_mode=settings.plan.mode,
         trace_store=trace_store,
         session_id=session_id,
+        session_store=store,
     )
 
 
@@ -310,9 +315,13 @@ async def _serve(settings: Settings, registry: SessionRegistry, stop_event: asyn
 
 def start_daemon(settings: Settings) -> None:
     """启动守护进程：HTTP /health（独立端口）+ WebSocket 服务；直到 Ctrl-C。"""
+    from agent.context.session_store import SessionStore
+
+    store = SessionStore(settings.obs.sessions_db_path)  # M6.2 冷启动恢复的数据源
     registry = SessionRegistry(
-        session_factory=lambda sid: _default_session_factory(settings, sid),
+        session_factory=lambda sid: _default_session_factory(settings, store, sid),
         transport_factory=_default_transport_factory,
+        restore_factory=lambda sid: _default_session_factory(settings, store, sid),
     )
     registry._token = settings.daemon.token  # 供 hello 鉴权（可选）
     httpd = _start_health_server(settings.daemon.host, settings.daemon.health_port)

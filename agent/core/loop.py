@@ -144,6 +144,9 @@ class AgentLoop:
             transport.bind(stream)
         if event_sink is not None:
             stream.subscribe(event_sink)  # M6 会话持久化：append 即落盘（瞬时不落）
+        # M6.2 会话恢复：把本轮用户输入作为 USER 事件入档，使 EventStream 成为完整可重放
+        # 转录（与 conv 中的 user 消息一一对应），恢复时可据此重建 messages 的用户轮次。
+        stream.append(Event(type=EventType.USER, text=task))
         usage_total: dict[str, int] = {}
 
         last_callset: frozenset[tuple[str, str]] | None = None

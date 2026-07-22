@@ -27,6 +27,8 @@ class EventType(str, Enum):
       ``TOOL_USE`` / ``TOOL_RESULT`` / ``FINAL`` / ``ERROR``
     - ``TEXT``（模型文本增量，append 入档持久化）
     - ``TOOL_CALL_DELTA``（工具参数增量，emit 瞬时、不入档，``transient=True``）
+    - ``USER``（每轮 ``step`` 的用户输入任务，append 入档；使 EventStream 成为
+      完整可重放转录，供 M6.2 会话恢复重建 ``messages``）
     """
 
     DECISION = "decision"
@@ -39,6 +41,7 @@ class EventType(str, Enum):
     ERROR = "error"
     TEXT = "text"
     TOOL_CALL_DELTA = "tool_call_delta"
+    USER = "user"
 
 
 # --------------------------------------------------------------------------- #

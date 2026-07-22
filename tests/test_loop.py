@@ -69,7 +69,8 @@ async def test_basic_flow_records_events():
     assert result.iterations == 2
 
     types = [e.type for e in result.events]
-    assert types == ["decision", "tool_use", "tool_result", "text", "decision", "final"]
+    # M6.2：每轮 run 开头会把用户输入记为一则 user 事件，使 EventStream 成为完整可重放转录
+    assert types == ["user", "decision", "tool_use", "tool_result", "text", "decision", "final"]
 
     text_ev = next(e for e in result.events if e.type == "text")
     assert text_ev.text == "final answer"

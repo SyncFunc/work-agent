@@ -72,12 +72,16 @@ class SessionRegistry:
     def __init__(
         self,
         *,
-        session_factory: "Callable[[], SessionLike] | None" = None,
+        session_factory: "Callable[[str], SessionLike] | None" = None,
         transport_factory: "Callable[[SessionHandle], BridgeTransport] | None" = None,
+        restore_factory: "Callable[[str], SessionLike] | None" = None,
     ) -> None:
         self._sessions: dict[str, SessionHandle] = {}
         self._session_factory = session_factory
         self._transport_factory = transport_factory
+        # M6.2 冷启动恢复：给定 session_id，若该会话已存在于 SessionStore 返回重建的
+        # Session，否则返回 None（走新建）。由 start_daemon 注入。
+        self._restore_factory = restore_factory
         self._token: str = ""  # hello 鉴权令牌（可选；由 start_daemon 注入）
 
     def new(
@@ -102,9 +106,31 @@ class SessionRegistry:
             return None
         return self._sessions.get(session_id)
 
+    def restore(self, session_id: str, session: "SessionLike") -> SessionHandle:
+        """M6.2 冷启动恢复：为已存在于 SessionStore 的 ``session_id`` 建立句柄（不生成新 id）。
+
+        把会话完整 EventStream 的最近 K 条事件播种进 ``event_buffer``，使后续 attach
+        的客户端能回放断点前的上下文（与 M7.4 热切换回放一致）。
+        """
+        handle = SessionHandle(session_id, session_id[:8], session, None)
+        es = getattr(session, "event_stream", None)
+        if es is not None:
+            for ev in list(es.all())[-DEFAULT_BUFFER_SIZE:]:
+                handle.event_buffer.append(ev)
+        self._sessions[session_id] = handle
+        return handle
+
     def attach(self, conn: "ConnLike", session_id: str) -> SessionHandle | None:
-        """把连接 ``conn`` attach 到会话；若已被别的连接占用则顶替（通知旧连接）。"""
+        """把连接 ``conn`` attach 到会话；若已被别的连接占用则顶替（通知旧连接）。
+
+        M6.2 冷启动：若该 id 不在内存但在 SessionStore 中存在，先经 ``restore_factory``
+        恢复会话再 attach（daemon 重启后无需原进程在跑即可 resume）。
+        """
         handle = self._sessions.get(session_id)
+        if handle is None and self._restore_factory is not None:
+            sess = self._restore_factory(session_id)
+            if sess is not None:
+                handle = self.restore(session_id, sess)
         if handle is None:
             return None
         if handle.attached_conn is not None and handle.attached_conn is not conn:

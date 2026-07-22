@@ -15,6 +15,7 @@ from agent.config.settings import load_settings
 from agent.core.events import Event, EventType, EventStream
 from agent.core.intent import Question
 from agent.core.loop import AgentResult
+from agent.core.model import Decision
 from agent.daemon.bridge import BridgeTransport
 from agent.daemon.protocol import MsgType, make_message, parse_message
 from agent.daemon.registry import SessionRegistry, SessionHandle
@@ -241,3 +242,26 @@ async def test_concurrent_task_send_returns_busy(server):
             elif d["type"] == MsgType.CLOSE.value:
                 got_close = True
         assert saw_busy and got_close
+
+
+def test_attach_restores_from_factory_and_seeds_buffer():
+    """M6.2 冷启动：attach 到内存不存在但 store 中存在的 id 时，经 restore_factory 恢复并播种回放缓冲。"""
+    stream = EventStream()
+    stream.append(Event(type=EventType.USER, text="hi"))
+    stream.append(Event(type=EventType.DECISION, decision=Decision(text="ok")))
+    fake = SimpleNamespace(session_id="x", event_stream=stream)
+    reg = SessionRegistry(restore_factory=lambda sid: fake if sid == "x" else None)
+
+    class Conn:
+        def __init__(self):
+            self.session_id = None
+
+        async def send(self, *a, **k):
+            return None
+
+    c = Conn()
+    h = reg.attach(c, "x")
+    assert h is not None
+    assert h.session_id == "x"
+    # 回放缓冲已播种最近事件（USER + DECISION）
+    assert [e.type for e in h.event_buffer] == [EventType.USER, EventType.DECISION]

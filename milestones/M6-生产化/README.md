@@ -1,6 +1,6 @@
 # 里程碑 M6 — 生产化
 
-> 状态：⚪ 待启动。本文档为 M6 **规划**（目标 / 现状缺口 / 方案 / 步骤拆分）。
+> 状态：🔵 进行中。M6.1（SessionStore 基础设施）、M6.2（会话恢复流程）已完成；后续 M6.3 测试分层 / M6.4 CI / M6.5 端到端验收。本文档为 M6 **规划**（目标 / 现状缺口 / 方案 / 步骤拆分）。
 > 调研详情与全部外部方案来源见 **`调研.md`**（含现状持久化边界、Claude Code/OpenAI 恢复流水线、测试金字塔、CI 等 mermaid 图）。
 > 三要素（实现方案/验收标准/知识沉淀）在正式启动后拆到各 `M6.x-*.md` 步骤文件。
 
@@ -158,7 +158,7 @@ flowchart LR
 | 步骤 | 文件 | 目标 |
 |---|---|---|
 | M6.1 | [6.1-SessionStore基础设施.md](./6.1-SessionStore基础设施.md) | sqlite schema + 写入 sink + `load`/`list_sessions` + **fork 血缘/复制**；统一 `session_id`（修复 daemon 与 Session 双 id） |
-| M6.2 | [6.2-会话恢复流程.md](./6.2-会话恢复流程.md) | `rebuild_messages` 事件→Message + 中断检测 + M7 冷启动衔接 + **fork 恢复** + `resume`/`fork` 命令 |
+| M6.2 | [6.2-会话恢复流程.md](./6.2-会话恢复流程.md) | `rebuild_messages` 事件→Message + 中断检测 + M7 冷启动衔接 + **fork 恢复** + `resume`/`fork` 命令 ✅ |
 | M6.3 | [6.3-测试分层重构.md](./6.3-测试分层重构.md) | unit/integration/e2e 分层 + marker + prompt 快照 + tool tapes 录制重放 |
 | M6.4 | [6.4-CI工作流.md](./6.4-CI工作流.md) | GitHub Actions（lint+type+cov+快慢分离）+ dev 依赖补全 |
 | M6.5 | [6.5-端到端验收.md](./6.5-端到端验收.md) | **resume 跨重启 + fork 跨重启** + CI 绿 + 覆盖率报告 + 回归零 |
