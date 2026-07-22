@@ -18,6 +18,49 @@
 
 ---
 
+## 架构总览
+
+整体分层：决策交给 LLM，循环 / 权限 / 路由 / 压缩 / 持久化是确定性工程实现；渲染层在进程内直连 `TerminalTransport`，或在 daemon 模式下经 WebSocket 与 Agent 核心解耦（渲染仍复用同一份 `TerminalTransport`）。
+
+```mermaid
+graph TD
+    CLI["CLI (typer)"] -->|run / chat| Sess["Session"]
+    CLI -->|daemon| D["agentrunner 守护进程"]
+    CLI -->|client| Front["WebSocket 前端"]
+
+    Sess --> Loop["AgentLoop (ReAct)"]
+    Loop --> Model["Model (OpenAI 兼容)"]
+    Loop --> Tools["工具注册表 / 审批 / 沙箱"]
+    Loop --> Ctx["上下文管理 / 压缩"]
+    Loop --> Stream["EventStream (事件单一事实源)"]
+
+    Sess --> T["AgentTransport"]
+    T -->|进程内| Term["TerminalTransport (唯一渲染实现)"]
+
+    D --> Bridge["BridgeTransport (序列化中转, 不渲染)"]
+    Bridge -->|EVENT / HITL| Front
+    Front --> Term
+```
+
+ReAct 主循环：
+
+```mermaid
+flowchart TD
+    A[用户输入 task] --> B[Session.step]
+    B --> C[AgentLoop: 调用 Model]
+    C --> D{决策?}
+    D -->|工具调用| E[执行工具 (沙箱 + 审批)]
+    E --> F[EventStream 事件]
+    F --> C
+    D -->|澄清| G[ask_clarification → HITL]
+    G --> C
+    D -->|计划| H[show_plan → 确认门]
+    H --> C
+    D -->|结束| I[Final / 返回 AgentResult]
+```
+
+---
+
 ## 安装
 
 要求 **Python ≥ 3.12**。
@@ -125,6 +168,40 @@ python -m agent.cli client --session <id>    # attach 指定会话
 - **安全**：daemon 仅绑 `127.0.0.1`；core（loop/session/transport/events）保持零 / 极小改动。
 
 > 同一套协议天然支撑未来 Web 前端：只需另写一个订阅事件流的渲染器。
+
+**传输与渲染分离**：渲染只有 `TerminalTransport` 一份；daemon 侧的 `BridgeTransport` 仅做序列化中转，不渲染。两种路径共用同一份渲染实现。
+
+```mermaid
+graph TD
+    subgraph Proc["进程内 run / chat"]
+        S1["Session.step"] --> T1["TerminalTransport<br/>(唯一渲染 + HITL)"]
+    end
+    subgraph Daemon["daemon 模式"]
+        S2["Session.step (守护进程)"] --> B["BridgeTransport<br/>(序列化中转, 不渲染)"]
+        B -->|EVENT / HITL via WS| F["client.py 前端"]
+        F --> T2["TerminalTransport<br/>(复用同一份渲染 + HITL)"]
+    end
+```
+
+**事件与 HITL 往返**（daemon 模式下，每类事件都经 `TerminalTransport._on_event` 渲染，无遗漏）：
+
+```mermaid
+sequenceDiagram
+    participant Loop as AgentLoop
+    participant Bridge as BridgeTransport
+    participant WS as WebSocket
+    participant Client as client.py
+    participant Term as TerminalTransport
+
+    Loop->>Bridge: emit Event / HITL 请求
+    Bridge->>WS: 序列化消息 (event/ask/approve/...)
+    WS->>Client: 转发
+    Client->>Term: _on_event / ask / confirm_plan / approve / show_*
+    Term-->>Client: 渲染到终端
+    Client->>WS: 回传应答 (answer/approve/...)
+    WS->>Bridge: 唤醒 asyncio.Future
+    Bridge->>Loop: 返回 HITL 结果
+```
 
 ---
 
