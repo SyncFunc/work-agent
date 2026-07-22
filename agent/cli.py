@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import io
-import os
 import re
 import sys
 import time
@@ -23,18 +22,16 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.tree import Tree
 
-
+import agent.tools  # 导入即把 read/write/bash 登记到 default_registry（副作用）
 from agent.config.settings import load_settings
-from agent.core.model import Message, create_model
+from agent.context.session_store import SessionStore
+from agent.core.model import create_model
 from agent.core.session import Session
 from agent.core.session_command import dispatch_command
-from agent.obs.tracer import Tracer
 from agent.obs.store import TraceStore
-from agent.context.session_store import SessionStore
+from agent.obs.tracer import Tracer
 from agent.runtime.registry import default_registry
 from agent.runtime.terminal_transport import TerminalTransport
-
-import agent.tools  # 导入即把 read/write/bash 登记到 default_registry（副作用）
 
 _ = agent.tools  # 显式引用，保留副作用导入，避免未使用告警
 
@@ -76,9 +73,7 @@ def _render_soft_limit(res) -> None:
     if res is None:
         return
     if getattr(res, "soft_limit_hit", False):
-        Console().print(
-            Panel(res.text, title="⚠️ 轮次上限", border_style="yellow", expand=False)
-        )
+        Console().print(Panel(res.text, title="⚠️ 轮次上限", border_style="yellow", expand=False))
 
 
 def _print_trace(tracer: Tracer | None) -> None:
@@ -91,9 +86,7 @@ def _print_trace(tracer: Tracer | None) -> None:
     for s in sorted(tracer.spans, key=lambda x: x.started_at):
         parent = nodes.get(s.parent_id, tree)
         dur_ms = (s.ended_at or time.time()) - s.started_at
-        label = (
-            f"[bold]{s.name}[/bold] [dim]({s.kind} · {dur_ms * 1000:.1f}ms · id={s.id})[/dim]"
-        )
+        label = f"[bold]{s.name}[/bold] [dim]({s.kind} · {dur_ms * 1000:.1f}ms · id={s.id})[/dim]"
         # 模型调用 span：仅展示 total token
         if "usage" in s.meta:
             label += f" [green]· total={s.meta['usage'].get('total_tokens', 0)} tok[/green]"
@@ -113,7 +106,9 @@ app = typer.Typer(help="通用编码 Agent（类 Claude Code / Codex）", add_co
 @app.command()
 def run(
     task: str,
-    plan: bool = typer.Option(False, "--plan", "--no-plan", help="以 PLAN 模式起步：先产出计划、确认后再执行"),
+    plan: bool = typer.Option(
+        False, "--plan", "--no-plan", help="以 PLAN 模式起步：先产出计划、确认后再执行"
+    ),
     yes: bool = typer.Option(False, "--yes", help="跳过计划确认，直接进入执行"),
     no_clarify: bool = typer.Option(False, "--no-clarify", help="关闭意图澄清"),
     no_trace: bool = typer.Option(False, "--no-trace", help="关闭 trace 记录"),
@@ -127,13 +122,20 @@ def run(
     session_id = uuid.uuid4().hex
     session_store = SessionStore(settings.obs.sessions_db_path)
     session_store.create(session_id)
-    session = Session(model, reg, settings, tracer, plan_mode=plan, trace_store=trace_store, session_id=session_id, session_store=session_store)
+    session = Session(
+        model,
+        reg,
+        settings,
+        tracer,
+        plan_mode=plan,
+        trace_store=trace_store,
+        session_id=session_id,
+        session_store=session_store,
+    )
 
     transport = TerminalTransport(interactive=sys.stdin.isatty(), context_mgr=session.context_mgr)
     try:
-        res, err = asyncio.run(
-            session.step(task, transport, yes=yes, fatal_plan_decline=True)
-        )
+        res, err = asyncio.run(session.step(task, transport, yes=yes, fatal_plan_decline=True))
     except Exception as e:  # 任何未捕获异常（含 LoopStalled / 真实 API 错误）都优雅退出
         typer.echo(f"error: {type(e).__name__}: {e}", err=True)
         err = 1
@@ -168,20 +170,32 @@ def chat() -> None:
     try:
         tracer = Tracer() if settings.obs.enabled else None
         from agent.resilience.pipeline import build_llm_pipeline
+
         llm_pipeline = build_llm_pipeline(settings)
         model = _build_model(settings, tracer=tracer, pipeline=llm_pipeline)
     except Exception as e:  # 配置错误（如缺 API key）优雅退出，不吐底层栈
         typer.echo(f"error: {type(e).__name__}: {e}", err=True)
-        raise typer.Exit(code=1)
+        raise typer.Exit(code=1) from None
     trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
     reg = default_registry
     session_id = uuid.uuid4().hex
     session_store = SessionStore(settings.obs.sessions_db_path)
     session_store.create(session_id)
-    session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store, session_id=session_id, session_store=session_store)
+    session = Session(
+        model,
+        reg,
+        settings,
+        tracer,
+        plan_mode=settings.plan.mode,
+        trace_store=trace_store,
+        session_id=session_id,
+        session_store=session_store,
+    )
     transport = TerminalTransport(interactive=True, context_mgr=session.context_mgr)
 
-    typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；/context 查看占用；/compact 手动压缩；/resume <id> 恢复会话；/fork <id> 派生分支；exit/quit 退出）。")
+    typer.echo(
+        "进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；/context 查看占用；/compact 手动压缩；/resume <id> 恢复会话；/fork <id> 派生分支；exit/quit 退出）。"
+    )
     try:
         asyncio.run(_chat_repl(session, transport, settings, session_store=session_store))
     except KeyboardInterrupt:
@@ -201,7 +215,9 @@ def _build_session_from_store(settings, store, session_id: str) -> Session:
     tracer = Tracer() if settings.obs.enabled else None
     model = _build_model(settings, tracer=tracer)
     trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
-    return Session.from_store(model, default_registry, settings, store, session_id, tracer=tracer, trace_store=trace_store)
+    return Session.from_store(
+        model, default_registry, settings, store, session_id, tracer=tracer, trace_store=trace_store
+    )
 
 
 def _fork_session_from_store(settings, store, session_id: str, name: str | None = None) -> Session:
@@ -250,7 +266,9 @@ def fork(
     _print_trace(None)
 
 
-async def _chat_repl(session: Session, transport: TerminalTransport, settings, session_store=None) -> None:
+async def _chat_repl(
+    session: Session, transport: TerminalTransport, settings, session_store=None
+) -> None:
     """异步 REPL 主循环：单一事件循环驱动前台 step 与后台 Subagent 并发。
 
     - 交互 TTY：用 prompt_toolkit 的 ``prompt_async`` 等待输入，等待期间事件循环仍
@@ -298,13 +316,13 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings, s
         # M6.2：会话切换命令需在 REPL 内 rebind 局部 session 变量（dispatch_command
         # 无法改调用方的 session 引用，故在此前置拦截）。
         if cmd.startswith("/resume "):
-            sid = task.strip()[len("/resume "):].strip()
+            sid = task.strip()[len("/resume ") :].strip()
             session = _build_session_from_store(settings, session_store, sid)
             transport._context_mgr = session.context_mgr
             typer.echo(f"已恢复会话 {sid}（{len(session.messages)} 条消息）", err=True)
             continue
         if cmd.startswith("/fork "):
-            sid = task.strip()[len("/fork "):].strip()
+            sid = task.strip()[len("/fork ") :].strip()
             session = _fork_session_from_store(settings, session_store, sid)
             transport._context_mgr = session.context_mgr
             typer.echo(f"已进入 fork 分支（{len(session.messages)} 条消息）", err=True)
@@ -312,7 +330,6 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings, s
         # M7.5：命令分发抽为共享函数（进程内与 daemon 协议路径共用，单一来源）。
         if await dispatch_command(session, task, transport, settings):
             continue
-
 
         try:
             res, err = await session.step(task, transport, yes=False, fatal_plan_decline=False)
@@ -335,14 +352,10 @@ async def _chat_repl(session: Session, transport: TerminalTransport, settings, s
     # 导致正在执行的工具中断、文件/状态不一致（见 Session.shutdown_background）。
     running = session.list_background_tasks()
     if running:
-        typer.echo(
-            f"⏳ 正在等待 {len(running)} 个后台 Subagent 完成（最多 30s）...", err=True
-        )
+        typer.echo(f"⏳ 正在等待 {len(running)} 个后台 Subagent 完成（最多 30s）...", err=True)
         cancelled = await session.shutdown_background(timeout=30.0)
         if cancelled:
-            typer.echo(
-                f"⚠️ 以下后台 Subagent 超时未结束，已取消：{', '.join(cancelled)}", err=True
-            )
+            typer.echo(f"⚠️ 以下后台 Subagent 超时未结束，已取消：{', '.join(cancelled)}", err=True)
     # 退出前再刷一次，避免最后一轮命令产生的通知丢失
     transport.flush_notifications()
 
@@ -383,8 +396,8 @@ def health(
     from rich.panel import Panel
     from rich.table import Table
 
-    from agent.config.settings import load_settings as _ls
     import agent.resilience.health as _health_mod
+    from agent.config.settings import load_settings as _ls
 
     settings = _ls()
     checker = _health_mod.build_default_health_checks(settings)
@@ -411,7 +424,12 @@ def health(
         return Panel(table, title=f"🔍 健康检查 — {title}", border_style=border, expand=False)
 
     if watch:
-        with Live(_render_health(_health_mod.HealthStatus(healthy=True)), console=console, refresh_per_second=0.2, auto_refresh=False) as live:
+        with Live(
+            _render_health(_health_mod.HealthStatus(healthy=True)),
+            console=console,
+            refresh_per_second=0.2,
+            auto_refresh=False,
+        ) as live:
             while True:
                 status = asyncio.run(checker.check_all())
                 live.update(_render_health(status))
@@ -433,7 +451,9 @@ def health(
 
 @app.command()
 def daemon(
-    port: int = typer.Option(None, "--port", "-p", help="daemon 监听端口（覆盖 settings.daemon.port）"),
+    port: int = typer.Option(
+        None, "--port", "-p", help="daemon 监听端口（覆盖 settings.daemon.port）"
+    ),
 ) -> None:
     """启动 agentrunner 守护进程（常驻），前端经 WebSocket 连接；仅绑 127.0.0.1。"""
     from agent.daemon.server import start_daemon

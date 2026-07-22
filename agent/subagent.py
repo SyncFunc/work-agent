@@ -14,10 +14,12 @@
 
 from __future__ import annotations
 
-import yaml
+# ruff: noqa: E402  (agent.* 导入刻意置于 AgentSummary 定义之后，避免与 agent.core.loop 循环导入)
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import yaml
 
 
 @dataclass
@@ -31,6 +33,7 @@ class AgentSummary:
     model: str | None
     permission_mode: str | None
     builtin: bool
+
 
 from agent.config.settings import Settings, project_config_path, user_config_path
 from agent.context.compactors.session_memory import MEMORY_SYSTEM_PROMPT
@@ -52,64 +55,79 @@ from agent.runtime.terminal_transport import _SubAgentTransport
 class AgentSpec:
     name: str
     description: str
-    system_prompt: str                 # 正文（替代默认 system 提示）
-    tools: list[str] | None = None     # 白名单；None=继承所有
+    system_prompt: str  # 正文（替代默认 system 提示）
+    tools: list[str] | None = None  # 白名单；None=继承所有
     disallowed_tools: list[str] = field(default_factory=list)
-    model: str | None = None           # 覆盖 llm.model（None=inherit）
+    model: str | None = None  # 覆盖 llm.model（None=inherit）
     permission_mode: str | None = None  # "plan"/"auto"/"dontAsk"/... 映射到 gate/sandbox
     max_turns: int | None = None
     effort: str | None = None
-    isolation: str | None = None       # "worktree" 可选（M5 先留接口，不强制）
-    share_history: bool = False        # True=fork 模式：继承父 conv（如记忆子 agent 需读父对话）
-    no_control_tools: bool = False      # True=子 agent 不注入控制/虚拟工具（纯文本产出，强隔离）
+    isolation: str | None = None  # "worktree" 可选（M5 先留接口，不强制）
+    share_history: bool = False  # True=fork 模式：继承父 conv（如记忆子 agent 需读父对话）
+    no_control_tools: bool = False  # True=子 agent 不注入控制/虚拟工具（纯文本产出，强隔离）
     builtin: bool = False
-    panel_height: int = 15             # 子 agent 输出框的固定行高（0=不限制）
+    panel_height: int = 15  # 子 agent 输出框的固定行高（0=不限制）
 
 
 # --------------------------------------------------------------------------- #
 # 内置类型常量
 # --------------------------------------------------------------------------- #
 BUILTIN_EXPLORE = AgentSpec(
-    name="explore", description="快速代码库搜索（只读，跳过会话文件）",
+    name="explore",
+    description="快速代码库搜索（只读，跳过会话文件）",
     system_prompt=(
         "你是代码探索专家，只做只读搜索（read/grep/glob/bash）。\n"
         "绝不修改任何文件，不调用 write/edit。聚焦于定位代码、理解结构、"
         "汇总发现，并以简洁文本返回结果。"
     ),
-    tools=["read", "grep", "glob", "bash"], disallowed_tools=["write", "edit"],
-    permission_mode="plan", builtin=True,
+    tools=["read", "grep", "glob", "bash"],
+    disallowed_tools=["write", "edit"],
+    permission_mode="plan",
+    builtin=True,
 )
 
 BUILTIN_PLAN = AgentSpec(
-    name="plan", description="plan mode 期间研究（只读）",
+    name="plan",
+    description="plan mode 期间研究（只读）",
     system_prompt=(
         "你是研究规划专家，只做只读搜索（read/grep/glob/bash），不修改文件。\n"
         "基于探索结果产出清晰、可执行的计划（步骤、风险、依赖），以文本返回。"
     ),
-    tools=["read", "grep", "glob", "bash"], disallowed_tools=["write", "edit"],
-    permission_mode="plan", builtin=True,
+    tools=["read", "grep", "glob", "bash"],
+    disallowed_tools=["write", "edit"],
+    permission_mode="plan",
+    builtin=True,
 )
 
 BUILTIN_GENERAL = AgentSpec(
-    name="general-purpose", description="复杂多步骤（探索+修改）",
+    name="general-purpose",
+    description="复杂多步骤（探索+修改）",
     system_prompt=(
         "你是通用执行 agent，可探索与修改代码。\n"
         "先理解任务与上下文，再按需调用工具推进；完成后以简洁文本总结成果。"
     ),
-    tools=None, builtin=True,
+    tools=None,
+    builtin=True,
 )
 
 # M4.4 记忆子 agent：复用 M5.4.1 后台 Subagent 机制，在后台增量维护会话摘要。
 # 强隔离：tools=[] 且无控制工具（no_control_tools），只从 fork 的对话历史产出 10 段
 # markdown 摘要文本；结果由父 Session 落盘到 summary.md（绝不触碰项目代码）。
 BUILTIN_SESSION_MEMORY = AgentSpec(
-    name="session-memory", description="后台增量维护会话摘要（记忆子 agent，纯文本产出）",
+    name="session-memory",
+    description="后台增量维护会话摘要（记忆子 agent，纯文本产出）",
     system_prompt=MEMORY_SYSTEM_PROMPT,
-    tools=[], no_control_tools=True, share_history=True, builtin=True,
+    tools=[],
+    no_control_tools=True,
+    share_history=True,
+    builtin=True,
 )
 
 BUILTIN_SPECS: tuple[AgentSpec, ...] = (
-    BUILTIN_EXPLORE, BUILTIN_PLAN, BUILTIN_GENERAL, BUILTIN_SESSION_MEMORY,
+    BUILTIN_EXPLORE,
+    BUILTIN_PLAN,
+    BUILTIN_GENERAL,
+    BUILTIN_SESSION_MEMORY,
 )
 
 
@@ -117,7 +135,9 @@ BUILTIN_SPECS: tuple[AgentSpec, ...] = (
 # SubagentSpawner
 # --------------------------------------------------------------------------- #
 class SubagentSpawner:
-    def __init__(self, settings: Settings, *, tracer: Tracer | None = None, max_depth: int = 5) -> None:
+    def __init__(
+        self, settings: Settings, *, tracer: Tracer | None = None, max_depth: int = 5
+    ) -> None:
         self.settings = settings
         self.tracer = tracer
         self.max_depth = max_depth
@@ -165,7 +185,7 @@ class SubagentSpawner:
             lines.append(f"- {s.name}{_scope}: {s.description}{_tools}")
         return "\n".join(lines)
 
-    def summaries(self) -> list["AgentSummary"]:
+    def summaries(self) -> list[AgentSummary]:
         """M5.4：返回精简列表（name + 描述 + tools + model + 权限），不含 system_prompt 正文。
 
         每次调用重新 ``discover()``（实时检测会话中新加的 agent 定义文件）。
@@ -228,7 +248,7 @@ class SubagentSpawner:
         parent_span=None,
         base_registry: ToolRegistry | None = None,
         base_model: Model | None = None,
-        parent_transport: "AgentTransport | None" = None,
+        parent_transport: AgentTransport | None = None,
         parent_messages: list[Message] | None = None,
         parent_sandbox: Any | None = None,
         parent_gate: ApprovalGate | None = None,
@@ -248,8 +268,10 @@ class SubagentSpawner:
         initial = list(parent_messages) if (spec.share_history and parent_messages) else []
 
         sub_transport = _SubAgentTransport(
-            parent=parent_transport, name=spec.name,
-            panel_height=spec.panel_height, live=live,
+            parent=parent_transport,
+            name=spec.name,
+            panel_height=spec.panel_height,
+            live=live,
         )
 
         # max_turns 限制：克隆 settings 覆盖循环上限
@@ -259,8 +281,12 @@ class SubagentSpawner:
             sub_settings.loop.max_iterations = spec.max_turns
 
         loop = AgentLoop(
-            sub_model, sub_reg, sub_settings,
-            tracer=self.tracer, sandbox=sub_sandbox, gate=sub_gate,
+            sub_model,
+            sub_reg,
+            sub_settings,
+            tracer=self.tracer,
+            sandbox=sub_sandbox,
+            gate=sub_gate,
         )
         # 强隔离：记忆子 agent 等场景禁止控制/虚拟工具（只产出文本，不能委派/加载 skill）
         loop._control_tools_enabled = not spec.no_control_tools
@@ -320,7 +346,8 @@ class SubagentSpawner:
         if parent_sandbox is not None:
             return parent_sandbox, parent_gate  # type: ignore[return-value]
         sandbox = build_executor(
-            "local", workspace=Path.cwd(),
+            "local",
+            workspace=Path.cwd(),
             profile=SandboxProfile(self.settings.sandbox.profile),
         )
         gate = ApprovalGate(self.settings.approval.mode)

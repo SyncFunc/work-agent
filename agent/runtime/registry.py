@@ -12,12 +12,13 @@ from __future__ import annotations
 
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from enum import Enum
+from enum import StrEnum
 from typing import Any
+
 
 # 风险分级：read=只读、edit=改文件、exec=执行命令。
 # 用 str 枚举（而非裸串）：类型安全、防拼错，并直接供未来 M2 审批门消费 ToolSpec.risk。
-class ToolRisk(str, Enum):
+class ToolRisk(StrEnum):
     READ = "read"
     EDIT = "edit"
     EXEC = "exec"
@@ -72,7 +73,10 @@ def _cap_result(r: ToolResult, max_chars: int) -> ToolResult:
     err = r.error
     changed = False
     if len(out) > max_chars:
-        out = out[:max_chars] + f"\n... [output truncated: {len(r.output)} chars, kept first {max_chars}]"
+        out = (
+            out[:max_chars]
+            + f"\n... [output truncated: {len(r.output)} chars, kept first {max_chars}]"
+        )
         changed = True
     if err is not None and len(err) > max_chars:
         err = err[:max_chars] + " [truncated]"
@@ -117,7 +121,9 @@ class ToolRegistry:
         return [spec.to_openai() for spec in self._tools.values()]
 
 
-def tool(name: str, risk: ToolRisk = ToolRisk.READ, schema: dict[str, Any] | None = None) -> Callable[
+def tool(
+    name: str, risk: ToolRisk = ToolRisk.READ, schema: dict[str, Any] | None = None
+) -> Callable[
     [Callable[[dict[str, Any]], Awaitable[ToolResult]]],
     ToolSpec,
 ]:

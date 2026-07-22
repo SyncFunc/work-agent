@@ -10,7 +10,6 @@ from __future__ import annotations
 from agent.core.events import EventStream, EventType
 from agent.core.model import Message, ToolCall
 
-
 # 中断后注入的续跑提示：使下一轮 step 重新决策，而非卡在悬空 tool_calls。
 INTERRUPTION_PROMPT = "（会话在上次中断处恢复，请继续执行未完成的工具调用）"
 
@@ -72,23 +71,28 @@ def rebuild_messages(
             if ev.tool_result is not None:
                 content = ev.tool_result.output or ev.tool_result.error or ""
             messages.append(Message(role="tool", content=content, tool_call_id=ev.tool_call_id))
-            pending.pop(ev.tool_call_id, None)
+            if ev.tool_call_id is not None:
+                pending.pop(ev.tool_call_id, None)
         elif t == EventType.CLARIFY:
             # 上一轮 DECISION 含 ask_clarification tool_calls，补合成结果消息以完成配对
             for tcid in list(pending.keys()):
-                messages.append(Message(
-                    role="tool",
-                    content="已向用户提出澄清问题；用户的回答见随后的 user 消息。",
-                    tool_call_id=tcid,
-                ))
+                messages.append(
+                    Message(
+                        role="tool",
+                        content="已向用户提出澄清问题；用户的回答见随后的 user 消息。",
+                        tool_call_id=tcid,
+                    )
+                )
                 pending.pop(tcid, None)
         elif t == EventType.PLAN:
             for tcid in list(pending.keys()):
-                messages.append(Message(
-                    role="tool",
-                    content="计划已提交并落盘，等待用户确认后继续执行。",
-                    tool_call_id=tcid,
-                ))
+                messages.append(
+                    Message(
+                        role="tool",
+                        content="计划已提交并落盘，等待用户确认后继续执行。",
+                        tool_call_id=tcid,
+                    )
+                )
                 pending.pop(tcid, None)
         # 其余事件类型：忽略（见函数文档）
 

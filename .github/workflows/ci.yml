@@ -1,0 +1,82 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request: {}
+  # nightly 跑 e2e（非确定 / 真实 LLM / fixture 重放），不阻塞 PR 合并
+  schedule:
+    - cron: "0 3 * * *"
+  workflow_dispatch: {}
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ---- 快速门禁：push / PR 必跑（lint + 类型 + 确定测试 + 覆盖）----
+  fast:
+    name: fast (lint · type · test · cov)
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install (editable, dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff lint
+        run: ruff check .
+
+      - name: Ruff format check
+        run: ruff format --check .
+
+      - name: Type check (basedpyright)
+        run: basedpyright
+
+      - name: Test (unit + integration, default -m "not slow")
+        run: pytest -q
+
+      - name: Coverage (xml)
+        run: pytest --cov=agent --cov-report=xml -q
+
+      - name: Upload coverage
+        if: ${{ matrix.python-version == '3.12' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-xml
+          path: coverage.xml
+
+  # ---- 慢测：仅 nightly cron 或手动触发，不阻塞 PR ----
+  slow:
+    name: slow (e2e)
+    if: ${{ github.event_name == 'schedule' || github.event_name == 'workflow_dispatch' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install (editable, dev)
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: E2E (pytest -m slow)
+        run: pytest -m slow -q
+        env:
+          # 真实 LLM 调用仅在此 job 出现；PR 门禁永不触达
+          AGENT_LLM_API_KEY: ${{ secrets.AGENT_LLM_API_KEY }}

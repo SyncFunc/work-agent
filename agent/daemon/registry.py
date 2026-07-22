@@ -18,7 +18,8 @@ import asyncio
 import time
 import uuid
 from collections import deque
-from typing import TYPE_CHECKING, Any, Callable, Protocol, runtime_checkable
+from collections.abc import Callable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from agent.core.events import Event
 from agent.daemon.protocol import MsgType
@@ -39,7 +40,7 @@ class ConnLike(Protocol):
 
     async def send(
         self,
-        type: "MsgType | str",
+        type: MsgType | str,
         payload: dict[str, Any] | None = None,
         *,
         id: str | None = None,
@@ -51,12 +52,18 @@ class SessionHandle:
     """单个会话的句柄（daemon 内部管理单元）。"""
 
     def __init__(
-        self, session_id: str, name: str, session: "SessionLike | None", transport: "BridgeTransport | None"
+        self,
+        session_id: str,
+        name: str | None,
+        session: SessionLike | None,
+        transport: BridgeTransport | None,
     ) -> None:
         self.session_id = session_id
         self.name = name or session_id[:8]
         self.session: SessionLike | None = session
-        self.transport: BridgeTransport | None = transport  # AgentTransport 实现（BridgeTransport 等）
+        self.transport: BridgeTransport | None = (
+            transport  # AgentTransport 实现（BridgeTransport 等）
+        )
         # 回放缓冲：仅持久化事件（M7.4 修复点②）。O(1) 追加与截断，防内存膨胀。
         self.event_buffer: deque[Event] = deque(maxlen=DEFAULT_BUFFER_SIZE)
         self.attached_conn: ConnLike | None = None
@@ -72,9 +79,9 @@ class SessionRegistry:
     def __init__(
         self,
         *,
-        session_factory: "Callable[[str], SessionLike] | None" = None,
-        transport_factory: "Callable[[SessionHandle], BridgeTransport] | None" = None,
-        restore_factory: "Callable[[str], SessionLike] | None" = None,
+        session_factory: Callable[[str], SessionLike] | None = None,
+        transport_factory: Callable[[SessionHandle], BridgeTransport] | None = None,
+        restore_factory: Callable[[str], SessionLike] | None = None,
     ) -> None:
         self._sessions: dict[str, SessionHandle] = {}
         self._session_factory = session_factory
@@ -88,8 +95,8 @@ class SessionRegistry:
         self,
         name: str | None = None,
         *,
-        session_factory: "Callable[[str], SessionLike] | None" = None,
-        transport_factory: "Callable[[SessionHandle], BridgeTransport] | None" = None,
+        session_factory: Callable[[str], SessionLike] | None = None,
+        transport_factory: Callable[[SessionHandle], BridgeTransport] | None = None,
     ) -> SessionHandle:
         sid = uuid.uuid4().hex
         sf = session_factory or self._session_factory
@@ -106,7 +113,7 @@ class SessionRegistry:
             return None
         return self._sessions.get(session_id)
 
-    def restore(self, session_id: str, session: "SessionLike") -> SessionHandle:
+    def restore(self, session_id: str, session: SessionLike) -> SessionHandle:
         """M6.2 冷启动恢复：为已存在于 SessionStore 的 ``session_id`` 建立句柄（不生成新 id）。
 
         把会话完整 EventStream 的最近 K 条事件播种进 ``event_buffer``，使后续 attach
@@ -120,7 +127,7 @@ class SessionRegistry:
         self._sessions[session_id] = handle
         return handle
 
-    def attach(self, conn: "ConnLike", session_id: str) -> SessionHandle | None:
+    def attach(self, conn: ConnLike, session_id: str) -> SessionHandle | None:
         """把连接 ``conn`` attach 到会话；若已被别的连接占用则顶替（通知旧连接）。
 
         M6.2 冷启动：若该 id 不在内存但在 SessionStore 中存在，先经 ``restore_factory``
@@ -146,7 +153,7 @@ class SessionRegistry:
         conn.session_id = session_id
         return handle
 
-    def detach(self, conn: "ConnLike") -> str | None:
+    def detach(self, conn: ConnLike) -> str | None:
         """把连接 ``conn`` 从当前会话 detach，返回被 detach 的 session_id。"""
         sid = getattr(conn, "session_id", None)
         if sid is None:
@@ -157,7 +164,7 @@ class SessionRegistry:
         conn.session_id = None
         return sid
 
-    def switch(self, conn: "ConnLike", session_id: str) -> SessionHandle | None:
+    def switch(self, conn: ConnLike, session_id: str) -> SessionHandle | None:
         """切换 = 先 detach 当前，再 attach 目标。"""
         self.detach(conn)
         return self.attach(conn, session_id)

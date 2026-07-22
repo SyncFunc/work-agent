@@ -35,7 +35,12 @@ def _settings(**kw) -> Settings:
     """测试用 Settings：收紧循环上限，便于断言终止。支持 ``loop={...}`` 局部覆盖。"""
     loop = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3)
     loop.update(kw.pop("loop", {}))
-    for k in ("max_iterations", "max_tool_concurrency", "max_repeat_calls", "max_tool_output_chars"):
+    for k in (
+        "max_iterations",
+        "max_tool_concurrency",
+        "max_repeat_calls",
+        "max_tool_output_chars",
+    ):
         if k in kw:
             loop[k] = kw.pop(k)
     return Settings(loop=loop, **kw)

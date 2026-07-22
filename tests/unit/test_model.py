@@ -9,7 +9,6 @@ from agent.core.model import (
     Message,
     OpenAICompatibleModel,
     RecordingModel,
-    StreamEvent,
     ToolCall,
 )
 
@@ -52,6 +51,7 @@ class _FakeCompletions:
 
     async def create(self, **kwargs):
         if kwargs.get("stream"):
+
             async def gen():
                 for c in self._chunks:
                     yield c
@@ -79,7 +79,9 @@ def _delta(content=None, tool_calls=None):
 
 
 def _completion(text="final", tool_calls=None):
-    return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=tool_calls))])
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(content=text, tool_calls=tool_calls))]
+    )
 
 
 async def test_openai_model_act_returns_decision():
@@ -91,8 +93,12 @@ async def test_openai_model_act_returns_decision():
 
 async def test_openai_model_stream_accumulates_text_and_tool_calls():
     # 模拟流式分片：文本分一片；工具调用分两片（name + arguments 增量）
-    tc0 = SimpleNamespace(index=0, id="call_1", function=SimpleNamespace(name="bash", arguments='{"cmd":"'))
-    tc0b = SimpleNamespace(index=0, id=None, function=SimpleNamespace(name=None, arguments='echo hi"}'))
+    tc0 = SimpleNamespace(
+        index=0, id="call_1", function=SimpleNamespace(name="bash", arguments='{"cmd":"')
+    )
+    tc0b = SimpleNamespace(
+        index=0, id=None, function=SimpleNamespace(name=None, arguments='echo hi"}')
+    )
     chunks = [
         _chunk(_delta(content="hi")),
         _chunk(_delta(tool_calls=[tc0])),
@@ -118,9 +124,9 @@ async def test_openai_model_stream_accumulates_text_and_tool_calls():
 # ---------------- 配置（provider 无关） ---------------- #
 def test_settings_llm_defaults():
     """无配置时使用内置默认值（不依赖 YAML/运行环境）。"""
+    import os
     from pathlib import Path
 
-    import os
     old = os.environ.get("AGENT_PROJECT_ROOT")
     os.environ["AGENT_PROJECT_ROOT"] = str(Path.cwd() / "nonexistent")
     s = Settings()

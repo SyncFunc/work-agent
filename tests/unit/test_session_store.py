@@ -10,7 +10,7 @@ import uuid
 
 from agent.context.session_store import SessionStore, SessionStoreSink
 from agent.core.events import Event, EventStream, EventType
-from agent.core.model import Decision, FakeModel, Message, ToolCall
+from agent.core.model import Decision, FakeModel, ToolCall
 from agent.core.session import Session
 from agent.runtime.registry import ToolResult, default_registry
 
@@ -18,8 +18,19 @@ from agent.runtime.registry import ToolResult, default_registry
 def _populate(es: EventStream) -> None:
     """向给定 EventStream 追加一组代表性事件（含瞬时事件）。"""
     es.append(Event(type=EventType.DECISION, decision=Decision(text="think", tool_calls=[])))
-    es.append(Event(type=EventType.TOOL_USE, tool_use=ToolCall(id="c1", name="read", arguments={"path": "a.txt"})))
-    es.append(Event(type=EventType.TOOL_RESULT, tool_call_id="c1", tool_result=ToolResult(ok=True, output="hi")))
+    es.append(
+        Event(
+            type=EventType.TOOL_USE,
+            tool_use=ToolCall(id="c1", name="read", arguments={"path": "a.txt"}),
+        )
+    )
+    es.append(
+        Event(
+            type=EventType.TOOL_RESULT,
+            tool_call_id="c1",
+            tool_result=ToolResult(ok=True, output="hi"),
+        )
+    )
     es.append(Event(type=EventType.FINAL, text="done"))
     # 瞬时事件：不持久化
     es.emit(Event(type=EventType.TOOL_CALL_DELTA, tc_index=0, tc_name="read", tc_args='{"path":'))
@@ -73,7 +84,7 @@ def test_list_sessions_includes_parent_link(tmp_path):
 def test_session_step_persists_via_sink(tmp_path, monkeypatch):
     """集成：Session.step 通过 event_sink 把本轮 events 落盘。"""
     # 避免 SessionMemory / 压缩在测试中落盘到仓库
-    import agent.tools  # 注册默认工具（副作用）
+    import agent.tools  # noqa: F401  (注册默认工具，副作用导入)
     from agent.config.settings import Settings
 
     settings = Settings()

@@ -10,17 +10,18 @@ import asyncio
 from agent.core.loop import AgentLoop
 from agent.core.model import Decision, ToolCall
 from agent.testing.recorded_model import RecordedModel
-
 from tests.conftest import _make_registry, _settings
 
 
 def test_tool_tape_replays_order_and_params():
     """录像带重放：两个 read 调用按 r1→r2 顺序执行，tool_result 按 id 配对回传。"""
     tape = [
-        Decision(tool_calls=[
-            ToolCall(id="r1", name="read", arguments={"path": "a.txt"}),
-            ToolCall(id="r2", name="read", arguments={"path": "b.txt"}),
-        ]),
+        Decision(
+            tool_calls=[
+                ToolCall(id="r1", name="read", arguments={"path": "a.txt"}),
+                ToolCall(id="r2", name="read", arguments={"path": "b.txt"}),
+            ]
+        ),
         Decision(text="done"),
     ]
     model = RecordedModel(tape)

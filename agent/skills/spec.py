@@ -21,22 +21,22 @@ _ESCAPE = "\x00ESC\x00"  # 转义占位符，避免与参数替换冲突
 class SkillSpec:
     """一个 Skill 的静态定义（来自 ``<dir>/SKILL.md`` 的 frontmatter）。"""
 
-    name: str                       # 目录名（kebab-case）
-    description: str                # 触发描述（常驻）
-    path: Path                      # SKILL.md 所在目录
-    when_to_use: str = ""           # 额外触发上下文
-    arguments: list[str] = field(default_factory=list)   # 命名位置参数
+    name: str  # 目录名（kebab-case）
+    description: str  # 触发描述（常驻）
+    path: Path  # SKILL.md 所在目录
+    when_to_use: str = ""  # 额外触发上下文
+    arguments: list[str] = field(default_factory=list)  # 命名位置参数
     argument_hint: str = ""
-    disable_model_invocation: bool = False   # True→仅 /name 手动
+    disable_model_invocation: bool = False  # True→仅 /name 手动
     user_invocable: bool = True
     allowed_tools: list[str] = field(default_factory=list)
     disallowed_tools: list[str] = field(default_factory=list)
-    model: str | None = None        # 活动时覆盖模型（"inherit" 或模型 id）
+    model: str | None = None  # 活动时覆盖模型（"inherit" 或模型 id）
     effort: str | None = None
-    context: str | None = None      # "fork" → 在 subagent 中执行
-    agent: str | None = None        # context:fork 时用的 subagent 类型
+    context: str | None = None  # "fork" → 在 subagent 中执行
+    agent: str | None = None  # context:fork 时用的 subagent 类型
     hooks: list[dict] = field(default_factory=list)
-    paths: list[str] = field(default_factory=list)   # Glob，限定自动触发文件
+    paths: list[str] = field(default_factory=list)  # Glob，限定自动触发文件
     shell: str = "bash"
 
     _body_cache: str | None = field(default=None, repr=False, compare=False)

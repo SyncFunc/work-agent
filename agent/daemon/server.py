@@ -72,7 +72,15 @@ def _default_session_factory(settings: Settings, store, session_id: str) -> Sess
     # M6.2 冷启动：该 session_id 已存在于 sqlite → 从 store 恢复（重建 messages + event_stream）；
     # 否则新建（并落初始行）。同一工厂同时服务新建与恢复两条路径。
     if store.get_session(session_id) is not None:
-        return Session.from_store(model, default_registry, settings, store, session_id, tracer=tracer, trace_store=trace_store)
+        return Session.from_store(
+            model,
+            default_registry,
+            settings,
+            store,
+            session_id,
+            tracer=tracer,
+            trace_store=trace_store,
+        )
     return Session(
         model,
         default_registry,
@@ -110,7 +118,13 @@ async def _handler(ws: WsConnection, registry: SessionRegistry) -> None:
         registry.detach(conn)
 
 
-async def _route(conn: Connection, registry: SessionRegistry, mtype: str | None, payload: dict[str, Any], _mid: str | None) -> None:
+async def _route(
+    conn: Connection,
+    registry: SessionRegistry,
+    mtype: str | None,
+    payload: dict[str, Any],
+    _mid: str | None,
+) -> None:
     if mtype == MsgType.HELLO.value:
         token = payload.get("token", "")
         expected = getattr(registry, "_token", "") or ""
@@ -130,7 +144,9 @@ async def _route(conn: Connection, registry: SessionRegistry, mtype: str | None,
             {"session_id": handle.session_id, "name": handle.name},
             session=handle.session_id,
         )
-        await conn.send(MsgType.ATTACHED, {"session_id": handle.session_id}, session=handle.session_id)
+        await conn.send(
+            MsgType.ATTACHED, {"session_id": handle.session_id}, session=handle.session_id
+        )
     elif mtype == MsgType.SESSION_ATTACH.value:
         await _attach(conn, registry, payload.get("session_id"))
     elif mtype == MsgType.SESSION_SWITCH.value:
@@ -141,7 +157,13 @@ async def _route(conn: Connection, registry: SessionRegistry, mtype: str | None,
     elif mtype == MsgType.SESSION_LIST.value:
         await conn.send(MsgType.SESSION_LIST_RESP, {"sessions": registry.list_info()})
     elif mtype == MsgType.TASK_SEND.value:
-        await _task_send(conn, registry, payload.get("text", ""), yes=payload.get("yes", False), _plan=payload.get("plan", False))
+        await _task_send(
+            conn,
+            registry,
+            payload.get("text", ""),
+            yes=payload.get("yes", False),
+            _plan=payload.get("plan", False),
+        )
     elif mtype == MsgType.ANSWER.value:
         _resolve(conn, registry, payload.get("id"), payload.get("text", ""))
     elif mtype == MsgType.CONFIRM_PLAN.value:
@@ -204,7 +226,9 @@ async def _task_send(
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": "session not initialized"})
         return
     if handle.transport is None:
-        await conn.send(MsgType.ERROR, {"code": "no_transport", "message": "session has no transport"})
+        await conn.send(
+            MsgType.ERROR, {"code": "no_transport", "message": "session has no transport"}
+        )
         return
     if handle.busy:
         await conn.send(MsgType.ERROR, {"code": "busy", "message": "session is busy"})
@@ -220,9 +244,7 @@ async def _task_send(
         handle.last_activity = time.time()
         try:
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
-                res, _err = await session.step(
-                    text, transport, yes=yes, fatal_plan_decline=False
-                )
+                res, _err = await session.step(text, transport, yes=yes, fatal_plan_decline=False)
             # 等待所有在飞事件转发完成，保证 FINAL 等事件先于 CLOSE 落地（顺序正确性）。
             await transport.flush()
             if res is not None:
@@ -249,7 +271,9 @@ def _resolve(conn: Connection, registry: SessionRegistry, rid: str | None, value
         handle.transport.resolve(rid, value)
 
 
-async def _command(conn: Connection, registry: SessionRegistry, name: str, args: str | None) -> None:
+async def _command(
+    conn: Connection, registry: SessionRegistry, name: str, args: str | None
+) -> None:
     from agent.core.session_command import dispatch_command  # 延迟导入（M7.5 才落地）
 
     sid = conn.session_id
@@ -261,7 +285,9 @@ async def _command(conn: Connection, registry: SessionRegistry, name: str, args:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": "session not initialized"})
         return
     if handle.transport is None:
-        await conn.send(MsgType.ERROR, {"code": "no_transport", "message": "session has no transport"})
+        await conn.send(
+            MsgType.ERROR, {"code": "no_transport", "message": "session has no transport"}
+        )
         return
     if name == "switch":
         await _switch(conn, registry, args)

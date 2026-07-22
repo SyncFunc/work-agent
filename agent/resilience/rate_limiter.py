@@ -18,8 +18,8 @@ class RateLimitError(Exception):
 
 @dataclass
 class RateLimitConfig:
-    max_calls: int = 60          # 窗口内最大调用次数
-    window_seconds: int = 60     # 滑动窗口秒数
+    max_calls: int = 60  # 窗口内最大调用次数
+    window_seconds: int = 60  # 滑动窗口秒数
 
 
 class RateLimiter:

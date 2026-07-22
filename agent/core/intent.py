@@ -38,7 +38,7 @@ class Question:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Question":
+    def from_dict(cls, d: dict[str, Any]) -> Question:
         return cls(
             question=d["question"],
             options=d.get("options"),
@@ -57,6 +57,8 @@ def extract_clarify(decision: Any) -> list[Question] | None:
     for tc in decision.tool_calls:
         if tc.name == ASK_CLARIFICATION_TOOL_NAME:
             raw = tc.arguments.get("questions", [])
-            questions = [Question.from_dict(q) for q in raw if isinstance(q, dict) and q.get("question")]
+            questions = [
+                Question.from_dict(q) for q in raw if isinstance(q, dict) and q.get("question")
+            ]
             return questions or None
     return None

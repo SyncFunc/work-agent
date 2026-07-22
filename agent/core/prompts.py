@@ -122,10 +122,7 @@ def _build_dynamic_segment(settings) -> str:
     cwd = Path.cwd()
     proj_root_env = os.environ.get("AGENT_PROJECT_ROOT")
     if proj_root_env:
-        parts.append(
-            f"## 当前工作目录\n{cwd}\n"
-            f"项目根目录（AGENT_PROJECT_ROOT）：{proj_root_env}\n"
-        )
+        parts.append(f"## 当前工作目录\n{cwd}\n项目根目录（AGENT_PROJECT_ROOT）：{proj_root_env}\n")
     else:
         parts.append(f"## 当前工作目录\n{cwd}\n")
 
@@ -133,19 +130,19 @@ def _build_dynamic_segment(settings) -> str:
     if settings.context.agents_md_enabled:
         agents_content = _read_agents_md(settings)
         if agents_content:
-            parts.append(
-                f"<system-reminder>\n## AGENTS.md\n{agents_content}\n</system-reminder>\n"
-            )
+            parts.append(f"<system-reminder>\n## AGENTS.md\n{agents_content}\n</system-reminder>\n")
 
     # Git 仓库状态（最佳努力，失败静默跳过）。
     try:
         branch = subprocess.check_output(
             ["git", "branch", "--show-current"],
-            text=True, stderr=subprocess.DEVNULL,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
         status = subprocess.check_output(
             ["git", "status", "--short"],
-            text=True, stderr=subprocess.DEVNULL,
+            text=True,
+            stderr=subprocess.DEVNULL,
         ).strip()
         if branch or status:
             parts.append(f"## Git 状态\n分支：{branch}\n{status[:1000]}\n")

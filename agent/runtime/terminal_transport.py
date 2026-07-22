@@ -36,14 +36,13 @@ from rich.text import Text
 
 from agent.core.control_tools import (
     ASK_CLARIFICATION_TOOL_NAME,
-    UPDATE_PLAN_TOOL_NAME,
     SPAWN_SUBAGENT_TOOL_NAME,
+    UPDATE_PLAN_TOOL_NAME,
 )
 from agent.core.events import Event, EventStream, EventType
 from agent.core.intent import Question
 from agent.core.transport import AgentTransport
 from agent.runtime.approval import Action
-
 
 # 写/改类工具名（与 agent.tools.fs 对齐）；其 ToolResult.diff 以高亮面板展示改动。
 WRITE_TOOL_NAME = "write"
@@ -52,12 +51,18 @@ EDIT_TOOL_NAME = "edit"
 
 # 计划步骤状态 → 展示标记 / 颜色（与 agent.core.plan 的状态对齐）
 _PLAN_STATUS_MARK = {
-    "pending": "[ ]", "in_progress": "[~]", "done": "[x]",
-    "blocked": "[!]", "skipped": "[-]",
+    "pending": "[ ]",
+    "in_progress": "[~]",
+    "done": "[x]",
+    "blocked": "[!]",
+    "skipped": "[-]",
 }
 _PLAN_STATUS_COLOR = {
-    "pending": "white", "in_progress": "yellow", "done": "green",
-    "blocked": "red", "skipped": "dim",
+    "pending": "white",
+    "in_progress": "yellow",
+    "done": "green",
+    "blocked": "red",
+    "skipped": "dim",
 }
 
 
@@ -81,7 +86,7 @@ def _extract_write_preview(raw: str) -> str:
         q = raw.find('"', col)
         if q < 0:
             return ""
-        val = raw[q + 1:]
+        val = raw[q + 1 :]
         # 截到首个未转义的双引号（值的闭合引号），兼容流式中间态（尚未出现闭合引号时保留全部）。
         for idx in range(len(val)):
             if val[idx] == '"' and (idx == 0 or val[idx - 1] != "\\"):
@@ -188,16 +193,16 @@ class SubagentPanelHub:
 class TerminalTransport(AgentTransport):
     """``AgentTransport`` 的 rich 终端实现：把 HITL 交互与事件流渲染统一到单一契约。"""
 
-    def __init__(self, *, interactive: bool, context_mgr: "Any | None" = None) -> None:
+    def __init__(self, *, interactive: bool, context_mgr: Any | None = None) -> None:
         self._interactive = interactive
         self._console = Console()
         # M4.6：可选上下文管理器，用于状态栏实时显示占用占比。
         self._context_mgr = context_mgr
-        self._saw_reasoning = False   # 本思考段是否已打印过 "💭 思考:" 头
-        self._live = None             # 当前内容段的 Live（流式 Markdown 面板）
-        self._buf = ""                # 当前内容段累积文本
-        self._tool_live = None        # 工具调用参数流式预览的 Live（write/edit 内容实时显示）
-        self._tc_by_id: dict[str, Any] = {}   # tool_use 事件收集，供 tool_result 取工具名
+        self._saw_reasoning = False  # 本思考段是否已打印过 "💭 思考:" 头
+        self._live = None  # 当前内容段的 Live（流式 Markdown 面板）
+        self._buf = ""  # 当前内容段累积文本
+        self._tool_live = None  # 工具调用参数流式预览的 Live（write/edit 内容实时显示）
+        self._tc_by_id: dict[str, Any] = {}  # tool_use 事件收集，供 tool_result 取工具名
         self._plan_steps: list[Any] | None = None  # 计划步骤（show_plan 时记录，progress 增量更新）
         # 通知缓冲：notify() 只记录、不渲染；由 flush_notifications() 在不在流式 Live 中的
         # 安全时机统一呈现（见 notify / flush_notifications / close）。
@@ -218,7 +223,7 @@ class TerminalTransport(AgentTransport):
         return self._interactive
 
     @property
-    def subagent_hub(self) -> "SubagentPanelHub | None":
+    def subagent_hub(self) -> SubagentPanelHub | None:
         """本传输自身拥有的子 agent 面板 hub。
 
         子 agent 的 ``_SubAgentTransport`` 同名属性是只读 property，委派到父传输的 hub，
@@ -481,7 +486,6 @@ class TerminalTransport(AgentTransport):
         # 收尾后再呈现积压通知（此时 Live 已停止，不会打断流式输出）
         self.flush_notifications()
 
-
     def report_usage(self, usage: dict[str, int] | None, answer: str | None = None) -> None:
         if usage:
             # 不同颜色正方形色块作为各类 token 的图标；展示全部字段（含为 0 的）
@@ -522,9 +526,7 @@ class TerminalTransport(AgentTransport):
             if opts:
                 # 选项显式打进面板，确保始终可见（修复「澄清选项不显示」）。
                 body += "\n[dim]选项: " + "; ".join(opts) + "[/dim]"
-            self._console.print(
-                Panel(body, title="❓ 澄清", border_style="yellow", expand=False)
-            )
+            self._console.print(Panel(body, title="❓ 澄清", border_style="yellow", expand=False))
             if question.multiSelect:
                 return await _ptk_multi_choice(question)
             return await _ptk_single_choice(question)
@@ -620,7 +622,9 @@ class TerminalTransport(AgentTransport):
         """展示已注册 Subagent 类型（name / description / tools / model）。"""
         title = "🤖 已注册 Subagent 类型"
         if not specs:
-            self._console.print(Panel("(无 subagent)", title=title, border_style="blue", expand=False))
+            self._console.print(
+                Panel("(无 subagent)", title=title, border_style="blue", expand=False)
+            )
             return
         table = Table(show_header=True, header_style="bold", expand=False)
         table.add_column("name", style="cyan", no_wrap=True)
@@ -629,7 +633,15 @@ class TerminalTransport(AgentTransport):
         table.add_column("model", style="dim")
         for s in specs:
             tools = getattr(s, "tools", None)
-            tools_s = ", ".join(tools) if tools else ("禁用:" + ", ".join(getattr(s, "disallowed_tools", []) or []) if getattr(s, "disallowed_tools", None) else "全部")
+            tools_s = (
+                ", ".join(tools)
+                if tools
+                else (
+                    "禁用:" + ", ".join(getattr(s, "disallowed_tools", []) or [])
+                    if getattr(s, "disallowed_tools", None)
+                    else "全部"
+                )
+            )
             model = getattr(s, "model", None) or "inherit"
             scope = "（内置）" if getattr(s, "builtin", False) else "（自定义）"
             table.add_row(
@@ -640,19 +652,24 @@ class TerminalTransport(AgentTransport):
             )
         self._console.print(Panel(table, title=title, border_style="blue", expand=False))
 
-    async def approve(self, action: "Action") -> bool:
+    async def approve(self, action: Action) -> bool:
         """审批面板：展示待审批的操作并等待用户 y/N 确认。"""
         self._console.print()
-        tool_label = {"bash": "🐚 命令", "read": "📖 读取", "write": "✏️ 写入", "edit": "✏️ 编辑"}.get(
-            action.tool, f"🔧 {action.tool}"
-        )
+        tool_label = {
+            "bash": "🐚 命令",
+            "read": "📖 读取",
+            "write": "✏️ 写入",
+            "edit": "✏️ 编辑",
+        }.get(action.tool, f"🔧 {action.tool}")
         body = f"[bold]{tool_label}[/bold]\n"
         body += f"[dim]{action.description}[/dim]\n"
         if action.risk:
             body += f"\n[cyan]风险等级:[/cyan] {action.risk}"
         if action.approval_request:
             body += "\n[yellow]模型主动请求审批[/yellow]"
-        self._console.print(Panel(body.strip(), title="🔒 审批请求", border_style="yellow", expand=False))
+        self._console.print(
+            Panel(body.strip(), title="🔒 审批请求", border_style="yellow", expand=False)
+        )
         try:
             session = PromptSession()
             ans = await session.prompt_async("是否允许执行？ [y/N]: ")
@@ -677,8 +694,11 @@ class _SubAgentTransport(TerminalTransport):
 
     def __init__(
         self,
-        parent: "AgentTransport | None", *,
-        name: str = "subagent", panel_height: int = 15, live: bool = True,
+        parent: AgentTransport | None,
+        *,
+        name: str = "subagent",
+        panel_height: int = 15,
+        live: bool = True,
     ) -> None:
         interactive = bool(parent.interactive) if parent is not None else False
         super().__init__(interactive=interactive)
@@ -694,7 +714,7 @@ class _SubAgentTransport(TerminalTransport):
         self._slot = None
         # 已定稿的带框条目：(rich renderable, 估计渲染行数)
         self._entries: list[tuple[Any, int]] = []
-        self._stream_text = ""     # 当前流式模型输出（未定稿）
+        self._stream_text = ""  # 当前流式模型输出（未定稿）
         self._reasoning_text = ""  # 当前流式思考（未定稿）
         # 仅交互模式且 live=True：把自身面板注册进父 hub（所有层级共用顶层唯一 Live）。
         # 用 getattr 容错：测试用的假父传输可能没有 hub（此时退化为无面板渲染）。
@@ -747,7 +767,7 @@ class _SubAgentTransport(TerminalTransport):
             return text
         return "…(更早内容已省略)\n" + "\n".join(lines[-max_lines:])
 
-    def _tool_call_panel(self, tc) -> "tuple[Any, int]":
+    def _tool_call_panel(self, tc) -> tuple[Any, int]:
         if tc.name == UPDATE_PLAN_TOOL_NAME:
             a = tc.arguments or {}
             sid = a.get("step_id", "?")
@@ -755,18 +775,21 @@ class _SubAgentTransport(TerminalTransport):
             color = _PLAN_STATUS_COLOR.get(st, "white")
             note = a.get("note")
             text = f"[cyan]{sid}[/cyan] → [{color}]{st}[/{color}]" + (
-                f"\n[dim]注: {note}[/dim]" if note else "")
+                f"\n[dim]注: {note}[/dim]" if note else ""
+            )
             p = Panel(text, title="📋 计划更新", border_style="magenta", expand=False)
             return p, self._est_lines(text) + 2
         args = json.dumps(tc.arguments, ensure_ascii=False, indent=2)
         text = f"{tc.name}\n{args}"
         p = Panel(
             f"[cyan]{tc.name}[/cyan]\n```\n{args}\n```",
-            title="🔧 工具调用", border_style="cyan", expand=False,
+            title="🔧 工具调用",
+            border_style="cyan",
+            expand=False,
         )
         return p, self._est_lines(text) + 2
 
-    def _tool_result_panel(self, tc, res) -> "tuple[Any, int]":
+    def _tool_result_panel(self, tc, res) -> tuple[Any, int]:
         if tc.name in (WRITE_TOOL_NAME, EDIT_TOOL_NAME) and res.ok and res.diff:
             diff = res.diff
             dcap = 4000
@@ -774,7 +797,9 @@ class _SubAgentTransport(TerminalTransport):
                 diff = diff[:dcap] + "\n…(diff 已截断)"
             p = Panel(
                 Syntax(diff, "diff", theme="ansi_dark", word_wrap=True),
-                title=f"✅ {tc.name} — {res.output}", border_style="green", expand=False,
+                title=f"✅ {tc.name} — {res.output}",
+                border_style="green",
+                expand=False,
             )
             return p, min(self._est_lines(diff) + 2, 200)
         style = "green" if res.ok else "red"
@@ -784,19 +809,22 @@ class _SubAgentTransport(TerminalTransport):
         p = Panel(
             Markdown(body),
             title=f"[{'✅' if res.ok else '❌'}] {tc.name}",
-            border_style=style, expand=False,
+            border_style=style,
+            expand=False,
         )
         return p, self._est_lines(body) + 2
 
     def _finalize_stream(self) -> None:
         if self._stream_text:
-            p = Panel(Markdown(self._stream_text), title="💬 模型输出",
-                      border_style="green", expand=False)
+            p = Panel(
+                Markdown(self._stream_text), title="💬 模型输出", border_style="green", expand=False
+            )
             self._entries.append((p, self._est_lines(self._stream_text) + 2))
             self._stream_text = ""
         if self._reasoning_text:
-            p = Panel("💭 " + self._reasoning_text, title="💭 思考",
-                      border_style="dim", expand=False)
+            p = Panel(
+                "💭 " + self._reasoning_text, title="💭 思考", border_style="dim", expand=False
+            )
             self._entries.append((p, self._est_lines(self._reasoning_text) + 2))
             self._reasoning_text = ""
 
@@ -808,25 +836,38 @@ class _SubAgentTransport(TerminalTransport):
         parts: list[tuple[Any, int]] = list(self._entries)
         if self._reasoning_text:
             rt = self._reasoning_text
-            parts.append((Panel("💭 " + rt, title="💭 思考", border_style="dim", expand=False),
-                          self._est_lines(rt) + 2))
+            parts.append(
+                (
+                    Panel("💭 " + rt, title="💭 思考", border_style="dim", expand=False),
+                    self._est_lines(rt) + 2,
+                )
+            )
         if self._stream_text:
             st = self._stream_text
             if self._est_lines(st) > budget:
                 st = self._cap_lines(st, budget)
-            parts.append((Panel(Markdown(st), title="💬 模型输出", border_style="green", expand=False),
-                          min(self._est_lines(st) + 2, budget + 2)))
+            parts.append(
+                (
+                    Panel(Markdown(st), title="💬 模型输出", border_style="green", expand=False),
+                    min(self._est_lines(st) + 2, budget + 2),
+                )
+            )
         # 预算裁剪：从最旧条目开始丢弃，直到总高 <= 预算（保证不撑出屏幕、不刷屏）
         total = sum(n for _, n in parts)
         while total > budget and len(parts) > 1:
             parts.pop(0)
             total = sum(n for _, n in parts)
         if not parts:
-            render: Any = Panel("(等待子 agent 输出…)", title=self._slot.title,
-                                border_style="blue", expand=False)
+            render: Any = Panel(
+                "(等待子 agent 输出…)", title=self._slot.title, border_style="blue", expand=False
+            )
         else:
-            render = Panel(Group(*[r for r, _ in parts]), title=self._slot.title,
-                           border_style="blue", expand=False)
+            render = Panel(
+                Group(*[r for r, _ in parts]),
+                title=self._slot.title,
+                border_style="blue",
+                expand=False,
+            )
         self._slot.panel = render
         self.subagent_hub.refresh()
 
@@ -952,7 +993,9 @@ class _SubAgentTransport(TerminalTransport):
             parts.append((Panel("💭 " + rt, title="💭 思考", border_style="dim", expand=False), 0))
         if self._stream_text:
             st = self._stream_text
-            parts.append((Panel(Markdown(st), title="💬 模型输出", border_style="green", expand=False), 0))
+            parts.append(
+                (Panel(Markdown(st), title="💬 模型输出", border_style="green", expand=False), 0)
+            )
         if not parts:
             return None
         return Panel(
@@ -1021,7 +1064,9 @@ async def _ptk_multi_choice(question: Question) -> str:
         return typer.prompt(question.question)
     for i, o in enumerate(opts, 1):
         Console().print(f"  [cyan]{i}[/cyan]. {o}")
-    Console().print("[dim]可多选：输入编号(逗号分隔，如 1,3)或标签(逗号分隔)；直接回车=不选。[/dim]")
+    Console().print(
+        "[dim]可多选：输入编号(逗号分隔，如 1,3)或标签(逗号分隔)；直接回车=不选。[/dim]"
+    )
     session = PromptSession()
     try:
         line = await session.prompt_async("选择> ")

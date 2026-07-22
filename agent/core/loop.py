@@ -13,26 +13,27 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 
 from agent.config.settings import Settings
+from agent.context.tokens import _estimate_tokens
 from agent.core.control_tools import (
     ASK_CLARIFICATION_TOOL_NAME,
-    UPDATE_PLAN_TOOL_NAME,
     PRESENT_PLAN_TOOL_NAME,
-    USE_SKILL_TOOL_NAME,
     SPAWN_SUBAGENT_TOOL_NAME,
+    UPDATE_PLAN_TOOL_NAME,
+    USE_SKILL_TOOL_NAME,
     collect_control_tools,
 )
 from agent.core.events import Event, EventStream, EventType
 from agent.core.intent import Question, extract_clarify
 from agent.core.model import Decision, Message, Model, ToolCall
 from agent.core.plan import Plan, PlanStep, PlanStore
-from agent.core.transport import AgentTransport
-from agent.context.tokens import _estimate_tokens
 from agent.core.prompts import _build_system_parts
+from agent.core.transport import AgentTransport
 from agent.obs.tracer import Tracer, _span
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, UnknownTool
@@ -82,10 +83,10 @@ class AgentLoop:
         tracer: Tracer | None = None,
         plan_mode: bool | None = None,
         plan_path: str | None = None,
-        sandbox: "Executor | None" = None,
-        gate: "ApprovalGate | None" = None,
-        skill_loader: "SkillLoader | None" = None,
-        subagent_spawner: "SubagentSpawner | None" = None,
+        sandbox: Executor | None = None,
+        gate: ApprovalGate | None = None,
+        skill_loader: SkillLoader | None = None,
+        subagent_spawner: SubagentSpawner | None = None,
     ) -> None:
         self.model = model
         self.registry = registry
@@ -98,7 +99,7 @@ class AgentLoop:
         self.skill_loader = skill_loader
         self.subagent_spawner = subagent_spawner
         self._agent_span = None  # 由 run() 内的 _span 上下文设置；直接调工具时回退为 None
-        self._transport = None    # 由 run() 设置；直接调工具时回退为 None
+        self._transport = None  # 由 run() 设置；直接调工具时回退为 None
         self._context_mgr = None  # 由 run() 设置；直接调 _system_prompt 时回退为 None
         # 嵌套深度：主 loop 从 0 起；子 loop 由 SubagentSpawner 设置
         self._current_depth: int = 0
@@ -116,12 +117,12 @@ class AgentLoop:
         clarify_total: int = 0,
         plan_mode: bool | None = None,
         plan_path: str | None = None,
-        transport: "AgentTransport | None" = None,
+        transport: AgentTransport | None = None,
         system_prompt: str | None = None,
         parent_span=None,
-        context_mgr: "ContextManager | None" = None,
+        context_mgr: ContextManager | None = None,
         name: str = "",
-        event_sink: "Callable[[Event], None] | None" = None,
+        event_sink: Callable[[Event], None] | None = None,
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
@@ -160,7 +161,9 @@ class AgentLoop:
         span_name = f"agent.run:{name}" if name else "agent.run"
         with _span(self.tracer, span_name, kind="agent", parent=parent_span) as self._agent_span:
             for i in range(self.settings.loop.max_iterations):
-                decision = await self._decide(conv, stream, plan_mode=pm, plan_path=pp, system_prompt=self._run_system_prompt)
+                decision = await self._decide(
+                    conv, stream, plan_mode=pm, plan_path=pp, system_prompt=self._run_system_prompt
+                )
                 if decision.usage:
                     for k, v in decision.usage.items():
                         usage_total[k] = usage_total.get(k, 0) + v
@@ -171,45 +174,72 @@ class AgentLoop:
                     ct += 1
                     if self._agent_span is not None:
                         self._agent_span.log("clarify", f"round {ct}: {len(cq)} questions")
-                    stream.append(Event(type=EventType.CLARIFY, questions=[q.to_dict() for q in cq]))
+                    stream.append(
+                        Event(type=EventType.CLARIFY, questions=[q.to_dict() for q in cq])
+                    )
                     if ct <= self.settings.clarify.max_rounds:
                         clarify_calls = [
-                            tc for tc in decision.tool_calls
+                            tc
+                            for tc in decision.tool_calls
                             if tc.name == ASK_CLARIFICATION_TOOL_NAME
                         ]
                         conv.append(Message(role="assistant", tool_calls=clarify_calls))
                         for tc in clarify_calls:
-                            conv.append(Message(
-                                role="tool", tool_call_id=tc.id,
-                                content="已向用户提出澄清问题；用户的回答见随后的 user 消息。",
-                            ))
+                            conv.append(
+                                Message(
+                                    role="tool",
+                                    tool_call_id=tc.id,
+                                    content="已向用户提出澄清问题；用户的回答见随后的 user 消息。",
+                                )
+                            )
                         return AgentResult(
-                            text="", events=stream, iterations=i + 1,
-                            needs_clarification=True, questions=cq,
-                            messages=conv, clarify_total=ct, usage=usage_total,
+                            text="",
+                            events=stream,
+                            iterations=i + 1,
+                            needs_clarification=True,
+                            questions=cq,
+                            messages=conv,
+                            clarify_total=ct,
+                            usage=usage_total,
                         )
 
                 # ② 计划闸门
-                if pm and (ppp := self._find_tool_args(decision, PRESENT_PLAN_TOOL_NAME)) is not None:
+                if (
+                    pm
+                    and (ppp := self._find_tool_args(decision, PRESENT_PLAN_TOOL_NAME)) is not None
+                ):
                     plan = Plan(
                         body=ppp.get("body", ""),
-                        steps=[PlanStep(id=s["id"], title=s.get("title", ""), status="pending")
-                               for s in ppp.get("steps", [])],
+                        steps=[
+                            PlanStep(id=s["id"], title=s.get("title", ""), status="pending")
+                            for s in ppp.get("steps", [])
+                        ],
                     )
                     path = PlanStore.write_plan(plan, self.settings.plan.file)
                     stream.append(Event(type=EventType.PLAN, text=plan.body, plan_path=path))
-                    present_calls = [tc for tc in decision.tool_calls if tc.name == PRESENT_PLAN_TOOL_NAME]
+                    present_calls = [
+                        tc for tc in decision.tool_calls if tc.name == PRESENT_PLAN_TOOL_NAME
+                    ]
                     conv.append(Message(role="assistant", tool_calls=present_calls))
                     for tc in present_calls:
-                        conv.append(Message(
-                            role="tool", tool_call_id=tc.id,
-                            content="计划已提交并落盘，等待用户确认后继续执行。",
-                        ))
+                        conv.append(
+                            Message(
+                                role="tool",
+                                tool_call_id=tc.id,
+                                content="计划已提交并落盘，等待用户确认后继续执行。",
+                            )
+                        )
                     return AgentResult(
-                        text="", events=stream, iterations=i + 1,
-                        plan=plan.body, plan_path=path, plan_steps=plan.steps,
-                        needs_plan_confirm=True, messages=conv,
-                        clarify_total=ct, usage=usage_total,
+                        text="",
+                        events=stream,
+                        iterations=i + 1,
+                        plan=plan.body,
+                        plan_path=path,
+                        plan_steps=plan.steps,
+                        needs_plan_confirm=True,
+                        messages=conv,
+                        clarify_total=ct,
+                        usage=usage_total,
                     )
 
                 if decision.is_final:
@@ -217,8 +247,12 @@ class AgentLoop:
                     stream.append(Event(type=EventType.FINAL, text=text))
                     conv.append(Message(role="assistant", content=text))
                     return AgentResult(
-                        text=text, events=stream, iterations=i + 1,
-                        messages=conv, clarify_total=ct, usage=usage_total,
+                        text=text,
+                        events=stream,
+                        iterations=i + 1,
+                        messages=conv,
+                        clarify_total=ct,
+                        usage=usage_total,
                     )
 
                 results = await self._exec_tools(
@@ -235,15 +269,21 @@ class AgentLoop:
                 last_callset = callset
                 if repeat_count >= self.settings.loop.max_repeat_calls:
                     if self._agent_span is not None:
-                        self._agent_span.log("stall", f"repeated {repeat_count + 1} times: {sorted(callset)}", level="error")
+                        self._agent_span.log(
+                            "stall",
+                            f"repeated {repeat_count + 1} times: {sorted(callset)}",
+                            level="error",
+                        )
                     raise LoopStalled(
                         f"model repeated identical tool calls {repeat_count + 1} times; "
                         f"possible infinite loop on {sorted(callset)}"
                     )
 
                 conv.append(Message(role="assistant", tool_calls=decision.tool_calls))
-                for tc, res in zip(decision.tool_calls, results):
-                    stream.append(Event(type=EventType.TOOL_RESULT, tool_call_id=tc.id, tool_result=res))
+                for tc, res in zip(decision.tool_calls, results, strict=True):
+                    stream.append(
+                        Event(type=EventType.TOOL_RESULT, tool_call_id=tc.id, tool_result=res)
+                    )
                     conv.append(
                         Message(role="tool", content=res.output or res.error, tool_call_id=tc.id)
                     )
@@ -262,13 +302,22 @@ class AgentLoop:
             self._agent_span.log("soft_limit", notice, level="warn")
         stream.append(Event(type=EventType.FINAL, text=notice))
         return AgentResult(
-            text=notice, events=stream, iterations=self.settings.loop.max_iterations,
-            messages=conv, clarify_total=ct, usage=usage_total, soft_limit_hit=True,
+            text=notice,
+            events=stream,
+            iterations=self.settings.loop.max_iterations,
+            messages=conv,
+            clarify_total=ct,
+            usage=usage_total,
+            soft_limit_hit=True,
         )
 
     async def _decide(
-        self, conv: list[Message], stream: EventStream, *,
-        plan_mode: bool = False, plan_path: str | None = None,
+        self,
+        conv: list[Message],
+        stream: EventStream,
+        *,
+        plan_mode: bool = False,
+        plan_path: str | None = None,
         system_prompt: str | None = None,
     ) -> Decision:
         if system_prompt is not None:
@@ -281,14 +330,22 @@ class AgentLoop:
             if mspan is not None:
                 mspan.log("conv_len", len(conv))
                 mspan.log("plan_mode", plan_mode)
-            async for ev in self.model.stream(full, tools=self._model_tools(plan_mode=plan_mode, plan_path=plan_path)):
+            async for ev in self.model.stream(
+                full, tools=self._model_tools(plan_mode=plan_mode, plan_path=plan_path)
+            ):
                 if ev.type == EventType.TEXT and ev.text:
-                    stream.append(Event(type=EventType.TEXT, text=ev.text, kind=ev.kind or "content"))
+                    stream.append(
+                        Event(type=EventType.TEXT, text=ev.text, kind=ev.kind or "content")
+                    )
                 elif ev.type == EventType.TOOL_CALL_DELTA:
-                    stream.emit(Event(
-                        type=EventType.TOOL_CALL_DELTA, tc_index=ev.tc_index,
-                        tc_name=ev.tc_name, tc_args=ev.tc_args,
-                    ))
+                    stream.emit(
+                        Event(
+                            type=EventType.TOOL_CALL_DELTA,
+                            tc_index=ev.tc_index,
+                            tc_name=ev.tc_name,
+                            tc_args=ev.tc_args,
+                        )
+                    )
                 elif ev.type == "done":
                     decision = ev.decision
                     if mspan is not None and decision is not None and decision.usage:
@@ -309,13 +366,17 @@ class AgentLoop:
         registry_tools = [spec.to_openai() for spec in self.registry.list()]
         skills_enabled = self.settings.skills.enabled and self.skill_loader is not None
         subagents_enabled = self.settings.subagents.enabled and self.subagent_spawner is not None
-        control = collect_control_tools(
-            self.settings.clarify,
-            plan_mode=plan_mode,
-            has_plan=bool(plan_path),
-            skills_enabled=skills_enabled,
-            subagents_enabled=subagents_enabled,
-        ) if self._control_tools_enabled else []
+        control = (
+            collect_control_tools(
+                self.settings.clarify,
+                plan_mode=plan_mode,
+                has_plan=bool(plan_path),
+                skills_enabled=skills_enabled,
+                subagents_enabled=subagents_enabled,
+            )
+            if self._control_tools_enabled
+            else []
+        )
         return registry_tools + control
 
     def _system_prompt(self, *, plan_mode: bool = False, plan_path: str | None = None) -> str:
@@ -351,8 +412,10 @@ class AgentLoop:
         return None
 
     async def _exec_tools(
-        self, calls: list[ToolCall], stream: EventStream,
-        context_mgr: "ContextManager | None" = None,
+        self,
+        calls: list[ToolCall],
+        stream: EventStream,
+        context_mgr: ContextManager | None = None,
     ) -> list[ToolResult]:
         if not calls:
             return []
@@ -377,11 +440,13 @@ class AgentLoop:
                         )
                     except (KeyError, ValueError) as e:
                         return ToolResult(ok=False, error=str(e))
-                    stream.append(Event(
-                        type=EventType.PLAN_PROGRESS,
-                        plan_path=self._run_pp or self.settings.plan.file,
-                        plan_update={"step_id": step_id, "status": status, "note": note},
-                    ))
+                    stream.append(
+                        Event(
+                            type=EventType.PLAN_PROGRESS,
+                            plan_path=self._run_pp or self.settings.plan.file,
+                            plan_update={"step_id": step_id, "status": status, "note": note},
+                        )
+                    )
                     return ToolResult(ok=True, output="progress updated")
 
                 # 控制工具：use_skill（按需加载 skill 正文注入 conv）
@@ -482,7 +547,8 @@ class AgentLoop:
         parent_span = self._agent_span
         try:
             result = await self.subagent_spawner.spawn(
-                spec, task,
+                spec,
+                task,
                 depth=self._current_depth + 1,
                 parent_span=parent_span,
                 base_registry=self.registry,
@@ -497,7 +563,7 @@ class AgentLoop:
         return ToolResult(ok=True, output=summary)
 
     async def _run_bash_in_sandbox(
-        self, args: dict[str, Any], elevated_profile: "SandboxProfile | None"
+        self, args: dict[str, Any], elevated_profile: SandboxProfile | None
     ) -> ToolResult:
         sandbox = self.sandbox
         assert sandbox is not None, "caller must ensure sandbox is set before calling"

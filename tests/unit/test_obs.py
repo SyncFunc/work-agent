@@ -2,8 +2,8 @@
 
 from pathlib import Path
 
-from agent.obs.tracer import LogEntry, Span, Tracer
 from agent.obs.store import TraceStore
+from agent.obs.tracer import Tracer
 
 
 def test_span_log():

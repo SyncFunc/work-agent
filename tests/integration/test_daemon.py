@@ -12,13 +12,13 @@ import pytest
 import websockets
 
 from agent.config.settings import load_settings
-from agent.core.events import Event, EventType, EventStream
+from agent.core.events import Event, EventStream, EventType
 from agent.core.intent import Question
 from agent.core.loop import AgentResult
 from agent.core.model import Decision
 from agent.daemon.bridge import BridgeTransport
 from agent.daemon.protocol import MsgType, make_message, parse_message
-from agent.daemon.registry import SessionRegistry, SessionHandle
+from agent.daemon.registry import SessionRegistry
 from agent.daemon.server import create_ws_server
 
 
@@ -39,7 +39,9 @@ class FakeSession:
         stream = EventStream()
         transport.bind(stream)
         stream.append(Event(type=EventType.TEXT, text="thinking"))
-        stream.emit(Event(type=EventType.TOOL_CALL_DELTA, tc_index=0, tc_name="write", tc_args='{"x":'))
+        stream.emit(
+            Event(type=EventType.TOOL_CALL_DELTA, tc_index=0, tc_name="write", tc_args='{"x":')
+        )
         ans = await transport.ask(Question("choose", options=["a", "b"]))
         stream.append(Event(type=EventType.FINAL, text=f"ans={ans}"))
         return AgentResult(
@@ -69,12 +71,14 @@ async def server():
 
 async def _recv_type(ws, mtype, timeout=3.0):
     """从 ws 读取下一条匹配 mtype 的消息（跳过其它类型）。"""
+
     async def _loop():
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout)
             d = parse_message(raw)
             if d["type"] == mtype.value:
                 return d
+
     return await _loop()
 
 
@@ -100,9 +104,13 @@ async def _drive(ws, *, answer="a"):
         if d["type"] == MsgType.ASK.value:
             await ws.send(make_message(MsgType.ANSWER, {"id": d["id"], "text": answer}, id=d["id"]))
         elif d["type"] == MsgType.CONFIRM_PLAN.value:
-            await ws.send(make_message(MsgType.CONFIRM_PLAN, {"id": d["id"], "confirmed": True}, id=d["id"]))
+            await ws.send(
+                make_message(MsgType.CONFIRM_PLAN, {"id": d["id"], "confirmed": True}, id=d["id"])
+            )
         elif d["type"] == MsgType.APPROVE.value:
-            await ws.send(make_message(MsgType.APPROVE, {"id": d["id"], "approved": True}, id=d["id"]))
+            await ws.send(
+                make_message(MsgType.APPROVE, {"id": d["id"], "approved": True}, id=d["id"])
+            )
         elif d["type"] == MsgType.CLOSE.value:
             break
     return collected
@@ -186,8 +194,10 @@ async def test_task_send_hitl_roundtrip_and_close(server):
         assert MsgType.EVENT.value in types
         # FINAL 事件内容为 ask 应答回填
         final = next(
-            m for m in msgs
-            if m["type"] == MsgType.EVENT.value and m["payload"]["event"]["type"] == EventType.FINAL.value
+            m
+            for m in msgs
+            if m["type"] == MsgType.EVENT.value
+            and m["payload"]["event"]["type"] == EventType.FINAL.value
         )
         assert final["payload"]["event"]["text"] == "ans=a"
 
@@ -238,7 +248,9 @@ async def test_concurrent_task_send_returns_busy(server):
             if d["type"] == MsgType.ERROR.value and d["payload"].get("code") == "busy":
                 saw_busy = True
             elif d["type"] == MsgType.ASK.value:
-                await ws.send(make_message(MsgType.ANSWER, {"id": d["id"], "text": "a"}, id=d["id"]))
+                await ws.send(
+                    make_message(MsgType.ANSWER, {"id": d["id"], "text": "a"}, id=d["id"])
+                )
             elif d["type"] == MsgType.CLOSE.value:
                 got_close = True
         assert saw_busy and got_close

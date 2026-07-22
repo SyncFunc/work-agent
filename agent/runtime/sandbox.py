@@ -18,14 +18,15 @@ import locale
 import logging
 import os
 import re
-import shutil
 import shlex
+import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from pathlib import Path
-from typing import Any, Callable, Protocol, runtime_checkable
+from typing import Any, Protocol, runtime_checkable
 
 _log = logging.getLogger(__name__)
 
@@ -33,12 +34,12 @@ _log = logging.getLogger(__name__)
 # --------------------------------------------------------------------------- #
 # 三档 profile
 # --------------------------------------------------------------------------- #
-class SandboxProfile(str, Enum):
+class SandboxProfile(StrEnum):
     """沙箱档位（执行时强制的隔离强度 / 权限边界）。"""
 
-    READ_ONLY = "read-only"              # 任意读，禁写，断网
+    READ_ONLY = "read-only"  # 任意读，禁写，断网
     WORKSPACE_WRITE = "workspace-write"  # 读任意；仅 cwd 可写；断网
-    DANGER_FULL = "danger-full"          # 完全访问，放行网络
+    DANGER_FULL = "danger-full"  # 完全访问，放行网络
 
 
 # --------------------------------------------------------------------------- #
@@ -59,7 +60,7 @@ class ExecResult:
     output: str
     error: str | None
     returncode: int
-    sandbox: str            # 实际执行器名（trace 用）
+    sandbox: str  # 实际执行器名（trace 用）
 
 
 # --------------------------------------------------------------------------- #
@@ -72,8 +73,7 @@ class Executor(Protocol):
     name: str
     default_profile: SandboxProfile
 
-    async def run(self, req: ExecRequest) -> ExecResult:
-        ...
+    async def run(self, req: ExecRequest) -> ExecResult: ...
 
 
 # --------------------------------------------------------------------------- #
@@ -88,20 +88,65 @@ class FilterVerdict:
 _SPLIT_RE = re.compile(r"\s*(?:;|\|\||&&|\|)\s*")
 
 _NETWORK_BINS = {
-    "curl", "wget", "wget2", "ssh", "scp", "sftp", "rsync", "telnet", "nc",
-    "ncat", "netcat", "ftp", "ping", "ping6", "traceroute", "dig", "nslookup",
+    "curl",
+    "wget",
+    "wget2",
+    "ssh",
+    "scp",
+    "sftp",
+    "rsync",
+    "telnet",
+    "nc",
+    "ncat",
+    "netcat",
+    "ftp",
+    "ping",
+    "ping6",
+    "traceroute",
+    "dig",
+    "nslookup",
 }
 _NETWORK_PKG = {
-    "npm", "yarn", "pnpm", "pip", "pip3", "pipenv", "poetry", "gem", "apk",
-    "apt", "apt-get", "dnf", "yum", "brew", "conda", "composer",
+    "npm",
+    "yarn",
+    "pnpm",
+    "pip",
+    "pip3",
+    "pipenv",
+    "poetry",
+    "gem",
+    "apk",
+    "apt",
+    "apt-get",
+    "dnf",
+    "yum",
+    "brew",
+    "conda",
+    "composer",
 }
 _NETWORK_PKG_SUBCMD = {"install", "update", "upgrade", "add", "search", "fetch", "push"}
-_WRITE_BINS = {"cp", "mv", "install", "mkdir", "touch", "ln", "rm", "rmdir", "dd", "tee", "chmod", "chown"}
+_WRITE_BINS = {
+    "cp",
+    "mv",
+    "install",
+    "mkdir",
+    "touch",
+    "ln",
+    "rm",
+    "rmdir",
+    "dd",
+    "tee",
+    "chmod",
+    "chown",
+}
 _CATASTROPHIC = [
     r":\(\)\s*\{",
     r"\bdd\b[^|]*\bof=/dev/",
     r"\bmkfs",
-    r"\bshutdown\b", r"\breboot\b", r"\bhalt\b", r"\bpoweroff\b",
+    r"\bshutdown\b",
+    r"\breboot\b",
+    r"\bhalt\b",
+    r"\bpoweroff\b",
     r">\s*/dev/sd",
     r"\bchmod\s+-R\s+777\s+/",
 ]
@@ -240,8 +285,13 @@ async def _kill_tree(proc: asyncio.subprocess.Process) -> None:
     if sys.platform == "win32":
         try:
             await asyncio.create_subprocess_exec(
-                "taskkill", "/F", "/T", "/PID", str(proc.pid),
-                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+                "taskkill",
+                "/F",
+                "/T",
+                "/PID",
+                str(proc.pid),
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
             )
         except OSError:
             pass
@@ -258,7 +308,8 @@ async def _run_subprocess(
     full_env.update(env or {})
     try:
         proc = await asyncio.create_subprocess_exec(
-            *argv, cwd=str(cwd),
+            *argv,
+            cwd=str(cwd),
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             env=full_env,
@@ -284,11 +335,16 @@ async def _run_subprocess(
         await _kill_tree(proc)
         try:
             stdout_b, stderr_b = await asyncio.wait_for(comm_task, timeout=2)
-        except (asyncio.TimeoutError, OSError):
+        except (TimeoutError, OSError):
             stdout_b = b""
             stderr_b = b""
-        return ExecResult(ok=False, output="", error=f"command timed out after {timeout}s",
-                          returncode=-1, sandbox=label)
+        return ExecResult(
+            ok=False,
+            output="",
+            error=f"command timed out after {timeout}s",
+            returncode=-1,
+            sandbox=label,
+        )
 
     out = _decode(stdout_b) if stdout_b else ""
     err = _decode(stderr_b) if stderr_b else ""
@@ -333,7 +389,9 @@ class LocalExecutor:
             if sysname == "Linux":
                 if self._unshare_available():
                     return "linux-kernel"
-                _log.warning("unshare 网络命名空间不可用，LocalExecutor 降级为进程级执行（无 OS 网络隔离）")
+                _log.warning(
+                    "unshare 网络命名空间不可用，LocalExecutor 降级为进程级执行（无 OS 网络隔离）"
+                )
                 return "app-layer"
         return "app-layer"
 
@@ -344,7 +402,9 @@ class LocalExecutor:
         try:
             r = subprocess.run(
                 ["unshare", "-n", "true"],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=5,
             )
             return r.returncode == 0
         except (OSError, subprocess.SubprocessError):
@@ -358,16 +418,22 @@ class LocalExecutor:
     async def _do_run(self, req: ExecRequest) -> ExecResult:
         verdict = self._filter.check(req.cmd, req.profile, cwd=req.cwd)
         if verdict.blocked:
-            return ExecResult(ok=False, output="", error=verdict.reason, returncode=-1, sandbox=self.name)
+            return ExecResult(
+                ok=False, output="", error=verdict.reason, returncode=-1, sandbox=self.name
+            )
         prefix, _ = self._shell
         base_argv = [*prefix, req.cmd]
         if self._isolation == "linux-kernel" and req.profile != SandboxProfile.DANGER_FULL:
             argv = ["unshare", "-n", *base_argv]
             try:
-                return await _run_subprocess(argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name)
+                return await _run_subprocess(
+                    argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name
+                )
             except OSError:
                 _log.warning("unshare 执行失败，降级为进程级执行")
-        return await _run_subprocess(base_argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name)
+        return await _run_subprocess(
+            base_argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name
+        )
 
 
 class DockerExecutor:
@@ -392,11 +458,23 @@ class DockerExecutor:
         ro = "ro" if req.profile == SandboxProfile.READ_ONLY else "rw"
         mount = f"{self._workspace}:/work:{ro}"
         argv = [
-            "docker", "run", "--rm", "-w", "/work",
-            "-v", mount, "--network", net,
-            self._image, "/bin/sh", "-c", req.cmd,
+            "docker",
+            "run",
+            "--rm",
+            "-w",
+            "/work",
+            "-v",
+            mount,
+            "--network",
+            net,
+            self._image,
+            "/bin/sh",
+            "-c",
+            req.cmd,
         ]
-        return await _run_subprocess(argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name)
+        return await _run_subprocess(
+            argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name
+        )
 
 
 class ExternalExecutor:
@@ -417,7 +495,9 @@ class ExternalExecutor:
     async def run(self, req: ExecRequest) -> ExecResult:
         prefix, _ = self._shell
         argv = [*prefix, req.cmd]
-        return await _run_subprocess(argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name)
+        return await _run_subprocess(
+            argv, cwd=req.cwd, env=req.env, timeout=req.timeout, label=self.name
+        )
 
 
 class FakeExecutor:
@@ -428,7 +508,7 @@ class FakeExecutor:
     def __init__(
         self,
         *,
-        script: "list[ExecResult] | Callable[[ExecRequest], ExecResult] | None" = None,
+        script: list[ExecResult] | Callable[[ExecRequest], ExecResult] | None = None,
         default_profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE,
     ) -> None:
         self.requests: list[ExecRequest] = []
@@ -475,6 +555,4 @@ def set_executor(executor: Executor | None) -> None:
 def get_executor() -> Executor:
     if _EXECUTOR is not None:
         return _EXECUTOR
-    return build_executor(
-        "local", workspace=Path.cwd(), profile=SandboxProfile.WORKSPACE_WRITE
-    )
+    return build_executor("local", workspace=Path.cwd(), profile=SandboxProfile.WORKSPACE_WRITE)

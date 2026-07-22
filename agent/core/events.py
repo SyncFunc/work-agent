@@ -12,14 +12,14 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import Any
 
 from agent.core.model import Decision, ToolCall
 from agent.runtime.registry import ToolResult
 
 
-class EventType(str, Enum):
+class EventType(StrEnum):
     """``Event.type`` 的强类型枚举（同时即 JSON 取值，因继承自 ``str``）。
 
     实际由 loop 产出的集合：
@@ -96,10 +96,14 @@ class Event:
     text: str | None = None
     kind: str | None = None  # text 事件：区分 "reasoning"（思考）/ "content"（输出）
     error: str | None = None
-    questions: list[dict[str, Any]] | None = None  # clarify 事件：结构化问题清单（list[dict]，JSON 友好）
-    plan_path: str | None = None                   # plan / plan_progress 事件：计划文件句柄
-    plan_update: dict[str, Any] | None = None       # plan_progress 事件：{step_id, status, note}
-    seq: int = -1  # 构造时留空，append 时由 EventStream 自动写入（放最后以满足 dataclass 默认值顺序约束）
+    questions: list[dict[str, Any]] | None = (
+        None  # clarify 事件：结构化问题清单（list[dict]，JSON 友好）
+    )
+    plan_path: str | None = None  # plan / plan_progress 事件：计划文件句柄
+    plan_update: dict[str, Any] | None = None  # plan_progress 事件：{step_id, status, note}
+    seq: int = (
+        -1
+    )  # 构造时留空，append 时由 EventStream 自动写入（放最后以满足 dataclass 默认值顺序约束）
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"seq": self.seq, "type": self.type.value, "ts": self.ts}
@@ -132,7 +136,7 @@ class Event:
         return d
 
     @classmethod
-    def from_dict(cls, d: dict[str, Any]) -> "Event":
+    def from_dict(cls, d: dict[str, Any]) -> Event:
         return cls(
             seq=d["seq"],
             type=EventType(d["type"]),
@@ -214,7 +218,7 @@ class EventStream:
         return json.dumps([e.to_dict() for e in self._events], ensure_ascii=False, indent=2)
 
     @classmethod
-    def from_json(cls, s: str) -> "EventStream":
+    def from_json(cls, s: str) -> EventStream:
         es = cls()
         for d in json.loads(s):
             es._events.append(Event.from_dict(d))

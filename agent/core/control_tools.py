@@ -65,7 +65,10 @@ PRESENT_PLAN_TOOL: dict[str, Any] = {
         "parameters": {
             "type": "object",
             "properties": {
-                "body": {"type": "string", "description": "Markdown 计划正文：目标/方案/风险/文件清单"},
+                "body": {
+                    "type": "string",
+                    "description": "Markdown 计划正文：目标/方案/风险/文件清单",
+                },
                 "steps": {
                     "type": "array",
                     "items": {

@@ -6,8 +6,6 @@ YAML 直接映射到嵌套字段。不支持环境变量 / .env。
 
 from pathlib import Path
 
-import pytest
-
 from agent.config.settings import Settings, load_settings
 
 
@@ -33,8 +31,7 @@ def test_defaults_without_any_config(monkeypatch, tmp_path):
 
 def test_user_yaml_overrides_defaults(monkeypatch, tmp_path):
     user_dir = tmp_path / "user"
-    _write(user_dir / "settings.yaml",
-           "llm:\n  model: user-model\nloop:\n  max_iterations: 10\n")
+    _write(user_dir / "settings.yaml", "llm:\n  model: user-model\nloop:\n  max_iterations: 10\n")
     _isolate(monkeypatch, tmp_path)
     s = Settings()
     assert s.llm.model == "user-model"
@@ -44,8 +41,7 @@ def test_user_yaml_overrides_defaults(monkeypatch, tmp_path):
 def test_project_yaml_overrides_user_yaml(monkeypatch, tmp_path):
     user_dir = tmp_path / "user"
     proj_dir = tmp_path / "proj"
-    _write(user_dir / "settings.yaml",
-           "llm:\n  model: user-model\nloop:\n  max_iterations: 10\n")
+    _write(user_dir / "settings.yaml", "llm:\n  model: user-model\nloop:\n  max_iterations: 10\n")
     _write(proj_dir / ".agent" / "settings.yaml", "llm:\n  model: proj-model\n")
     _isolate(monkeypatch, tmp_path)
     s = Settings()

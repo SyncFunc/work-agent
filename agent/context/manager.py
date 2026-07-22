@@ -15,12 +15,12 @@ from __future__ import annotations
 
 import json
 import time
-from typing import cast
 from dataclasses import dataclass
 from pathlib import Path
+from typing import cast
 
 from agent.context.compactors.auto_compact import AutoCompact
-from agent.context.compactors.microcompact import Microcompact, PLACEHOLDER
+from agent.context.compactors.microcompact import PLACEHOLDER, Microcompact
 from agent.context.compactors.session_memory import SessionMemory
 from agent.context.tokens import _estimate_tokens
 from agent.core.model import Message
@@ -31,21 +31,21 @@ from agent.obs.tracer import Span, Tracer, _span
 class ContextUsage:
     """上下文占用分类明细。"""
 
-    system_fixed: int = 0     # System Prompt 静态段（可缓存）
-    system_dynamic: int = 0   # System Prompt 动态段（日期/Git 状态等）
-    tools: int = 0            # Tools 列表
-    messages: int = 0         # 对话历史（user/assistant/tool_result）
-    total: int = 0            # 总和
-    available: int = 0        # 有效窗口 − total（剩余可用）
-    used_pct: float = 0.0     # total / 有效窗口
+    system_fixed: int = 0  # System Prompt 静态段（可缓存）
+    system_dynamic: int = 0  # System Prompt 动态段（日期/Git 状态等）
+    tools: int = 0  # Tools 列表
+    messages: int = 0  # 对话历史（user/assistant/tool_result）
+    total: int = 0  # 总和
+    available: int = 0  # 有效窗口 − total（剩余可用）
+    used_pct: float = 0.0  # total / 有效窗口
 
 
 @dataclass
 class CompactRecord:
     """一次压缩的记录。"""
 
-    ts: float                  # 时间戳
-    method: str                # "microcompact" / "auto_compact" / "session_memory"
+    ts: float  # 时间戳
+    method: str  # "microcompact" / "auto_compact" / "session_memory"
     before_tokens: int
     after_tokens: int
 
@@ -73,11 +73,11 @@ class ContextManager:
         system_dynamic_tokens: int = 0,
         tools_tokens: int = 15_000,
         microcompact_keep_recent: int = 5,
-        microcompact: "Microcompact | None | _Unset" = _UNSET,
+        microcompact: Microcompact | None | _Unset = _UNSET,
         auto_compact: AutoCompact | None = None,
         session_memory: SessionMemory | None = None,
         tracer: Tracer | None = None,
-        root_span: "Span | None" = None,
+        root_span: Span | None = None,
     ):
         self.conv: list[Message] = []
         self.context_window = context_window
@@ -155,8 +155,9 @@ class ContextManager:
         """
         if not self.conv or self.microcompact is None:
             return self.conv
-        with _span(self.tracer, "compact.microcompact", kind="compact",
-                   parent=self.root_span) as mc_span:
+        with _span(
+            self.tracer, "compact.microcompact", kind="compact", parent=self.root_span
+        ) as mc_span:
             out = await self.microcompact.compact(self.conv, len(self.conv))
             if mc_span is not None:
                 repl = sum(1 for m in out if m.role == "tool" and m.content == PLACEHOLDER)
@@ -192,8 +193,7 @@ class ContextManager:
         ① Microcompact（零成本）→ ② 仍超阈值则 ③a 优先 Session Memory Compact
         （复用摘要，零 API 调用）；无摘要时 ③b 降级 Auto Compact（1 次调用）。
         """
-        with _span(self.tracer, "context.compact", kind="compact",
-                   parent=self.root_span) as cspan:
+        with _span(self.tracer, "context.compact", kind="compact", parent=self.root_span) as cspan:
             if cspan is not None:
                 cspan.log("trigger_pct", round(self.estimate_usage().used_pct, 4))
             # ① Microcompact（零成本）
@@ -207,9 +207,7 @@ class ContextManager:
 
             # ③a Session Memory Compact（零成本首选，复用后台维护的摘要）
             if self.session_memory is not None:
-                sm_result = self.session_memory.compact(
-                    self.conv, self.compact_boundary
-                )
+                sm_result = self.session_memory.compact(self.conv, self.compact_boundary)
                 if sm_result is not None:
                     before_tokens = self.estimate_usage().total
                     self.conv = sm_result
@@ -260,8 +258,7 @@ class ContextManager:
         if read_files:
             note = (
                 "\n\n[Anti-Drift] 以下为最近操作的文件最新内容，"
-                "确保你不会丢失当前工作上下文：\n"
-                + "\n".join(read_files)
+                "确保你不会丢失当前工作上下文：\n" + "\n".join(read_files)
             )
             self.conv.append(Message(role="user", content=note))
             if self.tracer is not None:
@@ -272,8 +269,8 @@ class ContextManager:
     def _estimate_conv_tokens(self) -> int:
         """估算 conv 中 boundary 之后的 token 数。"""
         text = ""
-        for msg in self.conv[self.compact_boundary:]:
-            text += (msg.content or "")
+        for msg in self.conv[self.compact_boundary :]:
+            text += msg.content or ""
             if msg.tool_call_id:
                 text += msg.tool_call_id
             if msg.tool_calls:
@@ -294,9 +291,9 @@ def build_context_manager(
     settings,
     model,
     *,
-    session_memory: "SessionMemory | None" = None,
-    tracer: "Tracer | None" = None,
-) -> "ContextManager":
+    session_memory: SessionMemory | None = None,
+    tracer: Tracer | None = None,
+) -> ContextManager:
     """从 ``Settings`` 构造 ``ContextManager``（M4.5 集成入口）。
 
     依据 ``settings.context`` 的子开关决定各压缩器是否启用：
@@ -307,8 +304,7 @@ def build_context_manager(
     """
     cfg = settings.context
     microcompact = (
-        Microcompact(keep_recent=cfg.microcompact_keep_recent)
-        if cfg.microcompact_enabled else None
+        Microcompact(keep_recent=cfg.microcompact_keep_recent) if cfg.microcompact_enabled else None
     )
     auto_compact = AutoCompact(model, tracer=tracer) if cfg.auto_compact_enabled else None
     return ContextManager(

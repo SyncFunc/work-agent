@@ -17,7 +17,6 @@ from typing import Any
 from agent.runtime.registry import ToolResult, ToolRisk, default_registry, tool
 from agent.runtime.sandbox import ExecRequest, get_executor
 
-
 # 按 ; && || | 切分命令为多段（每段独立判定是否只读）
 _SPLIT_RE = re.compile(r"\s*(?:;|\|\||&&|\|)\s*")
 

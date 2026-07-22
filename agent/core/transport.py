@@ -39,15 +39,15 @@ class AgentTransport(Protocol):
         """当前是否处于可交互环境（可向用户提问/确认）。"""
         ...
 
-    async def ask(self, question: "Question") -> str:
+    async def ask(self, question: Question) -> str:
         """向用户提出一条澄清问题并返回其答案（仅交互环境调用）。"""
         ...
 
-    def show_questions(self, questions: list["Question"]) -> None:
+    def show_questions(self, questions: list[Question]) -> None:
         """非交互环境下，展示无法回填的澄清问题（随后会以 err_code=2 退出）。"""
         ...
 
-    def show_plan(self, res: "AgentResult") -> None:
+    def show_plan(self, res: AgentResult) -> None:
         """展示模型产出的计划（正文 + 步骤 + 计划文件路径）。"""
         ...
 
@@ -55,7 +55,7 @@ class AgentTransport(Protocol):
         """询问用户是否执行当前计划（仅交互环境调用；异步，因在事件循环内被 await）。"""
         ...
 
-    async def approve(self, action: "Action") -> bool:
+    async def approve(self, action: Action) -> bool:
         """审批门 ASK 回调：向用户展示待审批的操作，返回 True 放行 / False 拒绝。
 
         非交互环境的行为由 ``ApprovalGate.noninteractive_default`` 决定（默认放行），
@@ -80,7 +80,7 @@ class AgentTransport(Protocol):
         """展示已注册 Subagent 类型（name / description / tools / model 等精简信息）。"""
         ...
 
-    def bind(self, stream: "EventStream") -> None:
+    def bind(self, stream: EventStream) -> None:
         """订阅 ``EventStream`` 以渲染/转发事件（终端 rich / 未来 web 序列化）。
 
         loop 在 ``run`` 内创建 ``EventStream`` 后调用本方法；传输方自行注册订阅器，

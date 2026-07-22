@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import re
 from dataclasses import dataclass
-from enum import Enum
+from enum import StrEnum
 from typing import TYPE_CHECKING, Any
 
 from agent.runtime.sandbox import SandboxProfile, analyze_command
@@ -68,7 +68,7 @@ def _rule_matches(text: str, rules: list[str]) -> bool:
     return False
 
 
-def _match_text(action: "Action") -> list[str]:
+def _match_text(action: Action) -> list[str]:
     """取出用于规则匹配的文本片段：bash→命令段；路径工具→path；兜底→args 值拼接。"""
     args = action.args
     cmd = args.get("cmd")
@@ -80,29 +80,29 @@ def _match_text(action: "Action") -> list[str]:
     return [str(v) for v in args.values() if v is not None]
 
 
-def _match(action: "Action", rules: list[str]) -> bool:
+def _match(action: Action, rules: list[str]) -> bool:
     if not rules:
         return False
     return any(_rule_matches(text, rules) for text in _match_text(action))
 
 
-class ApprovalMode(str, Enum):
+class ApprovalMode(StrEnum):
     """审批四模式（Codex AskForApproval 同构）。"""
 
-    ON_REQUEST = "on-request"          # 官方推荐。默认放行；模型标 approval_request 才 ASK
+    ON_REQUEST = "on-request"  # 官方推荐。默认放行；模型标 approval_request 才 ASK
     UNLESS_TRUSTED = "unless-trusted"  # exec/edit 每步问，exec_policy 命中者免审；read 自动过
-    ON_FAILURE = "on-failure"          # 先执行，失败才问
-    NEVER = "never"                    # 永远不请求审批；权限不足→直接失败
+    ON_FAILURE = "on-failure"  # 先执行，失败才问
+    NEVER = "never"  # 永远不请求审批；权限不足→直接失败
 
 
 @dataclass
 class Action:
     """一次待裁决的工具调用。由 loop 在执行每个工具前构造。"""
 
-    tool: str                  # bash / read / write / edit ...
-    risk: str                  # read / edit / exec（来自 registry.risk）
-    args: dict[str, Any]       # 命令文本 / 路径，供规则匹配
-    description: str           # 人类可读一行，给 HITL 展示
+    tool: str  # bash / read / write / edit ...
+    risk: str  # read / edit / exec（来自 registry.risk）
+    args: dict[str, Any]  # 命令文本 / 路径，供规则匹配
+    description: str  # 人类可读一行，给 HITL 展示
     approval_request: bool = False  # 模型在单条命令显式请求审批（on-request 模式用）
 
 
@@ -117,7 +117,7 @@ class Decision:
 
     verdict: str
     reason: str
-    elevated_profile: "SandboxProfile | None" = None
+    elevated_profile: SandboxProfile | None = None
 
 
 class ApprovalGate:
@@ -132,24 +132,30 @@ class ApprovalGate:
 
     def __init__(
         self,
-        mode: "ApprovalMode | str",
+        mode: ApprovalMode | str,
         *,
         exec_policy: list[str] | None = None,
         noninteractive_default: str = "allow",
-        sandbox_profile: "str | SandboxProfile" = "workspace-write",
-        elevated_profile: "str | SandboxProfile" = SandboxProfile.DANGER_FULL,
+        sandbox_profile: str | SandboxProfile = "workspace-write",
+        elevated_profile: str | SandboxProfile = SandboxProfile.DANGER_FULL,
     ) -> None:
         self.mode = mode if isinstance(mode, ApprovalMode) else ApprovalMode(mode)
         self.exec_policy = list(exec_policy or [])
         self.noninteractive_default = noninteractive_default
         self.sandbox_profile = (
-            sandbox_profile if isinstance(sandbox_profile, SandboxProfile) else SandboxProfile(sandbox_profile)
+            sandbox_profile
+            if isinstance(sandbox_profile, SandboxProfile)
+            else SandboxProfile(sandbox_profile)
         )
         self.elevated_profile = (
-            elevated_profile if isinstance(elevated_profile, SandboxProfile) else SandboxProfile(elevated_profile)
+            elevated_profile
+            if isinstance(elevated_profile, SandboxProfile)
+            else SandboxProfile(elevated_profile)
         )
 
-    def decide(self, action: Action, sandbox_profile: "str | SandboxProfile | None" = None) -> Decision:
+    def decide(
+        self, action: Action, sandbox_profile: str | SandboxProfile | None = None
+    ) -> Decision:
         """纯函数裁决。``sandbox_profile`` 省略时回退构造期默认值。
 
         决策顺序（精简后 3 步）：
@@ -167,7 +173,8 @@ class ApprovalGate:
         模型从错误学习）。
         """
         sp = (
-            sandbox_profile if isinstance(sandbox_profile, SandboxProfile)
+            sandbox_profile
+            if isinstance(sandbox_profile, SandboxProfile)
             else (SandboxProfile(sandbox_profile) if sandbox_profile else self.sandbox_profile)
         )
 
@@ -176,7 +183,7 @@ class ApprovalGate:
             verdict, reason = "allow", "只读操作，自动放行"
         # 2) unless-trusted 模式 + exec_policy 命中 → 免审
         elif self.mode == ApprovalMode.UNLESS_TRUSTED and _match(action, self.exec_policy):
-            verdict, reason = "allow", f"unless-trusted 模式：exec_policy 命中，自动放行"
+            verdict, reason = "allow", "unless-trusted 模式：exec_policy 命中，自动放行"
         # 3) 按模式
         elif self.mode == ApprovalMode.ON_REQUEST:
             if action.approval_request:
@@ -228,9 +235,7 @@ class ApprovalGate:
             return True, SandboxProfile.WORKSPACE_WRITE
         return False, None
 
-    async def authorize(
-        self, action: Action, transport: "AgentTransport | None" = None
-    ) -> bool:
+    async def authorize(self, action: Action, transport: AgentTransport | None = None) -> bool:
         """返回 True 放行 / False 拒绝。仅在 ASK 分支 await transport.approve。
 
         ``transport`` 由调用方（loop）在运行时传入，gate 不持有它。

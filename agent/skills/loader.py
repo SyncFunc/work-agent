@@ -151,7 +151,7 @@ class SkillLoader:
         lines = [f"- {spec.name}: {spec.trigger_text}" for spec in self._cache.values()]
         return "\n".join(lines)
 
-    def summaries(self) -> list["SkillSummary"]:
+    def summaries(self) -> list[SkillSummary]:
         """M5.4：返回精简列表（name + 描述 + paths + 手动标志），不含正文。
 
         每次调用重新 ``discover()``（实时检测会话中新加的 skill 目录）。
@@ -190,8 +190,6 @@ class SkillLoader:
                 return True
             # 兼容 ** 写法（fnmatch 仅支持 *）
             norm = g.replace("**/", "*").replace("/**", "/*").replace("**", "*")
-            if norm != g and (
-                fnmatch.fnmatch(current_file, norm) or fnmatch.fnmatch(p.name, norm)
-            ):
+            if norm != g and (fnmatch.fnmatch(current_file, norm) or fnmatch.fnmatch(p.name, norm)):
                 return True
         return False

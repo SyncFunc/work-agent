@@ -13,12 +13,15 @@
 
 from __future__ import annotations
 
-from collections.abc import AsyncIterator
-from typing import Any, Callable
+from collections.abc import AsyncIterator, Callable
+from typing import Any
 
-from agent.resilience.circuit_breaker import CircuitBreaker, CircuitBreakerConfig, CircuitBreakerOpenError, CircuitState
-from agent.resilience.fallback import Fallback, FallbackConfig
-from agent.resilience.rate_limiter import RateLimiter, RateLimitConfig, RateLimitError
+from agent.resilience.circuit_breaker import (
+    CircuitBreaker,
+    CircuitBreakerOpenError,
+)
+from agent.resilience.fallback import Fallback
+from agent.resilience.rate_limiter import RateLimiter, RateLimitError
 
 
 class Pipeline:
@@ -51,9 +54,7 @@ class Pipeline:
             if not allowed:
                 if self._fallback is not None:
                     return await self._fallback.call(self._raise_rate_limited)
-                raise RateLimitError(
-                    f"rate limit exceeded for key '{self._rate_limit_key}'"
-                )
+                raise RateLimitError(f"rate limit exceeded for key '{self._rate_limit_key}'")
 
         # 2. CircuitBreaker
         if self._circuit_breaker is not None:
@@ -92,9 +93,7 @@ class Pipeline:
                         # 非迭代器结果（如 mock）直接返回
                         return
                     return
-                raise RateLimitError(
-                    f"rate limit exceeded for key '{self._rate_limit_key}'"
-                )
+                raise RateLimitError(f"rate limit exceeded for key '{self._rate_limit_key}'")
 
         # 2. 在 CircuitBreaker + Fallback 保护下创建流
         stream_iter = await self._create_stream_protected(factory, *args, **kwargs)
@@ -104,9 +103,7 @@ class Pipeline:
             async for item in stream_iter:
                 yield item
 
-    async def _create_stream_protected(
-        self, factory: Callable, *args: Any, **kwargs: Any
-    ) -> Any:
+    async def _create_stream_protected(self, factory: Callable, *args: Any, **kwargs: Any) -> Any:
         """在 CircuitBreaker + Fallback 保护下创建流（返回 AsyncIterator）。
 
         创建失败时可根据 Fallback 策略重试（重新调用 factory）。
@@ -117,7 +114,7 @@ class Pipeline:
 
         async def _try_create() -> tuple[Any, AsyncIterator[Any]]:
             """尝试创建流并预读第一项。
-            
+
             返回 (first_item, stream_iterator)，调用方可先 yield first_item
             再继续消费 stream_iterator。
             """
@@ -196,11 +193,21 @@ def build_llm_pipeline(settings: Any) -> Pipeline | None:
     """从 Settings 构建 LLM 调用的 Pipeline。"""
     from agent.resilience import (
         CircuitBreaker as _CB,
+    )
+    from agent.resilience import (
         CircuitBreakerConfig as _CBCfg,
+    )
+    from agent.resilience import (
         Fallback as _FB,
+    )
+    from agent.resilience import (
         FallbackConfig as _FBCfg,
-        RateLimiter as _RL,
+    )
+    from agent.resilience import (
         RateLimitConfig as _RLCfg,
+    )
+    from agent.resilience import (
+        RateLimiter as _RL,
     )
 
     cfg = settings.resilience
@@ -216,20 +223,25 @@ def build_llm_pipeline(settings: Any) -> Pipeline | None:
 
     cb_cfg = cfg.circuit_breaker
     if cb_cfg.llm_failure_threshold > 0:
-        cb = _CB(_CBCfg(
-            failure_threshold=cb_cfg.llm_failure_threshold,
-            recovery_timeout=cb_cfg.llm_recovery_timeout,
-        ), name="llm")
+        cb = _CB(
+            _CBCfg(
+                failure_threshold=cb_cfg.llm_failure_threshold,
+                recovery_timeout=cb_cfg.llm_recovery_timeout,
+            ),
+            name="llm",
+        )
 
     fb_cfg = cfg.fallback
     if fb_cfg.llm_strategy != "fail_fast":
-        fb = _FB(_FBCfg(
-            strategy=fb_cfg.llm_strategy,
-            max_retries=3,
-            retry_delay=1.0,
-            retry_backoff=2.0,
-            cache_ttl=300.0,
-        ))
+        fb = _FB(
+            _FBCfg(
+                strategy=fb_cfg.llm_strategy,
+                max_retries=3,
+                retry_delay=1.0,
+                retry_backoff=2.0,
+                cache_ttl=300.0,
+            )
+        )
 
     return build_pipeline(
         name="llm",
@@ -244,11 +256,21 @@ def build_sandbox_pipeline(settings: Any) -> Pipeline | None:
     """从 Settings 构建 Sandbox 调用的 Pipeline。"""
     from agent.resilience import (
         CircuitBreaker as _CB,
+    )
+    from agent.resilience import (
         CircuitBreakerConfig as _CBCfg,
+    )
+    from agent.resilience import (
         Fallback as _FB,
+    )
+    from agent.resilience import (
         FallbackConfig as _FBCfg,
-        RateLimiter as _RL,
+    )
+    from agent.resilience import (
         RateLimitConfig as _RLCfg,
+    )
+    from agent.resilience import (
+        RateLimiter as _RL,
     )
 
     cfg = settings.resilience
@@ -260,23 +282,30 @@ def build_sandbox_pipeline(settings: Any) -> Pipeline | None:
 
     rl_cfg = cfg.rate_limit
     if rl_cfg.sandbox_max_calls > 0:
-        rl = _RL(_RLCfg(max_calls=rl_cfg.sandbox_max_calls, window_seconds=rl_cfg.sandbox_window_seconds))
+        rl = _RL(
+            _RLCfg(max_calls=rl_cfg.sandbox_max_calls, window_seconds=rl_cfg.sandbox_window_seconds)
+        )
 
     cb_cfg = cfg.circuit_breaker
     if cb_cfg.sandbox_failure_threshold > 0:
-        cb = _CB(_CBCfg(
-            failure_threshold=cb_cfg.sandbox_failure_threshold,
-            recovery_timeout=cb_cfg.sandbox_recovery_timeout,
-        ), name="sandbox")
+        cb = _CB(
+            _CBCfg(
+                failure_threshold=cb_cfg.sandbox_failure_threshold,
+                recovery_timeout=cb_cfg.sandbox_recovery_timeout,
+            ),
+            name="sandbox",
+        )
 
     fb_cfg = cfg.fallback
     if fb_cfg.sandbox_strategy != "fail_fast":
-        fb = _FB(_FBCfg(
-            strategy=fb_cfg.sandbox_strategy,
-            max_retries=2,
-            retry_delay=0.5,
-            retry_backoff=2.0,
-        ))
+        fb = _FB(
+            _FBCfg(
+                strategy=fb_cfg.sandbox_strategy,
+                max_retries=2,
+                retry_delay=0.5,
+                retry_backoff=2.0,
+            )
+        )
 
     return build_pipeline(
         name="sandbox",

@@ -19,7 +19,7 @@ from agent.core.control_tools import (
 from agent.core.events import Event, EventStream, EventType
 from agent.core.loop import AgentLoop
 from agent.core.model import Decision, FakeModel, ToolCall
-from agent.core.plan import Plan, PlanStore, PlanStep
+from agent.core.plan import Plan, PlanStep, PlanStore
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.tools.fs import read, write
 
@@ -30,7 +30,12 @@ async def _echo(args: dict) -> ToolResult:
 
 def _settings(**kw) -> Settings:
     loop = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3)
-    for k in ("max_iterations", "max_tool_concurrency", "max_repeat_calls", "max_tool_output_chars"):
+    for k in (
+        "max_iterations",
+        "max_tool_concurrency",
+        "max_repeat_calls",
+        "max_tool_output_chars",
+    ):
         if k in kw:
             loop[k] = kw.pop(k)
     plan = {}
@@ -53,14 +58,18 @@ def _make_registry() -> ToolRegistry:
 
 
 def _pp(body: str, steps: list[dict]) -> Decision:
-    return Decision(tool_calls=[
-        ToolCall(id="p1", name=PRESENT_PLAN_TOOL_NAME, arguments={"body": body, "steps": steps})
-    ])
+    return Decision(
+        tool_calls=[
+            ToolCall(id="p1", name=PRESENT_PLAN_TOOL_NAME, arguments={"body": body, "steps": steps})
+        ]
+    )
 
 
 async def test_plan_mode_writes_plan_file(tmp_path):
     settings = _settings(plan_mode=True, plan_file=str(tmp_path / "plan.md"))
-    model = FakeModel([_pp("目标：建骨架", [{"id": "S1", "title": "模块"}, {"id": "S2", "title": "测试"}])])
+    model = FakeModel(
+        [_pp("目标：建骨架", [{"id": "S1", "title": "模块"}, {"id": "S2", "title": "测试"}])]
+    )
     res = await AgentLoop(model, _make_registry(), settings).run("设计任务")
 
     assert res.needs_plan_confirm is True
@@ -75,10 +84,16 @@ async def test_plan_mode_writes_plan_file(tmp_path):
 async def test_plan_mode_write_executes_normally(tmp_path):
     """PLAN 模式下写工具不再被风险门控拦截（由沙箱 read-only profile 负责）。"""
     settings = _settings(plan_mode=True, plan_file=str(tmp_path / "plan.md"))
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="w1", name="write", arguments={"path": "x", "content": "y"})]),
-        _pp("body", [{"id": "S1", "title": "t"}]),
-    ])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(id="w1", name="write", arguments={"path": "x", "content": "y"})
+                ]
+            ),
+            _pp("body", [{"id": "S1", "title": "t"}]),
+        ]
+    )
     res = await AgentLoop(model, _make_registry(), settings).run("写点东西")
 
     assert res.needs_plan_confirm is True  # 第二次决策转为计划，循环未崩
@@ -91,16 +106,32 @@ async def test_exec_mode_update_plan_rewrites(tmp_path):
     plan_file = str(tmp_path / "plan.md")
     # 先落盘计划（plan 模式）
     m1 = FakeModel([_pp("body", [{"id": "S1", "title": "t"}])])
-    await AgentLoop(m1, _make_registry(), _settings(plan_mode=True, plan_file=plan_file)).run("计划")
+    await AgentLoop(m1, _make_registry(), _settings(plan_mode=True, plan_file=plan_file)).run(
+        "计划"
+    )
 
     # 执行期：update_plan(S1, in_progress) → final
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="u1", name=UPDATE_PLAN_TOOL_NAME,
-                                      arguments={"step_id": "S1", "status": "in_progress"})]),
-        Decision(text="done"),
-    ])
-    loop = AgentLoop(model, _make_registry(), _settings(plan_file=plan_file),
-                     plan_mode=False, plan_path=plan_file)
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(
+                        id="u1",
+                        name=UPDATE_PLAN_TOOL_NAME,
+                        arguments={"step_id": "S1", "status": "in_progress"},
+                    )
+                ]
+            ),
+            Decision(text="done"),
+        ]
+    )
+    loop = AgentLoop(
+        model,
+        _make_registry(),
+        _settings(plan_file=plan_file),
+        plan_mode=False,
+        plan_path=plan_file,
+    )
     res = await loop.run("执行")
 
     assert res.text == "done"
@@ -112,10 +143,16 @@ async def test_exec_mode_update_plan_rewrites(tmp_path):
 
 async def test_non_plan_mode_executes_write(tmp_path):
     settings = _settings(plan_mode=False, plan_file=str(tmp_path / "plan.md"))
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="w1", name="write", arguments={"path": "a.txt", "content": "hi"})]),
-        Decision(text="wrote"),
-    ])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(id="w1", name="write", arguments={"path": "a.txt", "content": "hi"})
+                ]
+            ),
+            Decision(text="wrote"),
+        ]
+    )
     res = await AgentLoop(model, _make_registry(), settings).run("写文件")
 
     assert res.text == "wrote"
@@ -136,11 +173,20 @@ async def test_mode_switchable_per_run(tmp_path):
     assert r1.needs_plan_confirm and r1.plan_path
 
     # 轮次 2：切到 EXEC 模式（带已批准计划）→ update_plan 回写进度
-    loop.model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="u", name=UPDATE_PLAN_TOOL_NAME,
-                                      arguments={"step_id": "S1", "status": "in_progress"})]),
-        Decision(text="done"),
-    ])
+    loop.model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(
+                        id="u",
+                        name=UPDATE_PLAN_TOOL_NAME,
+                        arguments={"step_id": "S1", "status": "in_progress"},
+                    )
+                ]
+            ),
+            Decision(text="done"),
+        ]
+    )
     r2 = await loop.run("执行", r1.messages, plan_mode=False, plan_path=r1.plan_path)
     assert r2.text == "done"
     assert any(e.type == "plan_progress" for e in r2.events)
@@ -153,15 +199,19 @@ async def test_mode_switchable_per_run(tmp_path):
 
 
 def test_planstore_roundtrip(tmp_path):
-    plan = Plan(body="正文", steps=[
-        PlanStep(id="S1", title="一"),
-        PlanStep(id="S2", title="二", status="done"),
-    ])
+    plan = Plan(
+        body="正文",
+        steps=[
+            PlanStep(id="S1", title="一"),
+            PlanStep(id="S2", title="二", status="done"),
+        ],
+    )
     PlanStore.write_plan(plan, str(tmp_path / "plan.md"))
     back = PlanStore.read_plan(str(tmp_path / "plan.md"))
     assert back.body == "正文"
     assert [(s.id, s.title, s.status) for s in back.steps] == [
-        ("S1", "一", "pending"), ("S2", "二", "done"),
+        ("S1", "一", "pending"),
+        ("S2", "二", "done"),
     ]
 
 
@@ -177,14 +227,14 @@ def test_is_readonly_command():
     assert is_readonly_command("ls -la", allow)
     assert is_readonly_command("git status", allow)
     assert is_readonly_command("git status --short", allow)
-    assert is_readonly_command("FOO=bar ls -la", allow)        # 环境变量赋值前缀
-    assert is_readonly_command("sudo ls -la", allow)           # sudo 前缀
-    assert is_readonly_command("ls -la | grep x", allow)       # 管道到只读
+    assert is_readonly_command("FOO=bar ls -la", allow)  # 环境变量赋值前缀
+    assert is_readonly_command("sudo ls -la", allow)  # sudo 前缀
+    assert is_readonly_command("ls -la | grep x", allow)  # 管道到只读
     # 拦截（写 / 不在白名单）
     assert not is_readonly_command("rm -rf x", allow)
     assert not is_readonly_command("git push", allow)
     assert not is_readonly_command("echo hi > file.txt", allow)  # 输出重定向写
-    assert not is_readonly_command("ls -la && rm x", allow)      # 链式含写
+    assert not is_readonly_command("ls -la && rm x", allow)  # 链式含写
 
 
 async def test_plan_mode_allows_readonly_bash(tmp_path):
@@ -194,10 +244,12 @@ async def test_plan_mode_allows_readonly_bash(tmp_path):
     reg = _make_registry()
     reg.register(bash_spec)
     settings = _settings(plan_mode=True, plan_file=str(tmp_path / "plan.md"))
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "ls -la"})]),
-        Decision(text="done exploring"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "ls -la"})]),
+            Decision(text="done exploring"),
+        ]
+    )
     res = await AgentLoop(model, reg, settings).run("探索目录")
 
     tr = next(e for e in res.events if e.type == "tool_result")
@@ -216,13 +268,22 @@ async def test_plan_mode_allows_find_command(tmp_path):
     reg = _make_registry()
     reg.register(bash_spec)
     settings = _settings(plan_mode=True, plan_file=str(tmp_path / "plan.md"))
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(
-            id="f1", name="bash",
-            arguments={"cmd": 'find . -name "*.py" -not -path "./.git/*" -type f 2>/dev/null || echo "NOT_FOUND"'},
-        )]),
-        Decision(text="found files"),
-    ])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(
+                        id="f1",
+                        name="bash",
+                        arguments={
+                            "cmd": 'find . -name "*.py" -not -path "./.git/*" -type f 2>/dev/null || echo "NOT_FOUND"'
+                        },
+                    )
+                ]
+            ),
+            Decision(text="found files"),
+        ]
+    )
     res = await AgentLoop(model, reg, settings).run("找 py 文件")
     tr = next(e for e in res.events if e.type == "tool_result")
     assert tr.tool_result is not None and tr.tool_result.ok, tr.tool_result
@@ -236,10 +297,12 @@ async def test_plan_mode_mutating_bash_not_blocked_by_plan_mode(tmp_path):
     reg = _make_registry()
     reg.register(bash_spec)
     settings = _settings(plan_mode=True, plan_file=str(tmp_path / "plan.md"))
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "rm -rf /"})]),
-        _pp("body", [{"id": "S1", "title": "t"}]),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "rm -rf /"})]),
+            _pp("body", [{"id": "S1", "title": "t"}]),
+        ]
+    )
     res = await AgentLoop(model, reg, settings).run("探索")
 
     assert res.needs_plan_confirm is True  # 第二次决策转为计划，循环未崩
@@ -253,8 +316,13 @@ async def test_plan_mode_mutating_bash_not_blocked_by_plan_mode(tmp_path):
 def test_plan_events_roundtrip():
     es = EventStream()
     es.append(Event(type=EventType.PLAN, text="b", plan_path="/tmp/p.md"))
-    es.append(Event(type=EventType.PLAN_PROGRESS, plan_path="/tmp/p.md",
-                    plan_update={"step_id": "S1", "status": "done", "note": "ok"}))
+    es.append(
+        Event(
+            type=EventType.PLAN_PROGRESS,
+            plan_path="/tmp/p.md",
+            plan_update={"step_id": "S1", "status": "done", "note": "ok"},
+        )
+    )
     rebuilt = EventStream.from_json(es.to_json())
 
     types = [e.type for e in rebuilt]
@@ -301,16 +369,25 @@ async def test_exec_turn_gets_update_plan_after_present(tmp_path):
 
     plan_file = str(tmp_path / "plan.md")
     settings = _settings(plan_mode=True, plan_file=plan_file)
-    model = FakeModel([
-        _pp("目标：写计划", [{"id": "S1", "title": "t"}]),   # run1：present_plan
-        Decision(tool_calls=[ToolCall(
-            id="u1", name=UPDATE_PLAN_TOOL_NAME,
-            arguments={"step_id": "S1", "status": "in_progress"})]),
-        Decision(text="完成"),                                 # run2 续跑：update_plan → final
-    ])
+    model = FakeModel(
+        [
+            _pp("目标：写计划", [{"id": "S1", "title": "t"}]),  # run1：present_plan
+            Decision(
+                tool_calls=[
+                    ToolCall(
+                        id="u1",
+                        name=UPDATE_PLAN_TOOL_NAME,
+                        arguments={"step_id": "S1", "status": "in_progress"},
+                    )
+                ]
+            ),
+            Decision(text="完成"),  # run2 续跑：update_plan → final
+        ]
+    )
     session = Session(model, _make_registry(), settings, plan_mode=True)
-    res, err = await session.step("做一个计划", _FakeUI(confirm=True),
-                                  yes=False, fatal_plan_decline=False)
+    res, err = await session.step(
+        "做一个计划", _FakeUI(confirm=True), yes=False, fatal_plan_decline=False
+    )
 
     assert err is None
     assert res.text == "完成"
@@ -334,12 +411,13 @@ async def test_plan_present_records_path_even_if_declined(tmp_path):
     settings = _settings(plan_mode=True, plan_file=plan_file)
     model = FakeModel([_pp("目标：写计划", [{"id": "S1", "title": "t"}])])
     session = Session(model, _make_registry(), settings, plan_mode=True)
-    res, err = await session.step("做一个计划", _FakeUI(confirm=False),
-                                  yes=False, fatal_plan_decline=False)
+    res, err = await session.step(
+        "做一个计划", _FakeUI(confirm=False), yes=False, fatal_plan_decline=False
+    )
 
     assert err is None
-    assert session.plan_path is not None            # 已记录，供后续 /exec 启用 update_plan
-    assert session.plan_mode is True                # 拒绝 → 保持 PLAN 模式
+    assert session.plan_path is not None  # 已记录，供后续 /exec 启用 update_plan
+    assert session.plan_mode is True  # 拒绝 → 保持 PLAN 模式
     assert res.needs_plan_confirm is True
 
 

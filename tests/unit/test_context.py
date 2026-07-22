@@ -9,13 +9,13 @@ import pytest
 
 from agent.config.settings import ContextConfig, Settings
 from agent.context import (
+    PLACEHOLDER,
     AutoCompact,
-    CompactRecord,
     Compactor,
+    CompactRecord,
     ContextManager,
     ContextUsage,
     Microcompact,
-    PLACEHOLDER,
     SessionMemory,
     SessionMemoryConfig,
 )
@@ -347,6 +347,7 @@ async def test_context_manager_apply_microcompact_empty():
 # --------------------------------------------------------------------------- #
 def _fake_model(script: list[Decision]) -> object:
     """返回一个具有 act 方法的假模型。"""
+
     class _Fake:
         def __init__(self, s: list[Decision]):
             self._script = list(s)
@@ -453,7 +454,9 @@ async def test_auto_compact_format_history_includes_tool_calls():
     model = _fake_model([Decision(text="<summary>摘要</summary>")])
     ac = AutoCompact(model)
     conv = [
-        Message(role="assistant", tool_calls=[ToolCall(id="t1", name="bash", arguments={"cmd": "ls"})]),
+        Message(
+            role="assistant", tool_calls=[ToolCall(id="t1", name="bash", arguments={"cmd": "ls"})]
+        ),
         Message(role="tool", content="file1\nfile2", tool_call_id="t1"),
     ]
     out = await ac.compact(conv, len(conv))
@@ -582,10 +585,14 @@ async def test_compact_trace_shortcut_no_auto_span():
 async def test_auto_compact_model_act_span_records_usage():
     """model.act span 应把 Decision.usage 写入 meta（供导出 Langfuse 等）。"""
     tracer = Tracer()
-    model = _fake_model([Decision(
-        text="<summary>摘要</summary>",
-        usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-    )])
+    model = _fake_model(
+        [
+            Decision(
+                text="<summary>摘要</summary>",
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            )
+        ]
+    )
     ac = AutoCompact(model, tracer=tracer)
     # 在 context.compact 隐式父 span 内调用，验证自动继承
     with tracer.span("context.compact", kind="compact"):
@@ -644,6 +651,7 @@ async def test_auto_compact_first_compaction_boundary_zero():
 # --------------------------------------------------------------------------- #
 # M4.4 Session Memory Compact
 
+
 # --------------------------------------------------------------------------- #
 def _sm_config(**kw) -> SessionMemoryConfig:
     return SessionMemoryConfig(**kw)
@@ -674,9 +682,7 @@ def test_session_memory_save_load_roundtrip_and_perms(tmp_path):
 
 
 def test_session_memory_should_update_disabled(tmp_path):
-    sm = SessionMemory(
-        _sm_config(enabled=False, session_memory_dir=str(tmp_path)), session_id="s3"
-    )
+    sm = SessionMemory(_sm_config(enabled=False, session_memory_dir=str(tmp_path)), session_id="s3")
     sm.save("摘要")
     assert sm.should_update(50_000, 10_000, 5, False) is False
 
@@ -755,8 +761,8 @@ async def test_context_manager_compact_prefers_session_memory(tmp_path):
     ac = AutoCompact(_MustNotCall())
     m = ContextManager(auto_compact=ac, session_memory=sm)
     conv = [
-        Message(role="user", content="旧历史占位"),          # boundary 前，被摘要替换
-        Message(role="user", content="大段活跃" * 150_000),   # post-boundary，触发阈值
+        Message(role="user", content="旧历史占位"),  # boundary 前，被摘要替换
+        Message(role="user", content="大段活跃" * 150_000),  # post-boundary，触发阈值
         Message(role="user", content="活跃消息A"),
         Message(role="user", content="活跃消息B"),
     ]
@@ -798,7 +804,7 @@ def test_session_memory_registered_as_builtin_agent():
     assert "session-memory" in specs
     spec = specs["session-memory"]
     assert spec.builtin is True
-    assert spec.tools == []            # 不暴露任何工具
+    assert spec.tools == []  # 不暴露任何工具
     assert spec.no_control_tools is True  # 不注入控制/虚拟工具
     assert spec.share_history is True  # fork 父对话以读历史
 
@@ -806,7 +812,7 @@ def test_session_memory_registered_as_builtin_agent():
 async def test_session_memory_background_update_reuses_subagent(monkeypatch, tmp_path):
     """M4.4 复用 M5.4.1 后台 Subagent：触发后记忆子 agent 在后台跑，结果落盘 summary.md。"""
     monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
-    from agent.core.model import FakeModel, Decision
+    from agent.core.model import Decision, FakeModel
     from agent.core.session import Session
     from agent.runtime.registry import default_registry
     from agent.runtime.terminal_transport import TerminalTransport
@@ -837,4 +843,3 @@ async def test_session_memory_background_update_reuses_subagent(monkeypatch, tmp
     assert sess._sm_updating is False  # on_done 已释放串行化锁
     # 主对话未被污染（记忆结果不应作为 user 消息注入）
     assert all("[Background Subagent" not in (m.content or "") for m in sess.messages)
-

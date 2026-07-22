@@ -31,7 +31,6 @@ from pathlib import Path
 from agent.context.tokens import _estimate_tokens
 from agent.core.model import Message
 
-
 # --------------------------------------------------------------------------- #
 # 固定 10 段 section 模板
 # --------------------------------------------------------------------------- #
@@ -51,18 +50,22 @@ SECTION_MAX_TOKENS = 2_000
 SUMMARY_MAX_TOKENS = 12_000
 
 # 记忆子 agent 的 system prompt（只产出 10 段摘要文本，绝不调用工具）
-MEMORY_SYSTEM_PROMPT = """你是会话记忆维护器（Session Memory Keeper）。你被授权读取本会话的完整
+MEMORY_SYSTEM_PROMPT = (
+    """你是会话记忆维护器（Session Memory Keeper）。你被授权读取本会话的完整
 对话历史，并维护一份**结构化会话摘要**。
 
 要求：
 1. 输出**仅**为一份 10 段固定 section 的 markdown 摘要，不要任何额外解释、前后缀或工具调用。
 2. 严格遵循以下 10 段顺序（每段用 `## 段名` 作标题）：
-""" + "\n".join(f"{i+1}. {s}" for i, s in enumerate(SUMMARY_SECTIONS)) + """
+"""
+    + "\n".join(f"{i + 1}. {s}" for i, s in enumerate(SUMMARY_SECTIONS))
+    + """
 3. 每段控制在 2,000 tokens 以内；整份摘要不超过 12,000 tokens。丢弃冗余细节、保留关键信息
    （文件路径、决策理由、未完成任务、错误修复方法）。
 4. 你会拿到「现有摘要」与「最新对话」。请**增量更新**：保留仍有效的内容，补充新进展，移除已过时信息。
 5. 输出必须是可直接落盘的 markdown；不要使用 ```代码块``` 包裹整份摘要。
 """
+)
 
 
 @dataclass

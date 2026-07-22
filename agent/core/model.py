@@ -83,9 +83,7 @@ class StreamEvent:
 # --------------------------------------------------------------------------- #
 @runtime_checkable
 class Model(Protocol):
-    async def act(
-        self, messages: list[Message], tools: list[dict] | None = None
-    ) -> Decision:
+    async def act(self, messages: list[Message], tools: list[dict] | None = None) -> Decision:
         """一次性返回决策（非流式）。tools 为可选的 OpenAI 兼容 function 工具清单。"""
         ...
 
@@ -183,9 +181,7 @@ class FakeModel:
             return Decision(text="<script exhausted>")
         return self.script.pop(0)
 
-    async def act(
-        self, messages: list[Message], tools: list[dict] | None = None
-    ) -> Decision:
+    async def act(self, messages: list[Message], tools: list[dict] | None = None) -> Decision:
         return await self._next(messages, tools)
 
     async def stream(
@@ -220,9 +216,7 @@ class RecordingModel:
             return r
         return self._decision
 
-    async def act(
-        self, messages: list[Message], tools: list[dict] | None = None
-    ) -> Decision:
+    async def act(self, messages: list[Message], tools: list[dict] | None = None) -> Decision:
         return await self._next(messages, tools)
 
     async def stream(
@@ -263,7 +257,13 @@ class OpenAICompatibleModel:
         self._client: Any = client
 
     @classmethod
-    def from_settings(cls, settings: Settings, client: Any | None = None, tracer: Any | None = None, pipeline: Any | None = None) -> "OpenAICompatibleModel":
+    def from_settings(
+        cls,
+        settings: Settings,
+        client: Any | None = None,
+        tracer: Any | None = None,
+        pipeline: Any | None = None,
+    ) -> OpenAICompatibleModel:
         api_key = (settings.llm.api_key or "").strip()
         if not api_key:
             raise ValueError(
@@ -286,16 +286,12 @@ class OpenAICompatibleModel:
             pipeline=pipeline,
         )
 
-    async def act(
-        self, messages: list[Message], tools: list[dict] | None = None
-    ) -> Decision:
+    async def act(self, messages: list[Message], tools: list[dict] | None = None) -> Decision:
         if self._pipeline is not None:
             return await self._pipeline.execute(self._do_act, messages, tools=tools)
         return await self._do_act(messages, tools=tools)
 
-    async def _do_act(
-        self, messages: list[Message], tools: list[dict] | None = None
-    ) -> Decision:
+    async def _do_act(self, messages: list[Message], tools: list[dict] | None = None) -> Decision:
         kwargs: dict[str, Any] = {
             "model": self.model,
             "messages": [_to_openai(m) for m in messages],
@@ -352,7 +348,9 @@ class OpenAICompatibleModel:
                 continue
             delta = chunk.choices[0].delta
             # 思考过程：DeepSeek 的 reasoning_content，及其它 provider 的 reasoning 字段
-            reasoning = getattr(delta, "reasoning_content", None) or getattr(delta, "reasoning", None)
+            reasoning = getattr(delta, "reasoning_content", None) or getattr(
+                delta, "reasoning", None
+            )
             if reasoning:
                 yield StreamEvent(type="text", text=reasoning, kind="reasoning")
             if delta.content:
@@ -390,6 +388,8 @@ class OpenAICompatibleModel:
         )
 
 
-def create_model(settings: Settings, tracer: Any | None = None, pipeline: Any | None = None) -> Model:
+def create_model(
+    settings: Settings, tracer: Any | None = None, pipeline: Any | None = None
+) -> Model:
     """工厂：按配置构建默认 provider（OpenAI 兼容）。"""
     return OpenAICompatibleModel.from_settings(settings, tracer=tracer, pipeline=pipeline)

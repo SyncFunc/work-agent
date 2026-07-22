@@ -29,8 +29,9 @@ from agent.runtime.sandbox import (
 )
 
 
-def _req(cmd: str, profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE,
-         cwd: Path | None = None) -> ExecRequest:
+def _req(
+    cmd: str, profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE, cwd: Path | None = None
+) -> ExecRequest:
     return ExecRequest(cmd=cmd, cwd=cwd or Path.cwd(), env={}, profile=profile)
 
 
@@ -51,10 +52,12 @@ def test_build_executor_unknown_mode_raises():
 
 def test_executor_protocol_satisfied():
     # 四个执行器都满足 Executor 协议（name + async run）
-    for ex in (LocalExecutor(workspace=Path.cwd()),
-               DockerExecutor(workspace=Path.cwd()),
-               ExternalExecutor(workspace=Path.cwd()),
-               FakeExecutor()):
+    for ex in (
+        LocalExecutor(workspace=Path.cwd()),
+        DockerExecutor(workspace=Path.cwd()),
+        ExternalExecutor(workspace=Path.cwd()),
+        FakeExecutor(),
+    ):
         assert isinstance(ex, Executor)
 
 
@@ -74,8 +77,9 @@ def test_fake_executor_records_request_and_returns_script():
 
 
 def test_fake_executor_callable_script():
-    ex = FakeExecutor(script=lambda r: ExecResult(ok=True, output=r.cmd, error=None,
-                                                   returncode=0, sandbox="fake"))
+    ex = FakeExecutor(
+        script=lambda r: ExecResult(ok=True, output=r.cmd, error=None, returncode=0, sandbox="fake")
+    )
     res = asyncio.run(ex.run(_req("echo hi")))
     assert res.ok and res.output == "echo hi"
 

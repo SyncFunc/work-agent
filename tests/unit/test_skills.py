@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import pytest
-
 from agent.skills.loader import SkillLoader
 from agent.skills.spec import SkillSpec
 
@@ -44,10 +42,18 @@ def test_discover_finds_project_and_user(tmp_path: Path):
 
 
 def test_discover_project_overrides_user(tmp_path: Path):
-    _write_skill(tmp_path / "user" / "skills", "shared",
-                 "---\nname: shared\ndescription: 用户级\n---", body="用户正文")
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "shared",
-                 "---\nname: shared\ndescription: 项目级\n---", body="项目正文")
+    _write_skill(
+        tmp_path / "user" / "skills",
+        "shared",
+        "---\nname: shared\ndescription: 用户级\n---",
+        body="用户正文",
+    )
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "shared",
+        "---\nname: shared\ndescription: 项目级\n---",
+        body="项目正文",
+    )
     loader = _make_loader(tmp_path, with_user=True)
     specs = loader.discover()
     assert len(specs) == 1
@@ -60,8 +66,9 @@ def test_discover_ignores_dir_without_skill_md(tmp_path: Path):
     d = tmp_path / "proj" / ".agent" / "skills" / "broken"
     d.mkdir(parents=True)
     (d / "README.md").write_text("no skill", encoding="utf-8")
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "ok",
-                 "---\nname: ok\ndescription: OK\n---")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills", "ok", "---\nname: ok\ndescription: OK\n---"
+    )
     loader = _make_loader(tmp_path)
     names = {s.name for s in loader.discover()}
     assert names == {"ok"}
@@ -140,7 +147,9 @@ def test_frontmatter_parse_error_degrades(tmp_path: Path):
     # 非法 YAML → 降级为空元数据，skill 仍存在
     d = tmp_path / "proj" / ".agent" / "skills" / "bad"
     d.mkdir(parents=True)
-    (d / "SKILL.md").write_text("---: : :\n\t- x\nname: bad\ndescription: b\n---\nbody\n", encoding="utf-8")
+    (d / "SKILL.md").write_text(
+        "---: : :\n\t- x\nname: bad\ndescription: b\n---\nbody\n", encoding="utf-8"
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("bad")
     assert spec is not None
@@ -151,9 +160,12 @@ def test_frontmatter_parse_error_degrades(tmp_path: Path):
 # 触发目录 / 不变量
 # --------------------------------------------------------------------------- #
 def test_catalog_prompt_only_name_and_trigger(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: 触发A\n---",
-                 body="这是不应出现的长正文内容")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: 触发A\n---",
+        body="这是不应出现的长正文内容",
+    )
     loader = _make_loader(tmp_path)
     catalog = loader.catalog_prompt()
     assert "触发A" in catalog
@@ -163,9 +175,12 @@ def test_catalog_prompt_only_name_and_trigger(tmp_path: Path):
 
 
 def test_invariants_no_body_in_discover(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\n---",
-                 body="正文绝不进 discover 上下文")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body="正文绝不进 discover 上下文",
+    )
     loader = _make_loader(tmp_path)
     _ = loader.discover()
     # discover 之后，skill 的 body 仍未读取（缓存为 None）
@@ -180,8 +195,12 @@ def test_invariants_no_body_in_discover(tmp_path: Path):
 # 正文按需加载
 # --------------------------------------------------------------------------- #
 def test_body_on_demand_and_cached(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\n---", body="HELLO BODY")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body="HELLO BODY",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None
@@ -196,9 +215,12 @@ def test_body_on_demand_and_cached(tmp_path: Path):
 # 参数替换
 # --------------------------------------------------------------------------- #
 def test_render_body_arguments_replacement(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\n---",
-                 body="参数汇总：$ARGUMENTS")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body="参数汇总：$ARGUMENTS",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None
@@ -207,9 +229,12 @@ def test_render_body_arguments_replacement(tmp_path: Path):
 
 
 def test_render_body_index_args(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\n---",
-                 body="第一=$0 第二=$1 越界=$5")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body="第一=$0 第二=$1 越界=$5",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None
@@ -218,9 +243,12 @@ def test_render_body_index_args(tmp_path: Path):
 
 
 def test_render_body_arguments_n_index(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\n---",
-                 body="取=$ARGUMENTS[1]")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body="取=$ARGUMENTS[1]",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None
@@ -229,9 +257,12 @@ def test_render_body_arguments_n_index(tmp_path: Path):
 
 
 def test_render_body_named_args(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\narguments: [file, lang]\n---",
-                 body="文件=$file 语言=$lang")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\narguments: [file, lang]\n---",
+        body="文件=$file 语言=$lang",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None
@@ -240,9 +271,12 @@ def test_render_body_named_args(tmp_path: Path):
 
 
 def test_render_body_skill_dir(tmp_path: Path):
-    d = _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                     "---\nname: a\ndescription: A\n---",
-                     body="DIR=${SKILL_DIR}")
+    d = _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body="DIR=${SKILL_DIR}",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None
@@ -251,9 +285,12 @@ def test_render_body_skill_dir(tmp_path: Path):
 
 
 def test_render_body_escape_dollar(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\n---",
-                 body=r"价格=\$5 占位=$ARGUMENTS")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body=r"价格=\$5 占位=$ARGUMENTS",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None
@@ -262,9 +299,12 @@ def test_render_body_escape_dollar(tmp_path: Path):
 
 
 def test_render_body_append_arguments_when_no_token(tmp_path: Path):
-    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a",
-                 "---\nname: a\ndescription: A\n---",
-                 body="无参数 token 的正文")
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\n---",
+        body="无参数 token 的正文",
+    )
     loader = _make_loader(tmp_path)
     spec = loader.get("a")
     assert spec is not None

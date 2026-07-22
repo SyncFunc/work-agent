@@ -4,8 +4,6 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
-import pytest
-
 from agent.config.settings import load_settings
 from agent.core.session_command import dispatch_command
 from agent.runtime.terminal_transport import TerminalTransport

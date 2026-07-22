@@ -13,7 +13,7 @@ import asyncio
 import pytest
 from typer.testing import CliRunner
 
-from agent.cli import _build_model, app
+from agent.cli import app
 from agent.config.settings import Settings
 from agent.core.control_tools import (
     ASK_CLARIFICATION_TOOL_NAME,
@@ -41,7 +41,9 @@ def runner():
 
 
 def _patch_model(monkeypatch, model: FakeModel):
-    monkeypatch.setattr("agent.cli._build_model", lambda settings, tracer=None, pipeline=None: model)
+    monkeypatch.setattr(
+        "agent.cli._build_model", lambda settings, tracer=None, pipeline=None: model
+    )
 
 
 def test_run_basic_prints_final_and_trace(runner, monkeypatch):
@@ -55,11 +57,20 @@ def test_run_basic_prints_final_and_trace(runner, monkeypatch):
 
 
 def test_run_with_plan_flag(runner, monkeypatch):
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="p", name=PRESENT_PLAN_TOOL_NAME,
-                                      arguments={"body": "B", "steps": [{"id": "S1", "title": "t"}]})]),
-        Decision(text="executed"),
-    ])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(
+                        id="p",
+                        name=PRESENT_PLAN_TOOL_NAME,
+                        arguments={"body": "B", "steps": [{"id": "S1", "title": "t"}]},
+                    )
+                ]
+            ),
+            Decision(text="executed"),
+        ]
+    )
     _patch_model(monkeypatch, model)
     result = runner.invoke(app, ["run", "plan it", "--plan", "--yes"])
 
@@ -69,10 +80,19 @@ def test_run_with_plan_flag(runner, monkeypatch):
 
 
 def test_run_clarification_non_interactive_errors(runner, monkeypatch):
-    model = FakeModel([Decision(tool_calls=[ToolCall(
-        id="cq", name=ASK_CLARIFICATION_TOOL_NAME,
-        arguments={"questions": [{"question": "用哪个框架？"}]},
-    )])])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(
+                        id="cq",
+                        name=ASK_CLARIFICATION_TOOL_NAME,
+                        arguments={"questions": [{"question": "用哪个框架？"}]},
+                    )
+                ]
+            )
+        ]
+    )
     _patch_model(monkeypatch, model)
     result = runner.invoke(app, ["run", "vague"])
 
@@ -136,9 +156,9 @@ def test_parse_multi_selection_by_index_and_label():
     opts = ["加", "减", "乘", "除"]
     assert _parse_multi_selection("1,3", opts) == ["加", "乘"]
     assert _parse_multi_selection("乘, 除", opts) == ["乘", "除"]
-    assert _parse_multi_selection("1, 1, 3", opts) == ["加", "乘"]        # 去重保序
-    assert _parse_multi_selection("0, 99, x", opts) == []                # 越界/无效忽略
-    assert _parse_multi_selection("", opts) == []                        # 直接回车=不选
+    assert _parse_multi_selection("1, 1, 3", opts) == ["加", "乘"]  # 去重保序
+    assert _parse_multi_selection("0, 99, x", opts) == []  # 越界/无效忽略
+    assert _parse_multi_selection("", opts) == []  # 直接回车=不选
     assert _parse_multi_selection("2,减", opts) == ["减"]  # 编号与标签混用，末尾去重
 
 
@@ -162,8 +182,6 @@ def test_extract_write_preview_from_partial_json():
     assert _extract_write_preview("") == ""
 
 
-
-
 def test_on_tool_call_delta_skips_ask_clarification_live():
     """回归：ask_clarification 是控制工具，其流式预览**不应**创建 tool-live。
 
@@ -171,7 +189,7 @@ def test_on_tool_call_delta_skips_ask_clarification_live():
     ask_clarification 创建 Live，该 Live 不被收尾，残留面板会扰乱澄清面板渲染（表现：
     重复 ask_clarification 面板、澄清选项不显示）。write 等真实工具仍应创建预览 Live。
     """
-    from agent.runtime.terminal_transport import TerminalTransport, ASK_CLARIFICATION_TOOL_NAME
+    from agent.runtime.terminal_transport import ASK_CLARIFICATION_TOOL_NAME, TerminalTransport
 
     p = TerminalTransport(interactive=False)
     try:
@@ -186,10 +204,12 @@ def test_on_tool_call_delta_skips_ask_clarification_live():
 def test_trace_parent_child():
     """tool.exec 的 parent 必须是 agent.run（M1.6 验收：trace 体现父子关系）。"""
     tracer = Tracer()
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="t1", name="echo", arguments={"x": 1})]),
-        Decision(text="done"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="t1", name="echo", arguments={"x": 1})]),
+            Decision(text="done"),
+        ]
+    )
     loop = AgentLoop(model, _make_registry(), Settings(loop=dict(max_iterations=10)), tracer=tracer)
     asyncio.run(loop.run("task"))
 
@@ -215,17 +235,26 @@ def test_chat_mode_switch_commands(runner, monkeypatch):
 
 def test_chat_plan_then_approve_then_exec(runner, monkeypatch):
     """chat：先 /plan 产出计划，confirm 批准后切到 EXEC 执行同一任务。"""
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="p", name=PRESENT_PLAN_TOOL_NAME,
-                                      arguments={"body": "计划B", "steps": [{"id": "S1", "title": "t"}]})]),
-        Decision(text="executed"),
-    ])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(
+                        id="p",
+                        name=PRESENT_PLAN_TOOL_NAME,
+                        arguments={"body": "计划B", "steps": [{"id": "S1", "title": "t"}]},
+                    )
+                ]
+            ),
+            Decision(text="executed"),
+        ]
+    )
     _patch_model(monkeypatch, model)
     result = runner.invoke(app, ["chat"], input="/plan\ndesign\ny\nexit\n")
 
     assert result.exit_code == 0
-    assert "计划B" in result.output          # 计划被打印
-    assert "executed" in result.output       # 批准后进入 EXEC 执行
+    assert "计划B" in result.output  # 计划被打印
+    assert "executed" in result.output  # 批准后进入 EXEC 执行
 
 
 # --------------------------------------------------------------------------- #
@@ -255,9 +284,7 @@ def test_chat_skills_lists_and_skill_load(tmp_path, runner, monkeypatch):
     _write_skill_in_project_root(tmp_path, "demo")
     monkeypatch.setenv("AGENT_PROJECT_ROOT", str(tmp_path))
     _patch_model(monkeypatch, FakeModel([]))
-    result = runner.invoke(
-        app, ["chat"], input="/skills\n/skill demo\n/skill nope\nexit\n"
-    )
+    result = runner.invoke(app, ["chat"], input="/skills\n/skill demo\n/skill nope\nexit\n")
 
     assert result.exit_code == 0
     # 列表含 name + description
@@ -326,7 +353,7 @@ def test_background_spawn_injects_summary(monkeypatch):
     import asyncio
 
     from agent.config.settings import Settings
-    from agent.core.model import FakeModel, Decision
+    from agent.core.model import Decision, FakeModel
     from agent.core.session import Session
     from agent.runtime.terminal_transport import TerminalTransport
 
@@ -340,7 +367,9 @@ def test_background_spawn_injects_summary(monkeypatch):
 
     async def _run():
         task_id = sess.spawn_background(
-            "general-purpose", "do research", transport,
+            "general-purpose",
+            "do research",
+            transport,
             parent_span=None,
         )
         assert task_id is not None
@@ -435,7 +464,7 @@ def test_terminal_transport_status_line_colors():
         return cm
 
     # effective_window = 1000 - 200 = 800
-    red = TerminalTransport(interactive=False, context_mgr=_make_cm(750))   # 93.75% → red
+    red = TerminalTransport(interactive=False, context_mgr=_make_cm(750))  # 93.75% → red
     yellow = TerminalTransport(interactive=False, context_mgr=_make_cm(600))  # 75% → yellow
     green = TerminalTransport(interactive=False, context_mgr=_make_cm(400))  # 50% → green
     none = TerminalTransport(interactive=False)

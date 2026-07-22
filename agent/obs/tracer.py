@@ -19,9 +19,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any
-
 
 # 存储当前活跃 span（隐式 parent 传递）
 _CURRENT_SPAN: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
@@ -56,7 +54,7 @@ class Span:
     meta: dict[str, Any] = field(default_factory=dict)
     logs: list[LogEntry] = field(default_factory=list)
 
-    def log(self, key: str, value: Any, level: str = "info") -> "Span":
+    def log(self, key: str, value: Any, level: str = "info") -> Span:
         """在 span 存活期内追加一条结构化日志（含时间戳）。"""
         self.logs.append(LogEntry(ts=time.time(), key=key, value=value, level=level))
         return self
@@ -68,7 +66,7 @@ class Span:
 class _SpanCtx:
     def __init__(
         self,
-        tracer: "Tracer",
+        tracer: Tracer,
         span: Span,
         parent_override: Span | None | None = None,
     ) -> None:
@@ -95,7 +93,7 @@ class _SpanCtx:
             _CURRENT_SPAN.reset(self._token)
             self._token = None
 
-    def set(self, **meta: Any) -> "_SpanCtx":
+    def set(self, **meta: Any) -> _SpanCtx:
         self.span.meta.update(meta)
         return self
 
@@ -105,11 +103,11 @@ class _SpanCtx:
 # --------------------------------------------------------------------------- #
 @contextmanager
 def _span(
-    tracer: "Tracer | None",
+    tracer: Tracer | None,
     name: str,
     *,
     kind: str = "span",
-    parent: "Span | None" = None,
+    parent: Span | None = None,
 ):
     """统一 span 包装：tracer 为 None 时降级为 no-op（yield None）。
 
@@ -151,8 +149,7 @@ class Tracer:
             connector = "└─ " if is_last else "├─ "
             dur_ms = (s.ended_at or time.time()) - s.started_at
             lines.append(
-                f"{prefix}{connector}{s.name} [{s.kind}] "
-                f"{dur_ms * 1000:.1f}ms (id={s.id})"
+                f"{prefix}{connector}{s.name} [{s.kind}] {dur_ms * 1000:.1f}ms (id={s.id})"
             )
             # 日志摘要：最多展示 3 条最近的 warn/error 日志
             recent_logs = [lg for lg in s.logs if lg.level in ("warn", "error")][-3:]
@@ -160,9 +157,7 @@ class Tracer:
                 child_prefix = prefix + ("   " if is_last else "│  ")
                 for lg in recent_logs:
                     color = "yellow" if lg.level == "warn" else "red"
-                    lines.append(
-                        f"{child_prefix}└─ [{color}]{lg.key}[/{color}]: {lg.value}"
-                    )
+                    lines.append(f"{child_prefix}└─ [{color}]{lg.key}[/{color}]: {lg.value}")
             # 模型调用 span：仅展示 total token（完整 usage 已存于 meta，供导出 Langfuse 等）
             if "usage" in s.meta:
                 child_prefix = prefix + ("   " if is_last else "│  ")

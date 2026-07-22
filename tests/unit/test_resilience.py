@@ -12,8 +12,8 @@ from agent.resilience import (
     Fallback,
     FallbackConfig,
     Pipeline,
-    RateLimiter,
     RateLimitConfig,
+    RateLimiter,
     RateLimitError,
 )
 
@@ -43,7 +43,7 @@ class TestRateLimiter:
         assert asyncio.run(limiter.acquire("a")) is True
         assert asyncio.run(limiter.acquire("a")) is True
         assert asyncio.run(limiter.acquire("a")) is False  # a 被限
-        assert asyncio.run(limiter.acquire("b")) is True   # b 不受影响
+        assert asyncio.run(limiter.acquire("b")) is True  # b 不受影响
 
     def test_reset(self):
         """reset 清空所有 key 的状态。"""
@@ -86,7 +86,9 @@ class TestCircuitBreaker:
 
     def test_closed_to_open(self):
         """连续失败达阈值 → OPEN。"""
-        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=3, recovery_timeout=60), name="t")
+        cb = CircuitBreaker(
+            CircuitBreakerConfig(failure_threshold=3, recovery_timeout=60), name="t"
+        )
         for _ in range(3):
             with pytest.raises(ValueError):
                 asyncio.run(cb.call(self._fail))
@@ -95,7 +97,9 @@ class TestCircuitBreaker:
 
     def test_open_raises(self):
         """OPEN 时调用抛 CircuitBreakerOpenError（而不是 ValueError）。"""
-        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=1, recovery_timeout=60), name="t")
+        cb = CircuitBreaker(
+            CircuitBreakerConfig(failure_threshold=1, recovery_timeout=60), name="t"
+        )
         with pytest.raises(ValueError):
             asyncio.run(cb.call(self._fail))
         with pytest.raises(CircuitBreakerOpenError):
@@ -103,7 +107,9 @@ class TestCircuitBreaker:
 
     def test_half_open_success_to_closed(self):
         """HALF_OPEN 探测成功 → 回到 CLOSED。"""
-        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=1, recovery_timeout=0.05), name="t")
+        cb = CircuitBreaker(
+            CircuitBreakerConfig(failure_threshold=1, recovery_timeout=0.05), name="t"
+        )
         with pytest.raises(ValueError):
             asyncio.run(cb.call(self._fail))
         assert cb.state().value == "open"
@@ -114,7 +120,9 @@ class TestCircuitBreaker:
 
     def test_half_open_failure_to_open(self):
         """HALF_OPEN 探测失败 → 回到 OPEN。"""
-        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=2, recovery_timeout=0.05), name="t")
+        cb = CircuitBreaker(
+            CircuitBreakerConfig(failure_threshold=2, recovery_timeout=0.05), name="t"
+        )
         with pytest.raises(ValueError):
             asyncio.run(cb.call(self._fail))
         with pytest.raises(ValueError):
@@ -437,7 +445,7 @@ class TestPipelineIntegration:
 
     def test_model_act_with_pipeline(self):
         """FakeModel + Pipeline(retry) 在瞬时失败后重试成功。"""
-        from agent.core.model import FakeModel, Decision, OpenAICompatibleModel
+        from agent.core.model import Decision, FakeModel
 
         call_count = 0
 
@@ -464,7 +472,7 @@ class TestPipelineIntegration:
 
     def test_model_act_pipeline_all_fail(self):
         """Pipeline + retry 全部耗尽后抛出原始异常。"""
-        from agent.core.model import FakeModel, Decision
+        from agent.core.model import FakeModel
 
         call_count = 0
 
@@ -487,7 +495,7 @@ class TestPipelineIntegration:
 
     def test_model_act_rate_limited_then_fallback_mock(self):
         """限流后走 mock fallback。"""
-        from agent.core.model import FakeModel, Decision
+        from agent.core.model import Decision, FakeModel
 
         limiter = RateLimiter(RateLimitConfig(max_calls=0, window_seconds=10))
         fb = Fallback(FallbackConfig(strategy="mock", mock_result="mocked"))
@@ -498,9 +506,11 @@ class TestPipelineIntegration:
 
     def test_model_act_circuit_open_then_fallback_mock(self):
         """熔断后走 mock fallback。"""
-        from agent.core.model import FakeModel, Decision
+        from agent.core.model import Decision, FakeModel
 
-        cb = CircuitBreaker(CircuitBreakerConfig(failure_threshold=1, recovery_timeout=60), name="cb")
+        cb = CircuitBreaker(
+            CircuitBreakerConfig(failure_threshold=1, recovery_timeout=60), name="cb"
+        )
         with pytest.raises(ValueError):
             asyncio.run(cb.call(self._fail))
         fb = Fallback(FallbackConfig(strategy="mock", mock_result="mocked"))
@@ -520,7 +530,13 @@ class TestPipelineIntegration:
         p = Pipeline(fallback=fb, name="test-sandbox")
         with tempfile.TemporaryDirectory() as tmp:
             ex = LocalExecutor(workspace=Path(tmp), profile=SandboxProfile.DANGER_FULL, pipeline=p)
-            req = ExecRequest(cmd="echo hello", cwd=Path(tmp), env={}, timeout=5, profile=SandboxProfile.DANGER_FULL)
+            req = ExecRequest(
+                cmd="echo hello",
+                cwd=Path(tmp),
+                env={},
+                timeout=5,
+                profile=SandboxProfile.DANGER_FULL,
+            )
             result = asyncio.run(ex.run(req))
             assert result.ok is True
 
@@ -533,7 +549,13 @@ class TestPipelineIntegration:
 
         with tempfile.TemporaryDirectory() as tmp:
             ex = LocalExecutor(workspace=Path(tmp), profile=SandboxProfile.DANGER_FULL)
-            req = ExecRequest(cmd="echo hello", cwd=Path(tmp), env={}, timeout=5, profile=SandboxProfile.DANGER_FULL)
+            req = ExecRequest(
+                cmd="echo hello",
+                cwd=Path(tmp),
+                env={},
+                timeout=5,
+                profile=SandboxProfile.DANGER_FULL,
+            )
             result = asyncio.run(ex.run(req))
             assert result.ok is True
 

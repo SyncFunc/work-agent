@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import pytest
 
-from agent.runtime.approval import Action, ApprovalGate, ApprovalMode, Decision
+from agent.runtime.approval import Action, ApprovalGate, ApprovalMode
 from agent.runtime.sandbox import SandboxProfile
 
 

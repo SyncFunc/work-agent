@@ -10,25 +10,24 @@ from __future__ import annotations
 import asyncio
 import time
 import uuid
-from typing import Any, Protocol, TYPE_CHECKING, runtime_checkable
+from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from agent.context import SessionMemory, SessionMemoryConfig
+from agent.context.session_recovery import rebuild_messages
+from agent.context.session_store import SessionStore, SessionStoreSink
+from agent.context.tokens import _estimate_tokens
+from agent.core.events import EventStream
 from agent.core.loop import AgentLoop
 from agent.core.model import Message
 from agent.core.transport import AgentTransport
-from agent.context import SessionMemory, SessionMemoryConfig
-from agent.context.session_recovery import rebuild_messages
-from agent.core.events import EventStream
-from agent.context.tokens import _estimate_tokens
 from agent.obs.store import TraceStore
 from agent.obs.tracer import Span
-from agent.context.session_store import SessionStore, SessionStoreSink
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
 
     from agent.config.settings import Settings
     from agent.context import ContextManager
-    from agent.core.intent import Question
     from agent.core.loop import AgentResult
     from agent.skills.loader import SkillLoader
 
@@ -43,31 +42,44 @@ class SessionLike(Protocol):
 
     plan_mode: bool
     plan_path: str | None
-    context_mgr: "ContextManager | None"
-    messages: list["Message"]
-    skill_loader: "SkillLoader | None"
+    context_mgr: ContextManager | None
+    messages: list[Message]
+    skill_loader: SkillLoader | None
     loop: Any
-    settings: "Settings"
+    settings: Settings
 
     def step(
         self,
         task: str,
-        transport: "AgentTransport",
+        transport: AgentTransport,
         *,
         yes: bool = False,
         fatal_plan_decline: bool = False,
-    ) -> "Awaitable[tuple[AgentResult, int | None]]": ...
+    ) -> Awaitable[tuple[AgentResult, int | None]]: ...
 
     def list_skills(self) -> list: ...
     def list_agents(self) -> list: ...
     def list_background_tasks(self) -> list[dict]: ...
     def spawn_background(
-        self, agent_name: str, task: str, transport: "AgentTransport", *, parent_span: Any = None
+        self, agent_name: str, task: str, transport: AgentTransport, *, parent_span: Any = None
     ) -> str | None: ...
 
 
 class Session:
-    def __init__(self, model, reg, settings, tracer=None, *, plan_mode: bool = False, plan_path=None, trace_store=None, context_mgr=None, session_id: str | None = None, session_store: "SessionStore | None" = None):
+    def __init__(
+        self,
+        model,
+        reg,
+        settings,
+        tracer=None,
+        *,
+        plan_mode: bool = False,
+        plan_path=None,
+        trace_store=None,
+        context_mgr=None,
+        session_id: str | None = None,
+        session_store: SessionStore | None = None,
+    ):
         from pathlib import Path
 
         from agent.resilience.pipeline import build_sandbox_pipeline
@@ -79,7 +91,7 @@ class Session:
         self.trace_store: TraceStore | None = trace_store
         # M6.2 会话恢复：冷启动从 sqlite 重建时，把完整（未压缩）EventStream 挂到这里，
         # 供 daemon 冷启动把最近 K 条事件播种进 event_buffer（仅当本会话是被恢复而非新建时非空）。
-        self.event_stream: "EventStream | None" = None
+        self.event_stream: EventStream | None = None
         # 会话级根 span：整条 session 的 trace 树锚点（所有 run 都挂在其下）。
         # tracer 为 None 时不创建（无观测路径）；否则直接 new Span 并挂到 tracer，
         # 生命周期跨多轮，不用 _span 上下文管理器（避免 per-step 关闭）。
@@ -124,8 +136,14 @@ class Session:
                 settings, tracer=tracer, max_depth=settings.subagents.max_depth
             )
         self.loop = AgentLoop(
-            model, reg, settings, tracer=tracer, sandbox=sandbox, gate=gate,
-            skill_loader=skill_loader, subagent_spawner=subagent_spawner,
+            model,
+            reg,
+            settings,
+            tracer=tracer,
+            sandbox=sandbox,
+            gate=gate,
+            skill_loader=skill_loader,
+            subagent_spawner=subagent_spawner,
         )
         # M5.4：持有 loader/spawner 供 CLI 命令（/skills /agents /skill）直接查询
         self.skill_loader = skill_loader
@@ -143,9 +161,7 @@ class Session:
         self.session_id = session_id or uuid.uuid4().hex
         self.session_store = session_store
         if self.session_store is not None:
-            self.session_store.create(
-                self.session_id, plan_mode=plan_mode, plan_path=plan_path
-            )
+            self.session_store.create(self.session_id, plan_mode=plan_mode, plan_path=plan_path)
         self.session_memory: SessionMemory | None = None
         if settings.context.session_memory_enabled and settings.context.auto_compact_enabled:
             self.session_memory = SessionMemory(
@@ -171,6 +187,7 @@ class Session:
             cfg.microcompact_enabled or cfg.auto_compact_enabled or cfg.session_memory_enabled
         ):
             from agent.context import build_context_manager
+
             self.context_mgr = build_context_manager(
                 settings, model, session_memory=self.session_memory, tracer=tracer
             )
@@ -193,7 +210,7 @@ class Session:
         *,
         trace_store=None,
         context_mgr=None,
-    ) -> "Session":
+    ) -> Session:
         """从 ``SessionStore`` 恢复一个已有会话（sqlite 中存在该 ``session_id``）。
 
         流程：``load`` 完整（未压缩）EventStream → ``rebuild_messages`` 重放为
@@ -232,7 +249,7 @@ class Session:
         *,
         yes: bool = False,
         fatal_plan_decline: bool = False,
-    ) -> tuple["AgentResult", int | None]:
+    ) -> tuple[AgentResult, int | None]:
         current_task = task
         while True:
             # M4.5：每轮 step 前把当前消息投影交给 ContextManager（压缩作用对象）。
@@ -281,7 +298,7 @@ class Session:
                     return res, 2
                 answers = [await transport.ask(q) for q in questions]
                 current_task = "; ".join(
-                    f"{q.question}: {a}" for q, a in zip(questions, answers)
+                    f"{q.question}: {a}" for q, a in zip(questions, answers, strict=True)
                 )
                 continue
 
@@ -297,14 +314,16 @@ class Session:
                     transport.notify("计划未确认，保持 PLAN 模式。用 /exec 或 /approve 继续。")
                     return res, None
                 self.plan_mode = False
-                self.messages.append(Message(
-                    role="user",
-                    content=(
-                        "[System] 上方的计划已经由用户确认通过，现在进入执行（EXEC）模式。"
-                        "请直接按计划执行，用 update_plan 跟踪每步进度（in_progress→done）。"
-                        "不要再次调用 present_plan，也不要去检查任何计划状态文件（如 .plan_status）。"
-                    ),
-                ))
+                self.messages.append(
+                    Message(
+                        role="user",
+                        content=(
+                            "[System] 上方的计划已经由用户确认通过，现在进入执行（EXEC）模式。"
+                            "请直接按计划执行，用 update_plan 跟踪每步进度（in_progress→done）。"
+                            "不要再次调用 present_plan，也不要去检查任何计划状态文件（如 .plan_status）。"
+                        ),
+                    )
+                )
                 current_task = task
                 continue
 
@@ -356,7 +375,8 @@ class Session:
         async def _run() -> None:
             try:
                 result = await spawner.spawn(
-                    spec, task,
+                    spec,
+                    task,
                     depth=0,
                     parent_span=parent_span or self.root_span,
                     base_registry=self.loop.registry,
@@ -368,19 +388,13 @@ class Session:
                 )
                 if result_sink is not None:
                     result_sink(agent_name, task, result.text)
-                    transport.notify(
-                        f"✅ 后台 Subagent [{agent_name}] 已完成，结果已处理。"
-                    )
+                    transport.notify(f"✅ 后台 Subagent [{agent_name}] 已完成，结果已处理。")
                 else:
                     summary = f"[Background Subagent {agent_name} — {task}]\n{result.text}"
                     self.messages.append(Message(role="user", content=summary))
-                    transport.notify(
-                        f"✅ 后台 Subagent [{agent_name}] 已完成！摘要已注入会话。"
-                    )
+                    transport.notify(f"✅ 后台 Subagent [{agent_name}] 已完成！摘要已注入会话。")
             except Exception as e:
-                transport.notify(
-                    f"❌ 后台 Subagent [{agent_name}] 出错: {type(e).__name__}: {e}"
-                )
+                transport.notify(f"❌ 后台 Subagent [{agent_name}] 出错: {type(e).__name__}: {e}")
             finally:
                 self._bg_tasks.pop(task_id, None)
                 if on_done is not None:
@@ -434,7 +448,7 @@ class Session:
         """估算消息列表总 token 数。"""
         text = ""
         for m in msgs:
-            text += (m.content or "")
+            text += m.content or ""
             if m.tool_calls:
                 for tc in m.tool_calls:
                     text += tc.name + str(tc.arguments)
@@ -451,10 +465,8 @@ class Session:
             return
         conv_tokens = self._estimate_conv_tokens(self.messages)
         tokens_since = conv_tokens - self._sm_last_tokens
-        new_msgs = self.messages[self._sm_prev_len:]
-        tool_calls = sum(
-            1 for m in new_msgs if m.role == "assistant" and m.tool_calls
-        )
+        new_msgs = self.messages[self._sm_prev_len :]
+        tool_calls = sum(1 for m in new_msgs if m.role == "assistant" and m.tool_calls)
         last_round_has_tool = any(
             m.role == "assistant" and m.tool_calls for m in reversed(new_msgs)
         )
@@ -472,12 +484,12 @@ class Session:
 
         def _sink(agent_name: str, task: str, text: str) -> None:
             if text and self.session_memory is not None:
-                self.session_memory.save(
-                    text, stats={"source": "background_subagent"}
-                )
+                self.session_memory.save(text, stats={"source": "background_subagent"})
 
         return self.spawn_background(
-            "session-memory", task, transport,
+            "session-memory",
+            task,
+            transport,
             parent_span=self.root_span,
             result_sink=_sink,
             on_done=lambda _: setattr(self, "_sm_updating", False),

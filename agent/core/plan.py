@@ -19,7 +19,6 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 
-
 # 步骤状态（字符串字面量集合）
 PlanStatus = ("pending", "in_progress", "done", "blocked", "skipped")
 
@@ -35,17 +34,17 @@ _STATUS_TO_MARK = {
 
 @dataclass
 class PlanStep:
-    id: str                     # 稳定标识，如 "S1"；update_plan 据此定位
+    id: str  # 稳定标识，如 "S1"；update_plan 据此定位
     title: str
-    status: str = "pending"     # ∈ PlanStatus
+    status: str = "pending"  # ∈ PlanStatus
     detail: str | None = None
 
 
 @dataclass
 class Plan:
-    body: str                   # Markdown 正文：目标/方案/风险/文件清单
+    body: str  # Markdown 正文：目标/方案/风险/文件清单
     steps: list[PlanStep] = field(default_factory=list)
-    path: str | None = None     # 落盘路径（写后回填）
+    path: str | None = None  # 落盘路径（写后回填）
 
 
 class PlanStore:
@@ -86,9 +85,7 @@ class PlanStore:
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(PlanStore._render_body(plan), encoding="utf-8")
         # 步骤权威存 JSON（与 md 同目录、同名换后缀）
-        PlanStore._steps_path(path).write_text(
-            PlanStore._render_steps_json(plan), encoding="utf-8"
-        )
+        PlanStore._steps_path(path).write_text(PlanStore._render_steps_json(plan), encoding="utf-8")
         plan.path = str(p)
         return str(p)
 
@@ -168,9 +165,7 @@ class PlanStore:
 
     # ---- 单步更新 ----------------------------------------------------------- #
     @staticmethod
-    def update_step(
-        path: str, step_id: str, status: str, note: str | None = None
-    ) -> Plan:
+    def update_step(path: str, step_id: str, status: str, note: str | None = None) -> Plan:
         """把指定步骤状态更新为 ``status``（note 可选，附到标题后），重写 JSON 后返回最新 Plan。"""
         if status not in PlanStatus:
             raise ValueError(f"invalid plan status: {status!r}; expected one of {PlanStatus}")

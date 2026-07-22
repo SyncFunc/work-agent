@@ -12,7 +12,7 @@
 from types import SimpleNamespace
 
 from agent.config.settings import Settings
-from agent.core.intent import ASK_CLARIFICATION_TOOL_NAME, Question, extract_clarify
+from agent.core.intent import ASK_CLARIFICATION_TOOL_NAME, extract_clarify
 from agent.core.loop import AgentLoop
 from agent.core.model import (
     Decision,
@@ -39,7 +39,12 @@ def _make_registry() -> ToolRegistry:
 
 def _settings(**kw) -> Settings:
     loop = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3)
-    for k in ("max_iterations", "max_tool_concurrency", "max_repeat_calls", "max_tool_output_chars"):
+    for k in (
+        "max_iterations",
+        "max_tool_concurrency",
+        "max_repeat_calls",
+        "max_tool_output_chars",
+    ):
         if k in kw:
             loop[k] = kw.pop(k)
     clarify = dict(enabled=True, max_rounds=2)
@@ -51,9 +56,11 @@ def _settings(**kw) -> Settings:
 
 
 def _ask_clarify(q: dict) -> Decision:
-    return Decision(tool_calls=[
-        ToolCall(id="cq", name=ASK_CLARIFICATION_TOOL_NAME, arguments={"questions": [q]})
-    ])
+    return Decision(
+        tool_calls=[
+            ToolCall(id="cq", name=ASK_CLARIFICATION_TOOL_NAME, arguments={"questions": [q]})
+        ]
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -61,9 +68,13 @@ def _ask_clarify(q: dict) -> Decision:
 # --------------------------------------------------------------------------- #
 async def test_clarify_early_returns_without_executing_tools():
     registry = _make_registry()
-    model = FakeModel([
-        _ask_clarify({"question": "用哪个框架？", "options": ["FastAPI", "Flask"], "multiSelect": False}),
-    ])
+    model = FakeModel(
+        [
+            _ask_clarify(
+                {"question": "用哪个框架？", "options": ["FastAPI", "Flask"], "multiSelect": False}
+            ),
+        ]
+    )
     loop = AgentLoop(model, registry, _settings())
 
     result = await loop.run("帮我搭个 Web 服务")
@@ -148,11 +159,18 @@ async def test_rerun_with_answer_proceeds_normally():
 
 async def test_anti_stuck_after_max_clarify_rounds():
     settings = _settings(clarify_enabled=True, max_clarify_rounds=2)
-    loop = AgentLoop(FakeModel([_ask_clarify({"question": "Q?"}),
-                                _ask_clarify({"question": "Q?"}),
-                                _ask_clarify({"question": "Q?"}),
-                                Decision(text="forced final")]),
-                     _make_registry(), settings)
+    loop = AgentLoop(
+        FakeModel(
+            [
+                _ask_clarify({"question": "Q?"}),
+                _ask_clarify({"question": "Q?"}),
+                _ask_clarify({"question": "Q?"}),
+                Decision(text="forced final"),
+            ]
+        ),
+        _make_registry(),
+        settings,
+    )
 
     # 跨 run 续接由会话层负责：传入旧 messages 与累计的 clarify_total，并用回传值更新。
     msgs: list = []
@@ -163,8 +181,8 @@ async def test_anti_stuck_after_max_clarify_rounds():
     msgs, ct = r2.messages, r2.clarify_total
     r3 = await loop.run("vague task", msgs, clarify_total=ct)
 
-    assert r1.needs_clarification is True   # 第 1 轮：提前返回
-    assert r2.needs_clarification is True   # 第 2 轮：仍在限额内
+    assert r1.needs_clarification is True  # 第 1 轮：提前返回
+    assert r2.needs_clarification is True  # 第 2 轮：仍在限额内
     # 第 3 轮累计超过 max -> 不再提前返回，落入执行（ask 作为未知工具降级）→ 最终 final
     assert r3.needs_clarification is False
     assert r3.text == "forced final"
@@ -172,10 +190,12 @@ async def test_anti_stuck_after_max_clarify_rounds():
 
 async def test_clarify_disabled_does_not_early_return():
     registry = _make_registry()
-    model = FakeModel([
-        _ask_clarify({"question": "Q?"}),
-        Decision(text="recovered"),
-    ])
+    model = FakeModel(
+        [
+            _ask_clarify({"question": "Q?"}),
+            Decision(text="recovered"),
+        ]
+    )
     loop = AgentLoop(model, registry, _settings(clarify_enabled=False))
 
     result = await loop.run("do something vague")
@@ -189,8 +209,9 @@ async def test_clarify_disabled_does_not_early_return():
 
 async def test_clarify_event_roundtrips_json():
     registry = _make_registry()
-    model = FakeModel([_ask_clarify({"question": "确认范围？",
-                                     "options": ["A", "B"], "multiSelect": True})])
+    model = FakeModel(
+        [_ask_clarify({"question": "确认范围？", "options": ["A", "B"], "multiSelect": True})]
+    )
     loop = AgentLoop(model, registry, _settings())
 
     result = await loop.run("任务模糊")
@@ -205,14 +226,20 @@ async def test_clarify_event_roundtrips_json():
 
 
 def test_extract_clarify_parses_options_and_multiselect():
-    decision = Decision(tool_calls=[
-        ToolCall(id="c1", name=ASK_CLARIFICATION_TOOL_NAME, arguments={
-            "questions": [
-                {"question": "Q1", "options": ["x", "y"], "multiSelect": True},
-                {"question": "Q2"},
-            ]
-        })
-    ])
+    decision = Decision(
+        tool_calls=[
+            ToolCall(
+                id="c1",
+                name=ASK_CLARIFICATION_TOOL_NAME,
+                arguments={
+                    "questions": [
+                        {"question": "Q1", "options": ["x", "y"], "multiSelect": True},
+                        {"question": "Q2"},
+                    ]
+                },
+            )
+        ]
+    )
     qs = extract_clarify(decision)
     assert qs is not None
     assert len(qs) == 2
@@ -222,11 +249,16 @@ def test_extract_clarify_parses_options_and_multiselect():
 
 def test_extract_clarify_priority_over_other_tools():
     # 同轮混有澄清与其它工具调用：澄清优先，忽略其它调用
-    decision = Decision(tool_calls=[
-        ToolCall(id="c1", name="echo", arguments={}),
-        ToolCall(id="c2", name=ASK_CLARIFICATION_TOOL_NAME,
-                 arguments={"questions": [{"question": "先问？"}]}),
-    ])
+    decision = Decision(
+        tool_calls=[
+            ToolCall(id="c1", name="echo", arguments={}),
+            ToolCall(
+                id="c2",
+                name=ASK_CLARIFICATION_TOOL_NAME,
+                arguments={"questions": [{"question": "先问？"}]},
+            ),
+        ]
+    )
     qs = extract_clarify(decision)
     assert qs is not None and qs[0].question == "先问？"
 
@@ -241,8 +273,10 @@ def test_extract_clarify_returns_none_without_clarification():
 # --------------------------------------------------------------------------- #
 async def test_fake_model_records_tools_passthrough():
     model = FakeModel([Decision(text="ok")])
-    await model.act([Message(role="user", content="hi")],
-                    tools=[{"type": "function", "function": {"name": "ask_clarification"}}])
+    await model.act(
+        [Message(role="user", content="hi")],
+        tools=[{"type": "function", "function": {"name": "ask_clarification"}}],
+    )
     assert model.tools_seen and model.tools_seen[0] is not None
     assert model.tools_seen[0][0]["function"]["name"] == "ask_clarification"
 

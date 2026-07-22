@@ -27,8 +27,6 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-_log = logging.getLogger(__name__)
-
 import yaml
 from pydantic import BaseModel
 from pydantic_settings import (
@@ -36,6 +34,8 @@ from pydantic_settings import (
     PydanticBaseSettingsSource,
     SettingsConfigDict,
 )
+
+_log = logging.getLogger(__name__)
 
 
 # --------------------------------------------------------------------------- #
@@ -129,9 +129,9 @@ class ContextConfig(BaseModel):
     session_memory_enabled: bool = True
     session_memory_dir: str = ".agent/sessions"
     # M4.4 Session Memory 增量更新阈值（token 增量为必要条件）
-    session_memory_min_message_tokens: int = 10_000   # 初次触发所需上下文 token 数
-    session_memory_min_tokens_between: int = 5_000     # 两次更新最小 token 增量
-    session_memory_tool_calls_between: int = 3         # 两次更新最少 tool call 次数
+    session_memory_min_message_tokens: int = 10_000  # 初次触发所需上下文 token 数
+    session_memory_min_tokens_between: int = 5_000  # 两次更新最小 token 增量
+    session_memory_tool_calls_between: int = 3  # 两次更新最少 tool call 次数
     agents_md_path: str = "AGENTS.md"
     agents_md_enabled: bool = True
 
@@ -182,9 +182,6 @@ class Settings(BaseSettings):
     skills: SkillsConfig = SkillsConfig()
     subagents: SubagentsConfig = SubagentsConfig()
     daemon: DaemonConfig = DaemonConfig()
-
-
-
 
     @classmethod
     def settings_customise_sources(
@@ -309,8 +306,10 @@ def scaffold_project(
 
     返回各产物是否新建的字典（空字典表示整体跳过）。
     """
-    root = Path(project_root) if project_root else Path(
-        os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd()
+    root = (
+        Path(project_root)
+        if project_root
+        else Path(os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd())
     )
     agent_dir = root / ".agent"
 

@@ -10,8 +10,7 @@ import pytest
 
 from agent.config.settings import Settings
 from agent.core.events import EventStream
-from agent.core.loop import AgentLoop
-from agent.core.model import Decision, FakeModel, Message, RecordingModel, ToolCall
+from agent.core.model import Decision, FakeModel, Message, ToolCall
 from agent.core.transport import AgentTransport
 from agent.obs.tracer import Tracer
 from agent.runtime.approval import Action
@@ -19,7 +18,6 @@ from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.subagent import (
     BUILTIN_EXPLORE,
     BUILTIN_GENERAL,
-    BUILTIN_PLAN,
     AgentSpec,
     SubagentSpawner,
     _SubAgentTransport,
@@ -74,12 +72,23 @@ class _FakeParentTransport:
         self.approved.append(action)
         return True
 
-    def show_questions(self, questions): pass
-    def show_plan(self, res): pass
-    async def confirm_plan(self): return True
-    def notify(self, message): pass
-    def close(self): pass
-    def report_usage(self, usage, answer=None): pass
+    def show_questions(self, questions):
+        pass
+
+    def show_plan(self, res):
+        pass
+
+    async def confirm_plan(self):
+        return True
+
+    def notify(self, message):
+        pass
+
+    def close(self):
+        pass
+
+    def report_usage(self, usage, answer=None):
+        pass
 
 
 # --------------------------------------------------------------------------- #
@@ -150,9 +159,16 @@ async def test_fork_copies_parent_messages():
     model = FakeModel([Decision(text="compacted")])
     parent_conv = [Message(role="user", content="PARENT_SECRET_CONTEXT")]
     res = await spawner.spawn(
-        AgentSpec(name="mem", description="记忆子 agent",
-                  system_prompt="提取摘要", tools=None, share_history=True),
-        "summarize", base_registry=_registry(), base_model=model,
+        AgentSpec(
+            name="mem",
+            description="记忆子 agent",
+            system_prompt="提取摘要",
+            tools=None,
+            share_history=True,
+        ),
+        "summarize",
+        base_registry=_registry(),
+        base_model=model,
         parent_messages=parent_conv,
     )
     contents = [m.content for m in res.messages]
@@ -164,7 +180,10 @@ async def test_no_fork_excludes_parent_messages():
     model = FakeModel([Decision(text="done")])
     parent_conv = [Message(role="user", content="PARENT_SECRET_CONTEXT")]
     res = await spawner.spawn(
-        BUILTIN_GENERAL, "do subtask", base_registry=_registry(), base_model=model,
+        BUILTIN_GENERAL,
+        "do subtask",
+        base_registry=_registry(),
+        base_model=model,
         parent_messages=parent_conv,  # share_history=False → 忽略
     )
     contents = [m.content for m in res.messages]
@@ -177,14 +196,23 @@ async def test_no_fork_excludes_parent_messages():
 async def test_tool_whitelist_drops_disallowed():
     spawner = SubagentSpawner(_settings())
     # 子 agent 只允许 echo；调用 write → unknown tool 被降级
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="c1", name="write", arguments={"path": "x"})]),
-        Decision(text="recovered"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="c1", name="write", arguments={"path": "x"})]),
+            Decision(text="recovered"),
+        ]
+    )
     res = await spawner.spawn(
-        AgentSpec(name="ro", description="只读", system_prompt="只读",
-                  tools=["echo"], disallowed_tools=["write"]),
-        "try write", base_registry=_registry(), base_model=model,
+        AgentSpec(
+            name="ro",
+            description="只读",
+            system_prompt="只读",
+            tools=["echo"],
+            disallowed_tools=["write"],
+        ),
+        "try write",
+        base_registry=_registry(),
+        base_model=model,
     )
     assert res.text == "recovered"
     tr = next(e for e in res.events if e.type == "tool_result")
@@ -194,10 +222,12 @@ async def test_tool_whitelist_drops_disallowed():
 
 async def test_explore_rejects_write():
     spawner = SubagentSpawner(_settings())
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="c1", name="write", arguments={"path": "x"})]),
-        Decision(text="recovered"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="c1", name="write", arguments={"path": "x"})]),
+            Decision(text="recovered"),
+        ]
+    )
     res = await spawner.spawn(
         BUILTIN_EXPLORE, "explore", base_registry=_registry(), base_model=model
     )
@@ -211,7 +241,9 @@ async def test_explore_rejects_write():
 def test_resolve_model_inherits_when_no_override():
     spawner = SubagentSpawner(_settings())
     fake = FakeModel([Decision(text="x")])
-    assert spawner._resolve_model(fake, AgentSpec(name="a", description="", system_prompt="")) is fake
+    assert (
+        spawner._resolve_model(fake, AgentSpec(name="a", description="", system_prompt="")) is fake
+    )
 
 
 def test_resolve_model_overrides_with_spec_model():
@@ -222,6 +254,7 @@ def test_resolve_model_overrides_with_spec_model():
         None, AgentSpec(name="a", description="", system_prompt="", model="deepseek-chat")
     )
     from agent.core.model import OpenAICompatibleModel
+
     assert isinstance(m, OpenAICompatibleModel)
     assert m.model == "deepseek-chat"
 
@@ -252,7 +285,10 @@ async def test_trace_parent_links_child_span():
     model = FakeModel([Decision(text="x")])
     with tracer.span("parent.work", kind="agent") as parent:
         await spawner.spawn(
-            BUILTIN_GENERAL, "sub", base_registry=_registry(), base_model=model,
+            BUILTIN_GENERAL,
+            "sub",
+            base_registry=_registry(),
+            base_model=model,
             parent_span=parent,
         )
     # 子 agent.run:<name> 的 parent_id == parent.id（M4.6 修复：span 名带 spec.name 以便区分子 agent）
@@ -266,18 +302,27 @@ async def test_trace_parent_links_child_span():
 async def test_trace_parent_parallel_safe():
     tracer = Tracer()
     spawner = SubagentSpawner(_settings(), tracer=tracer)
-    model = FakeModel([Decision(text="x")])
     with tracer.span("parent.work", kind="agent") as parent:
         # 每个子 agent 用独立 model 实例，避免共享脚本被并发耗尽
         results = await asyncio.gather(
-            asyncio.create_task(spawner.spawn(
-                BUILTIN_GENERAL, "a", base_registry=_registry(),
-                base_model=FakeModel([Decision(text="x")]),
-                parent_span=parent)),
-            asyncio.create_task(spawner.spawn(
-                BUILTIN_GENERAL, "b", base_registry=_registry(),
-                base_model=FakeModel([Decision(text="x")]),
-                parent_span=parent)),
+            asyncio.create_task(
+                spawner.spawn(
+                    BUILTIN_GENERAL,
+                    "a",
+                    base_registry=_registry(),
+                    base_model=FakeModel([Decision(text="x")]),
+                    parent_span=parent,
+                )
+            ),
+            asyncio.create_task(
+                spawner.spawn(
+                    BUILTIN_GENERAL,
+                    "b",
+                    base_registry=_registry(),
+                    base_model=FakeModel([Decision(text="x")]),
+                    parent_span=parent,
+                )
+            ),
         )
     assert all(r.text == "x" for r in results)
     # 子 agent span 名带 spec.name（agent.run:general-purpose），便于区分不同子 agent
@@ -304,6 +349,7 @@ async def test_sub_transport_ask_delegates_to_parent():
     parent = _FakeParentTransport(interactive=True)
     sub = _SubAgentTransport(parent=parent)
     from agent.core.intent import Question
+
     q = Question(question="clarify?")
     ans = await sub.ask(q)
     assert ans == "answered"
@@ -313,6 +359,7 @@ async def test_sub_transport_ask_delegates_to_parent():
 async def test_sub_transport_ask_raises_without_interactive_parent():
     sub = _SubAgentTransport(parent=_FakeParentTransport(interactive=False))
     from agent.core.intent import Question
+
     with pytest.raises(RuntimeError):
         await sub.ask(Question(question="x"))
 
@@ -322,7 +369,10 @@ async def test_parent_eventstream_not_polluted_by_subagent():
     spawner = SubagentSpawner(_settings())
     model = FakeModel([Decision(text="sub-done")])
     await spawner.spawn(
-        BUILTIN_GENERAL, "sub", base_registry=_registry(), base_model=model,
+        BUILTIN_GENERAL,
+        "sub",
+        base_registry=_registry(),
+        base_model=model,
         parent_transport=parent,
     )
     # 子 agent 拥有独立 EventStream；事件经 _SubAgentTransport 渲染，不混入父传输的事件流
@@ -337,6 +387,7 @@ async def test_sub_transport_renders_independent_stream():
     sub.bind(child_stream)
     # 往子 stream 投递事件，应被 sub 渲染（父 transport 不应收到）
     from agent.core.events import Event, EventType
+
     child_stream.append(Event(type=EventType.TEXT, text="hello", kind="content"))
     assert len(parent.rendered) == 0
 

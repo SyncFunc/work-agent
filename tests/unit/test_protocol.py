@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import pytest
-
 from agent.core.events import Event, EventType
 from agent.daemon.protocol import (
     DAEMON_VERSION,
@@ -62,10 +60,33 @@ def test_protocol_versions_exposed():
     # 全部 C2S / S2C 类型齐备
     values = {m.value for m in MsgType}
     for t in [
-        "hello", "session.new", "session.attach", "session.switch", "session.detach",
-        "session.list", "task.send", "answer", "confirm_plan", "approve", "command",
-        "welcome", "session.created", "attached", "detached", "session_list",
-        "event", "replay_start", "replay_end", "ask", "show_questions", "show_plan",
-        "show_skills", "show_agents", "notify", "usage", "close", "error",
+        "hello",
+        "session.new",
+        "session.attach",
+        "session.switch",
+        "session.detach",
+        "session.list",
+        "task.send",
+        "answer",
+        "confirm_plan",
+        "approve",
+        "command",
+        "welcome",
+        "session.created",
+        "attached",
+        "detached",
+        "session_list",
+        "event",
+        "replay_start",
+        "replay_end",
+        "ask",
+        "show_questions",
+        "show_plan",
+        "show_skills",
+        "show_agents",
+        "notify",
+        "usage",
+        "close",
+        "error",
     ]:
         assert t in values

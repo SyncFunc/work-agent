@@ -17,7 +17,6 @@ from agent.core.model import Decision, FakeModel
 from agent.core.session import Session
 from agent.runtime.registry import default_registry
 from agent.runtime.terminal_transport import TerminalTransport
-
 from tests.conftest import _settings
 
 
@@ -34,8 +33,12 @@ def test_e2e_resume_then_fork_across_restart(tmp_path):
     sid = uuid.uuid4().hex
     store.create(sid)
     session = Session(
-        FakeModel([Decision(text="hello")]), default_registry, settings,
-        tracer=None, session_id=sid, session_store=store,
+        FakeModel([Decision(text="hello")]),
+        default_registry,
+        settings,
+        tracer=None,
+        session_id=sid,
+        session_store=store,
     )
     asyncio.run(session.step("first", TerminalTransport(interactive=False)))
     live_messages = list(session.messages)

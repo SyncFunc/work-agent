@@ -43,10 +43,13 @@ async def test_microcompact_in_loop():
     # 8 个 read 工具结果（每个 >100 字符），与 assistant tool_calls 配对。
     conv: list[Message] = []
     for i in range(8):
-        conv.append(Message(
-            role="assistant", content=None,
-            tool_calls=[ToolCall(id=f"t{i}", name="read", arguments={"path": f"f{i}.py"})],
-        ))
+        conv.append(
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[ToolCall(id=f"t{i}", name="read", arguments={"path": f"f{i}.py"})],
+            )
+        )
         conv.append(Message(role="tool", content="x" * 150, tool_call_id=f"t{i}"))
 
     model = FakeModel([Decision(text="done")])
@@ -65,25 +68,35 @@ async def test_microcompact_in_loop():
 
 async def test_auto_compact_in_session(tmp_path):
     """Session.step 每轮后检查阈值并触发 Auto Compact（模型生成摘要替换旧历史）。"""
-    settings = Settings(context={
-        "context_window": 4000, "max_output_tokens": 1000, "compact_buffer": 400,
-        "auto_compact_enabled": True, "microcompact_enabled": True,
-        "session_memory_enabled": False,
-    })
-    model = FakeModel([
-        Decision(text="done"),  # ① step 的模型决策
-        Decision(text="<summary>SESSION SUMMARY</summary>"),  # ② auto_compact 摘要
-    ])
+    settings = Settings(
+        context={
+            "context_window": 4000,
+            "max_output_tokens": 1000,
+            "compact_buffer": 400,
+            "auto_compact_enabled": True,
+            "microcompact_enabled": True,
+            "session_memory_enabled": False,
+        }
+    )
+    model = FakeModel(
+        [
+            Decision(text="done"),  # ① step 的模型决策
+            Decision(text="<summary>SESSION SUMMARY</summary>"),  # ② auto_compact 摘要
+        ]
+    )
     session = Session(model, default_registry, settings, tracer=None)
     assert session.context_mgr is not None
 
     # regionA（待压缩的旧历史，含 read 工具结果）+ regionB（近期活跃消息）。
     region_a: list[Message] = []
     for i in range(4):
-        region_a.append(Message(
-            role="assistant", content=None,
-            tool_calls=[ToolCall(id=f"a{i}", name="read", arguments={"path": f"a{i}.py"})],
-        ))
+        region_a.append(
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[ToolCall(id=f"a{i}", name="read", arguments={"path": f"a{i}.py"})],
+            )
+        )
         region_a.append(Message(role="tool", content="y" * 1500, tool_call_id=f"a{i}"))
     region_b = [
         Message(role="user", content="z" * 1500),
@@ -106,22 +119,33 @@ async def test_auto_compact_in_session(tmp_path):
 
 async def test_full_compaction_pipeline(tmp_path):
     """完整流程：Microcompact → Auto Compact → 防漂移，端到端跑通并产出正确结果。"""
-    settings = Settings(context={
-        "context_window": 4000, "max_output_tokens": 1000, "compact_buffer": 400,
-        "auto_compact_enabled": True, "microcompact_enabled": True,
-        "session_memory_enabled": False,
-    })
+    settings = Settings(
+        context={
+            "context_window": 4000,
+            "max_output_tokens": 1000,
+            "compact_buffer": 400,
+            "auto_compact_enabled": True,
+            "microcompact_enabled": True,
+            "session_memory_enabled": False,
+        }
+    )
     cm = build_context_manager(settings, FakeModel([Decision(text="<summary>FULL SUM</summary>")]))
 
     # regionA：8 个 read 工具结果（>keep_recent → microcompact 替换 3 个）。
     region_a: list[Message] = []
     for i in range(8):
-        region_a.append(Message(
-            role="assistant", content=None,
-            tool_calls=[ToolCall(id=f"a{i}", name="read", arguments={"path": f"a{i}.py"})],
-        ))
+        region_a.append(
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[ToolCall(id=f"a{i}", name="read", arguments={"path": f"a{i}.py"})],
+            )
+        )
         region_a.append(Message(role="tool", content="y" * 1200, tool_call_id=f"a{i}"))
-    region_b = [Message(role="user", content="recent work"), Message(role="assistant", content="ok")]
+    region_b = [
+        Message(role="user", content="recent work"),
+        Message(role="assistant", content="ok"),
+    ]
     conv = region_a + region_b
 
     # 防漂移：记录一个真实文件访问，压缩后应被重读并追加 [Anti-Drift]。
@@ -147,10 +171,13 @@ async def test_compact_preserves_pairing():
     # 构造含 8 个配对的 conv，且内容 >100 以触发占位替换。
     conv: list[Message] = []
     for i in range(8):
-        conv.append(Message(
-            role="assistant", content=None,
-            tool_calls=[ToolCall(id=f"p{i}", name="read", arguments={"path": f"p{i}.py"})],
-        ))
+        conv.append(
+            Message(
+                role="assistant",
+                content=None,
+                tool_calls=[ToolCall(id=f"p{i}", name="read", arguments={"path": f"p{i}.py"})],
+            )
+        )
         conv.append(Message(role="tool", content="data " * 30, tool_call_id=f"p{i}"))
 
     cm.set_conv(conv)
@@ -186,10 +213,12 @@ async def test_dynamic_segment_tokens_populated():
     from agent.core.loop import AgentLoop
 
     cm = ContextManager()
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="e1", name="echo", arguments={"x": 1})]),
-        Decision(text="echo done"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="e1", name="echo", arguments={"x": 1})]),
+            Decision(text="echo done"),
+        ]
+    )
     loop = AgentLoop(model, default_registry, Settings(), tracer=None)
     await loop.run("use echo", context_mgr=cm)
 
@@ -209,8 +238,11 @@ async def test_subagent_trace_named_span():
     # 模拟主循环 agent.run span 作为父（子 agent 的 parent_span 指向它）。
     with tracer.span("agent.run", kind="agent") as parent:
         loop = AgentLoop(
-            child_model, default_registry, Settings(),
-            subagent_spawner=spawner, tracer=tracer,
+            child_model,
+            default_registry,
+            Settings(),
+            subagent_spawner=spawner,
+            tracer=tracer,
         )
         await loop.run("find", name="explore", parent_span=parent)
 

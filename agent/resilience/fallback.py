@@ -15,16 +15,17 @@ import asyncio
 import random
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 
 @dataclass
 class FallbackConfig:
-    strategy: str = "fail_fast"   # fail_fast / retry / cache / mock
+    strategy: str = "fail_fast"  # fail_fast / retry / cache / mock
     max_retries: int = 3
     retry_delay: float = 1.0
-    retry_backoff: float = 2.0    # 指数退避因子
+    retry_backoff: float = 2.0  # 指数退避因子
     cache_ttl: float = 300.0
     mock_result: Any = None
     max_cache_size: int = 128

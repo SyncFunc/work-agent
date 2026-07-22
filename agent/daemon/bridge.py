@@ -21,14 +21,14 @@ from typing import TYPE_CHECKING, Any
 from agent.core.events import Event
 from agent.core.intent import Question
 from agent.core.transport import AgentTransport
-from agent.runtime.approval import Action
-
 from agent.daemon.protocol import MsgType
+from agent.runtime.approval import Action
 
 if TYPE_CHECKING:
     from agent.core.events import EventStream
     from agent.core.loop import AgentResult
     from agent.core.plan import PlanStep
+    from agent.daemon.registry import SessionHandle
 
 
 def _action_to_dict(a: Action) -> dict[str, Any]:
@@ -41,7 +41,7 @@ def _action_to_dict(a: Action) -> dict[str, Any]:
     }
 
 
-def _plan_step_to_dict(s: "PlanStep") -> dict[str, Any]:
+def _plan_step_to_dict(s: PlanStep) -> dict[str, Any]:
     return asdict(s)
 
 
@@ -54,7 +54,7 @@ def _spec_to_dict(s: object) -> dict[str, Any]:
 class BridgeTransport(AgentTransport):
     """服务端 AgentTransport 实现：事件转发 + HITL future 闭环。"""
 
-    def __init__(self, handle: "SessionHandle") -> None:
+    def __init__(self, handle: SessionHandle) -> None:
         self.handle = handle
         self._pending: dict[str, asyncio.Future] = {}
         self._pending_sends: list[asyncio.Task] = []  # 在飞的事件转发任务（flush 用）
@@ -83,9 +83,7 @@ class BridgeTransport(AgentTransport):
         if conn is None:
             return
         self._track(
-            asyncio.ensure_future(
-                conn.send(mtype, payload, id=id, session=self.handle.session_id)
-            )
+            asyncio.ensure_future(conn.send(mtype, payload, id=id, session=self.handle.session_id))
         )
 
     def resolve(self, rid: str, value: object) -> None:
@@ -107,7 +105,7 @@ class BridgeTransport(AgentTransport):
     def show_questions(self, questions: list[Question]) -> None:
         self._send(MsgType.SHOW_QUESTIONS, {"questions": [q.to_dict() for q in questions]})
 
-    def show_plan(self, res: "AgentResult") -> None:
+    def show_plan(self, res: AgentResult) -> None:
         self._send(
             MsgType.SHOW_PLAN,
             {
@@ -143,7 +141,7 @@ class BridgeTransport(AgentTransport):
     # ------------------------------------------------------------------ #
     # 事件订阅：实时转发 + 持久化缓冲（仅非 transient）
     # ------------------------------------------------------------------ #
-    def bind(self, stream: "EventStream") -> None:
+    def bind(self, stream: EventStream) -> None:
         stream.subscribe(self._on_event)
 
     def _on_event(self, ev: Event) -> None:
@@ -154,7 +152,9 @@ class BridgeTransport(AgentTransport):
         if conn is not None:
             self._track(
                 asyncio.ensure_future(
-                    conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=self.handle.session_id)
+                    conn.send(
+                        MsgType.EVENT, {"event": ev.to_dict()}, session=self.handle.session_id
+                    )
                 )
             )
 

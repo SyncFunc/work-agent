@@ -21,10 +21,27 @@ def _tool_turn_stream() -> EventStream:
     """一轮「工具调用 → 结果 → 最终答案」的完整事件序列。"""
     es = EventStream()
     es.append(Event(type=EventType.USER, text="do thing"))
-    es.append(Event(type=EventType.DECISION, decision=Decision(
-        text=None, tool_calls=[ToolCall(id="c1", name="read", arguments={"path": "a"})])))
-    es.append(Event(type=EventType.TOOL_USE, tool_use=ToolCall(id="c1", name="read", arguments={"path": "a"})))
-    es.append(Event(type=EventType.TOOL_RESULT, tool_call_id="c1", tool_result=ToolResult(ok=True, output="content")))
+    es.append(
+        Event(
+            type=EventType.DECISION,
+            decision=Decision(
+                text=None, tool_calls=[ToolCall(id="c1", name="read", arguments={"path": "a"})]
+            ),
+        )
+    )
+    es.append(
+        Event(
+            type=EventType.TOOL_USE,
+            tool_use=ToolCall(id="c1", name="read", arguments={"path": "a"}),
+        )
+    )
+    es.append(
+        Event(
+            type=EventType.TOOL_RESULT,
+            tool_call_id="c1",
+            tool_result=ToolResult(ok=True, output="content"),
+        )
+    )
     es.append(Event(type=EventType.DECISION, decision=Decision(text="done", tool_calls=[])))
     es.append(Event(type=EventType.FINAL, text="done"))
     return es
@@ -44,8 +61,16 @@ def test_rebuild_clarify_mapping():
     """澄清闸门：DECISION 含 ask_clarification tool_calls + CLARIFY 事件 → 合成 tool 消息完成配对。"""
     es = EventStream()
     es.append(Event(type=EventType.USER, text="q"))
-    es.append(Event(type=EventType.DECISION, decision=Decision(
-        tool_calls=[ToolCall(id="k1", name="ask_clarification", arguments={"question": "x"})])))
+    es.append(
+        Event(
+            type=EventType.DECISION,
+            decision=Decision(
+                tool_calls=[
+                    ToolCall(id="k1", name="ask_clarification", arguments={"question": "x"})
+                ]
+            ),
+        )
+    )
     es.append(Event(type=EventType.CLARIFY, questions=[{"question": "x", "options": []}]))
     msgs = rebuild_messages(es)
     assert msgs[0] == Message(role="user", content="q")
@@ -56,8 +81,12 @@ def test_rebuild_clarify_mapping():
 
 def test_detect_interruption_true():
     es = EventStream()
-    es.append(Event(type=EventType.DECISION, decision=Decision(
-        tool_calls=[ToolCall(id="c1", name="read", arguments={})])))
+    es.append(
+        Event(
+            type=EventType.DECISION,
+            decision=Decision(tool_calls=[ToolCall(id="c1", name="read", arguments={})]),
+        )
+    )
     es.append(Event(type=EventType.TOOL_USE, tool_use=ToolCall(id="c1", name="read", arguments={})))
     # 无 TOOL_RESULT → 中断
     assert detect_interruption(es) is True
@@ -71,8 +100,12 @@ def test_rebuild_drops_dangling_on_interruption():
     """中断：末轮 tool_calls 无结果 → 丢弃悬空 assistant，注入 user 续跑提示。"""
     es = EventStream()
     es.append(Event(type=EventType.USER, text="do"))
-    es.append(Event(type=EventType.DECISION, decision=Decision(
-        tool_calls=[ToolCall(id="c1", name="read", arguments={})])))
+    es.append(
+        Event(
+            type=EventType.DECISION,
+            decision=Decision(tool_calls=[ToolCall(id="c1", name="read", arguments={})]),
+        )
+    )
     es.append(Event(type=EventType.TOOL_USE, tool_use=ToolCall(id="c1", name="read", arguments={})))
     # 缺少 TOOL_RESULT
     msgs = rebuild_messages(es)
@@ -90,7 +123,9 @@ def test_fork_recovery_rebuild_matches_parent_prefix(tmp_path):
     child = store.fork("parent", name="b")
 
     # 显式 seq（接续父前缀 0..5），避免 append_event 的 INSERT OR REPLACE 覆盖父事件
-    store.append_event(child, Event(type=EventType.DECISION, seq=6, decision=Decision(text="child", tool_calls=[])))
+    store.append_event(
+        child, Event(type=EventType.DECISION, seq=6, decision=Decision(text="child", tool_calls=[]))
+    )
     store.append_event(child, Event(type=EventType.FINAL, seq=7, text="child"))
 
     parent_msgs = rebuild_messages(store.load("parent"))
@@ -101,7 +136,7 @@ def test_fork_recovery_rebuild_matches_parent_prefix(tmp_path):
 
 def test_resume_cross_restart_rebuilds_messages(tmp_path, monkeypatch):
     """跨重启 resume：from_store 重建的 messages 与崩溃前（完整重放）一致。"""
-    import agent.tools  # 注册默认工具（副作用）
+    import agent.tools  # noqa: F401  (注册默认工具，副作用导入)
     from agent.config.settings import Settings
 
     settings = Settings()

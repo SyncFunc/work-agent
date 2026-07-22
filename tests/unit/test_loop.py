@@ -14,7 +14,7 @@ from agent.context import ContextManager
 from agent.core.control_tools import SPAWN_SUBAGENT_TOOL_NAME, USE_SKILL_TOOL_NAME
 from agent.core.events import EventStream
 from agent.core.loop import AgentLoop, LoopStalled
-from agent.core.model import Decision, FakeModel, Message, RecordingModel, ToolCall
+from agent.core.model import Decision, FakeModel, RecordingModel, ToolCall
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.runtime.sandbox import FakeExecutor, SandboxProfile
@@ -44,7 +44,12 @@ def _make_registry() -> ToolRegistry:
 def _settings(**kw) -> Settings:
     loop = dict(max_iterations=20, max_tool_concurrency=5, max_repeat_calls=3)
     loop.update(kw.pop("loop", {}))
-    for k in ("max_iterations", "max_tool_concurrency", "max_repeat_calls", "max_tool_output_chars"):
+    for k in (
+        "max_iterations",
+        "max_tool_concurrency",
+        "max_repeat_calls",
+        "max_tool_output_chars",
+    ):
         if k in kw:
             loop[k] = kw.pop(k)
     return Settings(loop=loop, **kw)
@@ -186,13 +191,18 @@ async def test_event_stream_roundtrip_json():
 
 async def test_usage_accumulates_across_iterations():
     registry = _make_registry()
-    model = FakeModel([
-        Decision(
-            tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 1})],
-            usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
-        ),
-        Decision(text="final answer", usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28}),
-    ])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 1})],
+                usage={"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15},
+            ),
+            Decision(
+                text="final answer",
+                usage={"prompt_tokens": 20, "completion_tokens": 8, "total_tokens": 28},
+            ),
+        ]
+    )
     loop = AgentLoop(model, registry, _settings())
     result = await loop.run("task")
 
@@ -213,15 +223,18 @@ class _EventRecordingTransport:
                 self.calls.append(ev.tool_use.name)
             elif ev.type == "tool_result":
                 self.results.append((ev.tool_call_id, ev.tool_result.ok))
+
         stream.subscribe(sink)
 
 
 async def test_transport_receives_streaming_and_tool_events():
     registry = _make_registry()
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 1})]),
-        Decision(text="final answer"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 1})]),
+            Decision(text="final answer"),
+        ]
+    )
     transport = _EventRecordingTransport()
     loop = AgentLoop(model, registry, _settings())
     result = await loop.run("task", transport=transport)
@@ -256,12 +269,18 @@ async def test_tool_call_delta_streamed_to_transport():
         async def stream(self, messages, tools=None):
             self.n += 1
             if self.n == 1:
-                yield StreamEvent(type="tool_call_delta", tc_index=0, tc_name="echo",
-                                  tc_args='{"x": 1')
-                yield StreamEvent(type="tool_call_delta", tc_index=0, tc_name="echo",
-                                  tc_args='{"x": 123}')
-                yield StreamEvent(type="done", decision=Decision(
-                    tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 123})]))
+                yield StreamEvent(
+                    type="tool_call_delta", tc_index=0, tc_name="echo", tc_args='{"x": 1'
+                )
+                yield StreamEvent(
+                    type="tool_call_delta", tc_index=0, tc_name="echo", tc_args='{"x": 123}'
+                )
+                yield StreamEvent(
+                    type="done",
+                    decision=Decision(
+                        tool_calls=[ToolCall(id="c1", name="echo", arguments={"x": 123})]
+                    ),
+                )
             else:
                 yield StreamEvent(type="done", decision=Decision(text="done"))
 
@@ -272,6 +291,7 @@ async def test_tool_call_delta_streamed_to_transport():
             def sink(ev):
                 if ev.type == "tool_call_delta":
                     deltas.append((ev.tc_index, ev.tc_name, ev.tc_args))
+
             stream.subscribe(sink)
 
     loop = AgentLoop(_DeltaModel(), _make_registry(), _settings())
@@ -298,7 +318,7 @@ async def _noop_bash(args: dict) -> ToolResult:
 class _FakeTransport:
     def __init__(self, answer: bool) -> None:
         self.answer = answer
-        self.last: "Action | None" = None
+        self.last: Action | None = None
 
     @property
     def interactive(self) -> bool:
@@ -322,11 +342,15 @@ async def test_gate_none_runs_bash_via_fake_executor():
     """gate=None 时退化 M1：bash 仍经注入的 FakeExecutor 执行。"""
     fake = FakeExecutor()
     loop = AgentLoop(
-        FakeModel([
-            Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "echo hi"})]),
-            Decision(text="done"),
-        ]),
-        _bash_registry(), _settings(), sandbox=fake,
+        FakeModel(
+            [
+                Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "echo hi"})]),
+                Decision(text="done"),
+            ]
+        ),
+        _bash_registry(),
+        _settings(),
+        sandbox=fake,
     )
     res = await loop.run("task")
     assert res.text == "done"
@@ -343,11 +367,18 @@ async def test_elevation_runs_at_elevated_profile():
         elevated_profile=SandboxProfile.DANGER_FULL,
     )
     loop = AgentLoop(
-        FakeModel([
-            Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "npm install x"})]),
-            Decision(text="done"),
-        ]),
-        _bash_registry(), _settings(), sandbox=fake, gate=gate,
+        FakeModel(
+            [
+                Decision(
+                    tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "npm install x"})]
+                ),
+                Decision(text="done"),
+            ]
+        ),
+        _bash_registry(),
+        _settings(),
+        sandbox=fake,
+        gate=gate,
     )
     # npm install 不带 approval_request → on-request 下 ALLOW → 不提权
     res = await loop.run("task")
@@ -364,14 +395,25 @@ async def test_elevation_on_approval_request():
         elevated_profile=SandboxProfile.DANGER_FULL,
     )
     loop = AgentLoop(
-        FakeModel([
-            Decision(tool_calls=[ToolCall(
-                id="b1", name="bash", arguments={"cmd": "curl https://example.com"},
-                approval_request=True,
-            )]),
-            Decision(text="done"),
-        ]),
-        _bash_registry(), _settings(), sandbox=fake, gate=gate,
+        FakeModel(
+            [
+                Decision(
+                    tool_calls=[
+                        ToolCall(
+                            id="b1",
+                            name="bash",
+                            arguments={"cmd": "curl https://example.com"},
+                            approval_request=True,
+                        )
+                    ]
+                ),
+                Decision(text="done"),
+            ]
+        ),
+        _bash_registry(),
+        _settings(),
+        sandbox=fake,
+        gate=gate,
     )
     await loop.run("task")
     assert fake.requests[0].profile == SandboxProfile.DANGER_FULL
@@ -382,13 +424,22 @@ async def test_no_elevation_on_allow():
     fake = FakeExecutor()
     gate = ApprovalGate("on-request", sandbox_profile=SandboxProfile.WORKSPACE_WRITE)
     loop = AgentLoop(
-        FakeModel([
-            Decision(tool_calls=[ToolCall(
-                id="b1", name="bash", arguments={"cmd": "curl https://example.com"}
-            )]),
-            Decision(text="done"),
-        ]),
-        _bash_registry(), _settings(), sandbox=fake, gate=gate,
+        FakeModel(
+            [
+                Decision(
+                    tool_calls=[
+                        ToolCall(
+                            id="b1", name="bash", arguments={"cmd": "curl https://example.com"}
+                        )
+                    ]
+                ),
+                Decision(text="done"),
+            ]
+        ),
+        _bash_registry(),
+        _settings(),
+        sandbox=fake,
+        gate=gate,
     )
     await loop.run("task")
     assert fake.requests[0].profile == SandboxProfile.WORKSPACE_WRITE
@@ -400,11 +451,16 @@ async def test_unless_trused_asks_and_rejects():
     gate = ApprovalGate("unless-trusted")
     transport = _FakeTransport(False)
     loop = AgentLoop(
-        FakeModel([
-            Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "ls"})]),
-            Decision(text="done"),
-        ]),
-        _bash_registry(), _settings(), sandbox=fake, gate=gate,
+        FakeModel(
+            [
+                Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "ls"})]),
+                Decision(text="done"),
+            ]
+        ),
+        _bash_registry(),
+        _settings(),
+        sandbox=fake,
+        gate=gate,
     )
     res = await loop.run("task", transport=transport)
     tr = next(e for e in res.events if e.type == "tool_result")
@@ -419,11 +475,16 @@ async def test_unless_trused_exec_policy_skips_ask():
     gate = ApprovalGate("unless-trusted", exec_policy=["ls "])
     transport = _FakeTransport(False)
     loop = AgentLoop(
-        FakeModel([
-            Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "ls -la"})]),
-            Decision(text="done"),
-        ]),
-        _bash_registry(), _settings(), sandbox=fake, gate=gate,
+        FakeModel(
+            [
+                Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "ls -la"})]),
+                Decision(text="done"),
+            ]
+        ),
+        _bash_registry(),
+        _settings(),
+        sandbox=fake,
+        gate=gate,
     )
     await loop.run("task", transport=transport)
     assert len(fake.requests) == 1  # 已执行，未被拦
@@ -441,11 +502,16 @@ def _make_skill_dir(root: Path, name: str, body: str, **front: str) -> Path:
 
 
 async def test_system_prompt_includes_skills_catalog_not_body(tmp_path):
-    _make_skill_dir(tmp_path, "demo", "SECRET BODY MUST NOT APPEAR IN SYSTEM PROMPT\n",
-                    description="demo skill desc")
+    _make_skill_dir(
+        tmp_path,
+        "demo",
+        "SECRET BODY MUST NOT APPEAR IN SYSTEM PROMPT\n",
+        description="demo skill desc",
+    )
     loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
-    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
-                     skill_loader=loader)
+    loop = AgentLoop(
+        FakeModel([Decision(text="x")]), _make_registry(), _settings(), skill_loader=loader
+    )
     sp = loop._system_prompt()
     assert "demo" in sp
     assert "demo skill desc" in sp
@@ -454,8 +520,9 @@ async def test_system_prompt_includes_skills_catalog_not_body(tmp_path):
 
 async def test_system_prompt_lists_subagent_types():
     spawner = SubagentSpawner(_settings())
-    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
-                     subagent_spawner=spawner)
+    loop = AgentLoop(
+        FakeModel([Decision(text="x")]), _make_registry(), _settings(), subagent_spawner=spawner
+    )
     sp = loop._system_prompt()
     # 内置三种类型都应出现在触发目录（含 general-purpose）
     assert "explore" in sp
@@ -466,14 +533,16 @@ async def test_system_prompt_lists_subagent_types():
 
 
 async def test_use_skill_injects_body_into_conv(tmp_path):
-    _make_skill_dir(tmp_path, "demo", "DEMO BODY: do the thing\n",
-                    description="demo skill")
+    _make_skill_dir(tmp_path, "demo", "DEMO BODY: do the thing\n", description="demo skill")
     loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="s1", name=USE_SKILL_TOOL_NAME,
-                                      arguments={"name": "demo"})]),
-        Decision(text="done"),
-    ])
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[ToolCall(id="s1", name=USE_SKILL_TOOL_NAME, arguments={"name": "demo"})]
+            ),
+            Decision(text="done"),
+        ]
+    )
     loop = AgentLoop(model, _make_registry(), _settings(), skill_loader=loader)
     res = await loop.run("task")
     assert res.text == "done"
@@ -485,10 +554,12 @@ async def test_use_skill_injects_body_into_conv(tmp_path):
 
 def test_use_skill_unknown_returns_error():
     loader = SkillLoader(Path("/nonexistent-project"), user_root=Path("/nonexistent-user"))
-    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
-                     skill_loader=loader)
-    res = loop._tool_use_skill(ToolCall(id="s1", name=USE_SKILL_TOOL_NAME,
-                                        arguments={"name": "nope"}))
+    loop = AgentLoop(
+        FakeModel([Decision(text="x")]), _make_registry(), _settings(), skill_loader=loader
+    )
+    res = loop._tool_use_skill(
+        ToolCall(id="s1", name=USE_SKILL_TOOL_NAME, arguments={"name": "nope"})
+    )
     assert not res.ok
     assert "unknown skill" in res.error
 
@@ -496,8 +567,13 @@ def test_use_skill_unknown_returns_error():
 async def test_control_tools_present_when_enabled(tmp_path):
     loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
     spawner = SubagentSpawner(_settings())
-    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
-                     skill_loader=loader, subagent_spawner=spawner)
+    loop = AgentLoop(
+        FakeModel([Decision(text="x")]),
+        _make_registry(),
+        _settings(),
+        skill_loader=loader,
+        subagent_spawner=spawner,
+    )
     names = [t["function"]["name"] for t in loop._model_tools()]
     assert USE_SKILL_TOOL_NAME in names
     assert SPAWN_SUBAGENT_TOOL_NAME in names
@@ -509,8 +585,13 @@ async def test_control_tools_absent_when_disabled(tmp_path):
     s.subagents.enabled = False
     loader = SkillLoader(tmp_path, user_root=tmp_path / "__u")
     spawner = SubagentSpawner(_settings())
-    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), s,
-                     skill_loader=loader, subagent_spawner=spawner)
+    loop = AgentLoop(
+        FakeModel([Decision(text="x")]),
+        _make_registry(),
+        s,
+        skill_loader=loader,
+        subagent_spawner=spawner,
+    )
     names = [t["function"]["name"] for t in loop._model_tools()]
     assert USE_SKILL_TOOL_NAME not in names
     assert SPAWN_SUBAGENT_TOOL_NAME not in names
@@ -520,8 +601,9 @@ async def test_spawn_subagent_returns_summary():
     spawner = SubagentSpawner(_settings())
     child_model = FakeModel([Decision(text="explore result")])
     loop = AgentLoop(child_model, _make_registry(), _settings(), subagent_spawner=spawner)
-    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
-                  arguments={"agent": "explore", "task": "find stuff"})
+    tc = ToolCall(
+        id="x", name=SPAWN_SUBAGENT_TOOL_NAME, arguments={"agent": "explore", "task": "find stuff"}
+    )
     res = await loop._tool_spawn_subagent(tc)
     assert res.ok
     assert res.output.startswith("[Subagent explore]")
@@ -534,15 +616,17 @@ async def test_spawn_subagent_returns_summary():
 async def test_loop_integration_with_context_mgr():
     """Loop 集成 ContextManager 后不破坏既有行为（工具执行 + 最终答案正常，conv 被投影）。"""
     cm = ContextManager()  # 默认启用 microcompact
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="e1", name="echo", arguments={"x": 42})]),
-        Decision(text="echo done"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="e1", name="echo", arguments={"x": 42})]),
+            Decision(text="echo done"),
+        ]
+    )
     loop = AgentLoop(model, _make_registry(), _settings(), tracer=None)
     res = await loop.run("use echo", context_mgr=cm)
 
-    assert res.text == "echo done"          # 最终答案正常
-    assert cm.conv                          # ContextManager 已投影 conv（microcompact 已处理）
+    assert res.text == "echo done"  # 最终答案正常
+    assert cm.conv  # ContextManager 已投影 conv（microcompact 已处理）
     # conv 含工具调用与结果（既有行为未被破坏）
     roles = [m.role for m in cm.conv]
     assert "tool" in roles
@@ -551,10 +635,12 @@ async def test_loop_integration_with_context_mgr():
 
 async def test_spawn_subagent_depth_limit_returns_error():
     spawner = SubagentSpawner(_settings(), max_depth=1)
-    loop = AgentLoop(FakeModel([Decision(text="x")]), _make_registry(), _settings(),
-                     subagent_spawner=spawner)
-    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
-                  arguments={"agent": "explore", "task": "t"})
+    loop = AgentLoop(
+        FakeModel([Decision(text="x")]), _make_registry(), _settings(), subagent_spawner=spawner
+    )
+    tc = ToolCall(
+        id="x", name=SPAWN_SUBAGENT_TOOL_NAME, arguments={"agent": "explore", "task": "t"}
+    )
     res = await loop._tool_spawn_subagent(tc)
     assert not res.ok
     assert "depth" in res.error.lower()
@@ -562,13 +648,16 @@ async def test_spawn_subagent_depth_limit_returns_error():
 
 async def test_explore_subagent_runs_bash_without_approval():
     spawner = SubagentSpawner(_settings())
-    child_model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "echo hi"})]),
-        Decision(text="done"),
-    ])
+    child_model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="b1", name="bash", arguments={"cmd": "echo hi"})]),
+            Decision(text="done"),
+        ]
+    )
     loop = AgentLoop(child_model, _bash_registry(), _settings(), subagent_spawner=spawner)
-    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
-                  arguments={"agent": "explore", "task": "ls"})
+    tc = ToolCall(
+        id="x", name=SPAWN_SUBAGENT_TOOL_NAME, arguments={"agent": "explore", "task": "ls"}
+    )
     res = await loop._tool_spawn_subagent(tc)
     assert res.ok
     assert "done" in res.output  # explore(gate=never) 不弹审批，直接执行并收尾
@@ -576,14 +665,20 @@ async def test_explore_subagent_runs_bash_without_approval():
 
 async def test_spawn_subagent_explore_rejects_write():
     spawner = SubagentSpawner(_settings())
-    child_model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="w1", name="write",
-                                      arguments={"path": "x", "content": "y"})]),
-        Decision(text="recovered"),
-    ])
+    child_model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(id="w1", name="write", arguments={"path": "x", "content": "y"})
+                ]
+            ),
+            Decision(text="recovered"),
+        ]
+    )
     loop = AgentLoop(child_model, _make_registry(), _settings(), subagent_spawner=spawner)
-    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
-                  arguments={"agent": "explore", "task": "t"})
+    tc = ToolCall(
+        id="x", name=SPAWN_SUBAGENT_TOOL_NAME, arguments={"agent": "explore", "task": "t"}
+    )
     res = await loop._tool_spawn_subagent(tc)
     assert res.ok
     # explore 白名单拒 write → 子 agent 恢复并返回 "recovered"
@@ -596,8 +691,9 @@ async def test_parent_eventstream_clean_after_spawn():
     child_model = FakeModel([Decision(text="sub done")])
     loop = AgentLoop(child_model, _make_registry(), _settings(), subagent_spawner=spawner)
     parent_stream = EventStream()
-    tc = ToolCall(id="x", name=SPAWN_SUBAGENT_TOOL_NAME,
-                  arguments={"agent": "explore", "task": "t"})
+    tc = ToolCall(
+        id="x", name=SPAWN_SUBAGENT_TOOL_NAME, arguments={"agent": "explore", "task": "t"}
+    )
     res = await loop._tool_spawn_subagent(tc)
     assert res.ok
     # _tool_spawn_subagent 不向父 stream 写任何子内部事件

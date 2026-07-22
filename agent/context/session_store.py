@@ -96,9 +96,7 @@ class SessionStore:
                     model_meta_json,
                 ),
             )
-            conn.execute(
-                "UPDATE sessions SET updated_at=? WHERE session_id=?", (now, session_id)
-            )
+            conn.execute("UPDATE sessions SET updated_at=? WHERE session_id=?", (now, session_id))
 
     def append_event(self, session_id: str, ev: Event) -> None:
         """持久化单条事件（瞬时不落盘）。"""

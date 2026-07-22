@@ -27,7 +27,7 @@ async def test_get_unknown_raises():
     reg = ToolRegistry()
     try:
         reg.get("nope")
-        assert False, "expected UnknownTool"
+        raise AssertionError("expected UnknownTool")
     except UnknownTool:
         pass
 
@@ -68,7 +68,7 @@ async def test_run_unknown_raises():
     reg = ToolRegistry()
     try:
         await reg.run("missing", {})
-        assert False, "expected UnknownTool"
+        raise AssertionError("expected UnknownTool")
     except UnknownTool:
         pass
 
@@ -77,7 +77,7 @@ def test_invalid_risk_rejected():
     reg = ToolRegistry()
     try:
         reg.register(ToolSpec(name="x", fn=lambda a: None, risk="danger"))  # type: ignore[arg-type]
-        assert False, "expected ValueError"
+        raise AssertionError("expected ValueError")
     except ValueError:
         pass
 
@@ -85,7 +85,11 @@ def test_invalid_risk_rejected():
 def test_to_openai_tools_shape():
     reg = ToolRegistry()
 
-    @tool("grep", risk="read", schema={"type": "object", "description": "grep", "properties": {"pat": {"type": "string"}}})
+    @tool(
+        "grep",
+        risk="read",
+        schema={"type": "object", "description": "grep", "properties": {"pat": {"type": "string"}}},
+    )
     async def grep(_):
         return ToolResult(ok=True)
 

@@ -65,7 +65,7 @@ def _parse_command(line: str) -> tuple[str, str | None]:
     idx = rest.find(" ")
     if idx < 0:
         return rest, None
-    return rest[:idx], rest[idx + 1:].strip() or None
+    return rest[:idx], rest[idx + 1 :].strip() or None
 
 
 async def _prompt_line(transport: TerminalTransport) -> str:
@@ -85,7 +85,7 @@ async def _run(
     session_id: str | None = None,
     resume: bool = False,
     run_task: str | None = None,
-    settings: "Settings | None" = None,
+    settings: Settings | None = None,
     transport: TerminalTransport | None = None,
 ) -> None:
     settings = settings or load_settings()
@@ -104,11 +104,15 @@ async def _run(
             elif t == MsgType.ASK.value:
                 q = Question(**p["question"])
                 ans = await transport.ask(q)
-                await ws.send(make_message(MsgType.ANSWER, {"id": p["id"], "text": ans}, id=p["id"]))
+                await ws.send(
+                    make_message(MsgType.ANSWER, {"id": p["id"], "text": ans}, id=p["id"])
+                )
             elif t == MsgType.CONFIRM_PLAN.value:
                 confirmed = await transport.confirm_plan()
                 await ws.send(
-                    make_message(MsgType.CONFIRM_PLAN, {"id": p["id"], "confirmed": confirmed}, id=p["id"])
+                    make_message(
+                        MsgType.CONFIRM_PLAN, {"id": p["id"], "confirmed": confirmed}, id=p["id"]
+                    )
                 )
             elif t == MsgType.APPROVE.value:
                 approved = await transport.approve(_dict_to_action(p["action"]))

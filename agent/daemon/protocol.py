@@ -23,16 +23,15 @@
 from __future__ import annotations
 
 import json
-from enum import Enum
-from typing import Any, Protocol, runtime_checkable
-
 from collections.abc import AsyncIterator
+from enum import StrEnum
+from typing import Any, Protocol, runtime_checkable
 
 DAEMON_VERSION = "0.1.0"
 PROTOCOL_VERSION = "1.0"
 
 
-class MsgType(str, Enum):
+class MsgType(StrEnum):
     """协议消息类型（值即线上的 ``type`` 字符串）。"""
 
     # ---- Client -> Server ----
@@ -45,7 +44,7 @@ class MsgType(str, Enum):
     TASK_SEND = "task.send"
     ANSWER = "answer"
     CONFIRM_PLAN = "confirm_plan"  # 客户端回传：{id, confirmed}
-    APPROVE = "approve"            # 客户端回传：{id, approved}
+    APPROVE = "approve"  # 客户端回传：{id, approved}
     COMMAND = "command"
     # ---- Server -> Client ----
     WELCOME = "welcome"
@@ -56,7 +55,7 @@ class MsgType(str, Enum):
     EVENT = "event"
     REPLAY_START = "replay_start"
     REPLAY_END = "replay_end"
-    ASK = "ask"                    # 服务端请求：{id, question}
+    ASK = "ask"  # 服务端请求：{id, question}
     SHOW_QUESTIONS = "show_questions"
     SHOW_PLAN = "show_plan"
     SHOW_SKILLS = "show_skills"
@@ -74,8 +73,7 @@ class WsConnection(Protocol):
     只要求能 ``send`` 字符串消息并支持 ``async for`` 读取字符串消息。
     """
 
-    async def send(self, message: str) -> None:
-        ...
+    async def send(self, message: str) -> None: ...
 
     def __aiter__(self) -> AsyncIterator[Any]:
         # 异步迭代产出消息（daemon 走文本模式为 str；websockets 也可能在其它模式产出 bytes，
@@ -84,7 +82,7 @@ class WsConnection(Protocol):
 
 
 def make_message(
-    type: "MsgType | str",
+    type: MsgType | str,
     payload: dict[str, Any] | None = None,
     *,
     id: str | None = None,

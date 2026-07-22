@@ -5,13 +5,11 @@
 
 from __future__ import annotations
 
-import pytest
-
 from agent.config.settings import Settings
 from agent.context import build_context_manager
-from agent.context.compactors.microcompact import Microcompact, PLACEHOLDER
+from agent.context.compactors.microcompact import Microcompact
 from agent.core.loop import AgentLoop
-from agent.core.model import Decision, FakeModel, Message, ToolCall
+from agent.core.model import Decision, FakeModel, ToolCall
 from agent.core.prompts import _read_agents_md, build_system_prompt
 from agent.runtime.registry import ToolRegistry, ToolResult, default_registry, tool
 
@@ -24,8 +22,8 @@ async def test_build_context_manager_respects_switches():
     """按配置开关决定 microcompact / auto_compact 是否启用。"""
     settings = Settings(context={"microcompact_enabled": False, "auto_compact_enabled": True})
     cm = build_context_manager(settings, _model())
-    assert cm.microcompact is None        # 显式禁用 → None
-    assert cm.auto_compact is not None    # 启用 → 注入 AutoCompact
+    assert cm.microcompact is None  # 显式禁用 → None
+    assert cm.auto_compact is not None  # 启用 → 注入 AutoCompact
 
 
 async def test_build_context_manager_all_disabled_yields_plain_manager():
@@ -77,9 +75,14 @@ async def test_build_system_prompt_static_prefix_stable_across_dates(monkeypatch
     import agent.core.prompts as prompts
 
     class _Stub:
-        def __init__(self, iso): self._iso = iso
-        def today(self): return self
-        def isoformat(self): return self._iso
+        def __init__(self, iso):
+            self._iso = iso
+
+        def today(self):
+            return self
+
+        def isoformat(self):
+            return self._iso
 
     monkeypatch.setattr(prompts, "date", _Stub("2026-01-01"))
     p1 = build_system_prompt(Settings())
@@ -87,8 +90,8 @@ async def test_build_system_prompt_static_prefix_stable_across_dates(monkeypatch
     p2 = build_system_prompt(Settings())
 
     marker = "## 当前日期"
-    assert p1.split(marker)[0] == p2.split(marker)[0]   # 静态前缀完全相同
-    assert "2026-01-01" in p1 and "2026-12-31" in p2    # 动态段日期各自变化
+    assert p1.split(marker)[0] == p2.split(marker)[0]  # 静态前缀完全相同
+    assert "2026-01-01" in p1 and "2026-12-31" in p2  # 动态段日期各自变化
 
 
 async def test_build_system_prompt_includes_cwd(monkeypatch, tmp_path):
@@ -124,12 +127,15 @@ async def test_session_builds_context_mgr_when_any_enabled_else_none():
     assert sess_on.context_mgr is not None
 
     sess_off = Session(
-        _model(), default_registry,
-        Settings(context={
-            "microcompact_enabled": False,
-            "auto_compact_enabled": False,
-            "session_memory_enabled": False,
-        }),
+        _model(),
+        default_registry,
+        Settings(
+            context={
+                "microcompact_enabled": False,
+                "auto_compact_enabled": False,
+                "session_memory_enabled": False,
+            }
+        ),
         tracer=None,
     )
     assert sess_off.context_mgr is None
@@ -140,10 +146,12 @@ async def test_loop_run_applies_microcompact_and_tracks_file_access():
     reg = ToolRegistry()
     reg.register(tool("read", risk="read")(lambda args: ToolResult(ok=True, output="x" * 200)))
 
-    model = FakeModel([
-        Decision(tool_calls=[ToolCall(id="c1", name="read", arguments={"path": "a.py"})]),
-        Decision(text="done"),
-    ])
+    model = FakeModel(
+        [
+            Decision(tool_calls=[ToolCall(id="c1", name="read", arguments={"path": "a.py"})]),
+            Decision(text="done"),
+        ]
+    )
     loop = AgentLoop(model, reg, Settings())
 
     cm = build_context_manager(Settings(), _model())

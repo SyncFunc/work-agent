@@ -144,7 +144,10 @@ async def read(args: dict[str, Any]) -> ToolResult:
                 "description": "匹配行上下各多显示几行（默认 0，便于看上下文）",
             },
             "ignore_case": {"type": "boolean", "description": "忽略大小写（默认 false）"},
-            "max_matches": {"type": "integer", "description": "最多返回多少处匹配（默认 50），超出截断"},
+            "max_matches": {
+                "type": "integer",
+                "description": "最多返回多少处匹配（默认 50），超出截断",
+            },
         },
         "required": ["pattern", "path"],
     },
@@ -181,10 +184,7 @@ async def grep(args: dict[str, Any]) -> ToolResult:
     for i in hits:
         for j in range(max(0, i - context), min(total, i + context + 1)):
             expanded.add(j)
-    out_lines = [
-        f"{'>' if j in hit_set else ' '} {j + 1}: {lines[j]}"
-        for j in sorted(expanded)
-    ]
+    out_lines = [f"{'>' if j in hit_set else ' '} {j + 1}: {lines[j]}" for j in sorted(expanded)]
     body = "\n".join(out_lines)
     header = (
         f"--- grep {pattern!r} in {path}: "
@@ -222,9 +222,7 @@ async def write(args: dict[str, Any]) -> ToolResult:
     except (ValueError, OSError) as e:
         return ToolResult(ok=False, error=str(e))
     diff = _make_diff(path, old, content)
-    return ToolResult(
-        ok=True, output=f"wrote {len(content)} chars to {path}", diff=diff
-    )
+    return ToolResult(ok=True, output=f"wrote {len(content)} chars to {path}", diff=diff)
 
 
 @tool(
@@ -276,7 +274,11 @@ async def edit(args: dict[str, Any]) -> ToolResult:
             )
     # str.replace(old, new, count) 中 count=0 表示「替换 0 次」，故不能用于「全部替换」；
     # replace_all 时省略 count 即替换全部，否则用 count=1 仅替换首个。
-    new_text = text.replace(old_string, new_string) if replace_all else text.replace(old_string, new_string, 1)
+    new_text = (
+        text.replace(old_string, new_string)
+        if replace_all
+        else text.replace(old_string, new_string, 1)
+    )
     try:
         target.write_text(new_text, encoding="utf-8")
     except (ValueError, OSError) as e:

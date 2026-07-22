@@ -4,8 +4,8 @@ from pathlib import Path
 
 import pytest
 
-from agent.tools import fs  # 导入触发 read/grep/write 注册
 from agent.runtime.registry import default_registry
+from agent.tools import fs  # noqa: F401  (导入触发 read/grep/write 注册，副作用)
 
 
 @pytest.fixture
@@ -52,13 +52,18 @@ async def test_read_offset_beyond_end(tmp_root: Path):
 async def test_grep_finds_lines_with_numbers(tmp_root: Path):
     """grep 返回带行号的匹配行，供模型定位后再 read 精确范围。"""
     reg = default_registry
-    content = "\n".join([
-        "import os",
-        "def foo():",
-        "    return os.getcwd()",
-        "class Bar:",
-        "    def get(self): return os.getcwd()",
-    ]) + "\n"
+    content = (
+        "\n".join(
+            [
+                "import os",
+                "def foo():",
+                "    return os.getcwd()",
+                "class Bar:",
+                "    def get(self): return os.getcwd()",
+            ]
+        )
+        + "\n"
+    )
     await reg.run("write", {"path": "g.py", "content": content})
 
     r = await reg.run("grep", {"pattern": "os\\.getcwd", "path": "g.py"})
@@ -74,9 +79,9 @@ async def test_grep_context_and_no_match(tmp_root: Path):
     await reg.run("write", {"path": "n.txt", "content": "a\nb\nc\nMATCH\nd\ne\n"})
     r = await reg.run("grep", {"pattern": "MATCH", "path": "n.txt", "context": 1})
     assert r.ok
-    assert "3: c" in r.output       # 上一条上下文
-    assert "4: MATCH" in r.output   # 匹配行（> 标记）
-    assert "5: d" in r.output       # 下一条上下文
+    assert "3: c" in r.output  # 上一条上下文
+    assert "4: MATCH" in r.output  # 匹配行（> 标记）
+    assert "5: d" in r.output  # 下一条上下文
 
     r2 = await reg.run("grep", {"pattern": "zzz", "path": "n.txt"})
     assert r2.ok and "no matches" in r2.output
@@ -117,7 +122,9 @@ async def test_edit_requires_unique_old_string(tmp_root: Path):
 async def test_edit_replace_all(tmp_root: Path):
     reg = default_registry
     await reg.run("write", {"path": "a.txt", "content": "foo foo foo\n"})
-    e = await reg.run("edit", {"path": "a.txt", "old_string": "foo", "new_string": "bar", "replace_all": True})
+    e = await reg.run(
+        "edit", {"path": "a.txt", "old_string": "foo", "new_string": "bar", "replace_all": True}
+    )
     assert e.ok, e.error
     assert (tmp_root / "a.txt").read_text(encoding="utf-8") == "bar bar bar\n"
 
@@ -166,5 +173,7 @@ async def test_bash_captures_stderr(tmp_root: Path):
 async def test_bash_timeout(tmp_root: Path):
     # 用跨平台且必然阻塞 5s 的命令验证超时（Windows 上 sleep 不是有效命令）。
     # 注意：bash 工具捕获超时并以 ToolResult(ok=False) 形式返回，不向上抛异常。
-    r = await default_registry.run("bash", {"cmd": "python -c \"import time; time.sleep(5)\"", "timeout": 1})
+    r = await default_registry.run(
+        "bash", {"cmd": 'python -c "import time; time.sleep(5)"', "timeout": 1}
+    )
     assert not r.ok and "timed out" in r.error

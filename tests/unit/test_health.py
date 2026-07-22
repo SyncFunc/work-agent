@@ -2,11 +2,14 @@
 
 import asyncio
 
-import pytest
 from typer.testing import CliRunner
 
 from agent.cli import app
-from agent.resilience.health import CheckResult, HealthChecker, HealthStatus, build_default_health_checks
+from agent.resilience.health import (
+    CheckResult,
+    HealthChecker,
+    build_default_health_checks,
+)
 
 
 class TestHealthChecker:
@@ -85,6 +88,7 @@ class TestHealthChecker:
     def test_parallel_execution(self):
         """多个检查并发执行。"""
         import time
+
         checker = HealthChecker()
 
         async def _slow() -> CheckResult:
@@ -148,7 +152,9 @@ class TestHealthCli:
             return CheckResult(name="test", status="ok")
 
         checker.register("test", _ok)
-        monkeypatch.setattr("agent.resilience.health.build_default_health_checks", lambda s: checker)
+        monkeypatch.setattr(
+            "agent.resilience.health.build_default_health_checks", lambda s: checker
+        )
         runner = CliRunner()
         result = runner.invoke(app, ["health"])
         assert result.exit_code == 0
@@ -163,7 +169,9 @@ class TestHealthCli:
             return CheckResult(name="test", status="degraded")
 
         checker.register("test", _deg)
-        monkeypatch.setattr("agent.resilience.health.build_default_health_checks", lambda s: checker)
+        monkeypatch.setattr(
+            "agent.resilience.health.build_default_health_checks", lambda s: checker
+        )
         runner = CliRunner()
         result = runner.invoke(app, ["health"])
         assert result.exit_code == 1
@@ -178,7 +186,9 @@ class TestHealthCli:
             return CheckResult(name="test", status="fail", detail="broken")
 
         checker.register("test", _fail)
-        monkeypatch.setattr("agent.resilience.health.build_default_health_checks", lambda s: checker)
+        monkeypatch.setattr(
+            "agent.resilience.health.build_default_health_checks", lambda s: checker
+        )
         runner = CliRunner()
         result = runner.invoke(app, ["health"])
         assert result.exit_code == 2
@@ -193,7 +203,9 @@ class TestHealthCli:
             return CheckResult(name="mycheck", status="ok")
 
         checker.register("mycheck", _ok)
-        monkeypatch.setattr("agent.resilience.health.build_default_health_checks", lambda s: checker)
+        monkeypatch.setattr(
+            "agent.resilience.health.build_default_health_checks", lambda s: checker
+        )
         runner = CliRunner()
         result = runner.invoke(app, ["health"])
         assert result.exit_code == 0
@@ -209,7 +221,9 @@ class TestHealthCli:
             return CheckResult(name="test", status="ok")
 
         checker.register("test", _ok)
-        monkeypatch.setattr("agent.resilience.health.build_default_health_checks", lambda s: checker)
+        monkeypatch.setattr(
+            "agent.resilience.health.build_default_health_checks", lambda s: checker
+        )
         runner = CliRunner()
         # 用超时避免无限等待
         result = runner.invoke(app, ["health", "--watch"], timeout=2)

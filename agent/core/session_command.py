@@ -13,7 +13,8 @@
 from __future__ import annotations
 
 import os
-from typing import TYPE_CHECKING, Any, Callable
+from collections.abc import Callable
+from typing import TYPE_CHECKING
 
 from agent.core.model import Message
 
@@ -24,12 +25,12 @@ if TYPE_CHECKING:
 
 
 async def dispatch_command(
-    session: "SessionLike",
+    session: SessionLike,
     raw: str,
-    transport: "AgentTransport",
-    settings: "Settings",
+    transport: AgentTransport,
+    settings: Settings,
     *,
-    feedback: "Callable[[str], None] | None" = None,
+    feedback: Callable[[str], None] | None = None,
 ) -> bool:
     """分发一条 ``/`` 命令；返回 True=已处理（含未知 slash 命令）。
 
@@ -103,7 +104,7 @@ async def dispatch_command(
         fb("用法: /skill <name>  —— 显式加载某 skill 到下一轮对话")
         return True
     if cmd.startswith("/skill "):
-        name = raw.strip()[len("/skill "):].strip()  # 保留原名大小写
+        name = raw.strip()[len("/skill ") :].strip()  # 保留原名大小写
         if session.skill_loader is None:
             fb("skills 未启用（settings.skills.enabled=false）")
         else:
@@ -122,13 +123,13 @@ async def dispatch_command(
         fb("用法: /agent <name> <task>  —— 后台启动一个 Subagent")
         return True
     if cmd.startswith("/agent "):
-        rest = raw.strip()[len("/agent "):].strip()
+        rest = raw.strip()[len("/agent ") :].strip()
         space_idx = rest.find(" ")
         if space_idx < 0:
             fb("用法: /agent <name> <task>  —— name 和 task 之间用空格分隔")
         else:
             agent_name = rest[:space_idx]
-            agent_task = rest[space_idx + 1:].strip()
+            agent_task = rest[space_idx + 1 :].strip()
             if not agent_task:
                 fb("用法: /agent <name> <task>  —— task 不能为空")
             else:

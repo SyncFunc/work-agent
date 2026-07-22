@@ -1,5 +1,11 @@
 """运行时：工具注册、审批、沙箱（M2 扩展）。"""
 
+from agent.runtime.approval import (
+    Action,
+    ApprovalGate,
+    ApprovalMode,
+    Decision,
+)
 from agent.runtime.registry import (
     RISK_LEVELS,
     ToolRegistry,
@@ -23,12 +29,6 @@ from agent.runtime.sandbox import (
     build_executor,
     get_executor,
     set_executor,
-)
-from agent.runtime.approval import (
-    Action,
-    ApprovalGate,
-    ApprovalMode,
-    Decision,
 )
 
 __all__ = [

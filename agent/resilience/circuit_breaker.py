@@ -27,9 +27,9 @@ class CircuitBreakerOpenError(Exception):
 
 @dataclass
 class CircuitBreakerConfig:
-    failure_threshold: int = 5       # 连续失败次数阈值
-    recovery_timeout: float = 30.0   # OPEN→HALF_OPEN 等待秒数
-    half_open_max_calls: int = 1     # HALF_OPEN 状态允许的探测请求数
+    failure_threshold: int = 5  # 连续失败次数阈值
+    recovery_timeout: float = 30.0  # OPEN→HALF_OPEN 等待秒数
+    half_open_max_calls: int = 1  # HALF_OPEN 状态允许的探测请求数
 
 
 class CircuitBreaker:
@@ -78,7 +78,7 @@ class CircuitBreaker:
         # 释放锁后执行实际调用（避免持有锁期间做 IO）
         try:
             result = await fn(*args, **kwargs)
-        except Exception as e:
+        except Exception:
             async with self._lock:
                 self._do_record_failure()
             raise
@@ -109,5 +109,8 @@ class CircuitBreaker:
         self._last_failure_time = time.time()
         if self._state == CircuitState.HALF_OPEN:
             self._state = CircuitState.OPEN
-        elif self._state == CircuitState.CLOSED and self._failure_count >= self._config.failure_threshold:
+        elif (
+            self._state == CircuitState.CLOSED
+            and self._failure_count >= self._config.failure_threshold
+        ):
             self._state = CircuitState.OPEN

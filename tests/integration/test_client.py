@@ -2,10 +2,7 @@
 
 from __future__ import annotations
 
-import asyncio
 from unittest.mock import AsyncMock
-
-import pytest
 
 from agent.core.intent import Question
 from agent.daemon.client import _parse_command, _run
@@ -41,12 +38,18 @@ def _types(ws):
 
 
 async def test_client_answers_ask_and_sends_task():
-    ws = FakeWS([
-        make_message(MsgType.WELCOME),
-        make_message(MsgType.SESSION_CREATED, {"session_id": "s1"}),
-        make_message(MsgType.ASK, {"id": "r1", "question": Question("choose", options=["a", "b"]).to_dict()}, id="r1"),
-        make_message(MsgType.CLOSE),
-    ])
+    ws = FakeWS(
+        [
+            make_message(MsgType.WELCOME),
+            make_message(MsgType.SESSION_CREATED, {"session_id": "s1"}),
+            make_message(
+                MsgType.ASK,
+                {"id": "r1", "question": Question("choose", options=["a", "b"]).to_dict()},
+                id="r1",
+            ),
+            make_message(MsgType.CLOSE),
+        ]
+    )
     transport = TerminalTransport(interactive=False, context_mgr=None)
     transport.ask = AsyncMock(return_value="a")  # 避免真实 TTY 交互
     await _run(ws, run_task="hello", transport=transport)
