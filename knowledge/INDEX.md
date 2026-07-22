@@ -498,6 +498,22 @@ flowchart TD
 - **零改动收益确认**：模型自身（`OpenAICompatibleModel._do_act`）仍不产 span，埋点在压缩器侧的 `model.act` 包裹处完成，与 loop 的 `model.act` span 解耦但同构。
 - **测试**：`tests/test_context.py` 追加 4 个用例（三层 span 树 + 隐式 parent、捷径无 model.act、usage 写入 meta、tracer=None 降级）。全量 `pytest` **260 passed**（原 256，+4 无回归）。
 
+## M6 规划（⚪ 待启动，2026-07-22 调研）
+
+> 两份文档：① `milestones/M6-生产化/调研.md`（现状缺口全景 + 外部优秀方案 + 全部 mermaid 图）；② `milestones/M6-生产化/README.md`（M6 规划：目标 / 方案架构图 / 步骤拆分草案 / 决策点）。
+
+- **M6 目标**：生产化 = 会话恢复 + 测试金字塔 + CI。M7 已落地 daemon 常驻 + 内存态多会话回放，是前置基础；M6 补齐「跨重启持久化」与「工程化测试/CI」。
+- **会话恢复缺口**：daemon `SessionRegistry` 全内存（`_sessions` dict）、`event_buffer` 内存 deque(200)、`client --resume` 仅连 daemon 最近会话非存储恢复；sqlite 仅 `TraceStore`+`SessionMemory`；`EventStream` 不落盘。需新增 `SessionStore`（sqlite：表 `events(session_id,seq,type,json,transient,ts)` + `sessions(...)`），写入点=给 `EventStream` 加持久化 sink，恢复=from_json 重放→重建 messages + 中断检测（interrupted_turn 注入「继续」）。
+- **方案锚点**：① Claude Code JSONL transcript（`parentUuid` 链/fork/中断检测）与本项目 `EventStream`（seq 单调/to_json/from_json/transient）**等价**，落盘即复用既有协议；② OpenAI Agents `SQLiteSession` 透明自动持久化 API 可借鉴；③ M4 双轨铁律：`EventStream` 永不压缩，恢复后重放再投影。
+- **测试金字塔**：传统 70/20/10 对 agent 失效（Tian Pan 2026-04），改「成本/保真度」三层：Tier1 Prompt 契约测试（prompt 快照 diff/工具 schema/解析器，确定零成本）、Tier2 工具交互测试（tool tapes=EventStream 录制重放，验证工具顺序/参数/错误分支）、Tier3 目标完成 eval（非确定，夜间/手动）。本项目 `FakeModel` 策略=Tier1 核心，须保留扩为「契约+fixture 重放」主力，避免集成测动辄调真实 LLM。
+- **CI**：新增 `.github/workflows/ci.yml`（矩阵 py3.12；ruff+basedpyright+pytest+pytest-cov；快慢分离：push/PR 跑 unit+integration+lint+type，e2e 夜间/手动）；`pyproject` dev 依赖补 `pytest-cov`/`ruff`/`pytest-xdist`。
+- **建议步骤（分步文档已建）**：M6.1 `SessionStore` 基础设施(含 **fork 血缘/复制** + 统一 `session_id`) → M6.2 会话恢复(+M7 冷启动衔接 + **fork 恢复** + `resume`/`fork` 命令) → M6.3 测试分层重构 → M6.4 CI 工作流 → M6.5 端到端验收(**resume+fork 跨重启**)。分步文档见 `milestones/M6-生产化/` 下 `6.1~6.5-*.md`。
+- **M6.1 已完成**（2026-07-22）：`agent/context/session_store.py` 落地 `SessionStore`+`SessionStoreSink`（sqlite 共享库 `<project>/.agent/sessions/sessions.db`，表 `sessions`/`events`）；`loop.run` 新增 `event_sink` 零侵入持久化；`Session` 增加 `session_id`+`session_store` 参数并统一 daemon/CLI 的会话 id；`fork()` 复制父 events 前缀并记录 `parent_session_id`。测试 `tests/test_session_store.py`（4 例），全量 `pytest` **384 passed** 无回归。详见 `milestones/M6-生产化/6.1-SessionStore基础设施.md`。
+
+## 行业调研（外部参照，2026-07-22 沉淀）
+
+- **Agent CLI 渲染方案与 Runner 交互调研**：`knowledge/调研-agent-cli渲染与runner交互.md` —— 对比 Claude Code(React/Ink 声明式+双缓冲)、Codex(Rust TUI+event stream+approval-sandbox 治理)、Gemini CLI(packages/cli↔core 分层)、OpenCode(Go+Bubble Tea+pubsub 总线)、Aider(轻量 diff)、ACP(JSON-RPC 解耦)。**核心结论**：渲染层与 runner 通过「事件流/发布订阅」或「进程级 client-server 协议」解耦，runner 只生产事件、绝不感知 UI；本项目 `AgentTransport`+`EventStream.subscribe/emit`+M7 daemon/WS 已对齐该范式，后续为渲染质量增量增强。被 M6/M7 渲染与解耦议题引用。
+
 
 
 

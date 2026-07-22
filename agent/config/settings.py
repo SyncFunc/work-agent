@@ -86,6 +86,7 @@ class ObsConfig(BaseModel):
 
     enabled: bool = True
     db_path: str = ".agent/traces.db"
+    sessions_db_path: str = ".agent/sessions/sessions.db"  # M6 会话恢复存储
 
 
 class RateLimitConfigModel(BaseModel):

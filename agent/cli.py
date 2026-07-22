@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import time
+import uuid
 from typing import cast
 
 import typer
@@ -29,6 +30,7 @@ from agent.core.session import Session
 from agent.core.session_command import dispatch_command
 from agent.obs.tracer import Tracer
 from agent.obs.store import TraceStore
+from agent.context.session_store import SessionStore
 from agent.runtime.registry import default_registry
 from agent.runtime.terminal_transport import TerminalTransport
 
@@ -122,7 +124,10 @@ def run(
     model = _build_model(settings, tracer=tracer)
     trace_store = None if no_trace else TraceStore(settings.obs.db_path)
     reg = default_registry
-    session = Session(model, reg, settings, tracer, plan_mode=plan, trace_store=trace_store)
+    session_id = uuid.uuid4().hex
+    session_store = SessionStore(settings.obs.sessions_db_path)
+    session_store.create(session_id)
+    session = Session(model, reg, settings, tracer, plan_mode=plan, trace_store=trace_store, session_id=session_id, session_store=session_store)
 
     transport = TerminalTransport(interactive=sys.stdin.isatty(), context_mgr=session.context_mgr)
     try:
@@ -169,7 +174,10 @@ def chat() -> None:
         raise typer.Exit(code=1)
     trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
     reg = default_registry
-    session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store)
+    session_id = uuid.uuid4().hex
+    session_store = SessionStore(settings.obs.sessions_db_path)
+    session_store.create(session_id)
+    session = Session(model, reg, settings, tracer, plan_mode=settings.plan.mode, trace_store=trace_store, session_id=session_id, session_store=session_store)
     transport = TerminalTransport(interactive=True, context_mgr=session.context_mgr)
 
     typer.echo("进入 chat 模式（/plan /exec 切换模式；/skills /agents 查看扩展；/agent <name> <task> 后台运行；/bg 查看后台任务；/context 查看占用；/compact 手动压缩；exit/quit 退出）。")

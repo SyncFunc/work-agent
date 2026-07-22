@@ -19,6 +19,7 @@ from agent.context import SessionMemory, SessionMemoryConfig
 from agent.context.tokens import _estimate_tokens
 from agent.obs.store import TraceStore
 from agent.obs.tracer import Span
+from agent.context.session_store import SessionStore, SessionStoreSink
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -64,7 +65,7 @@ class SessionLike(Protocol):
 
 
 class Session:
-    def __init__(self, model, reg, settings, tracer=None, *, plan_mode: bool = False, plan_path=None, trace_store=None, context_mgr=None):
+    def __init__(self, model, reg, settings, tracer=None, *, plan_mode: bool = False, plan_path=None, trace_store=None, context_mgr=None, session_id: str | None = None, session_store: "SessionStore | None" = None):
         from pathlib import Path
 
         from agent.resilience.pipeline import build_sandbox_pipeline
@@ -133,7 +134,13 @@ class Session:
 
         # M4.4 Session Memory：零成本优先压缩器（复用 M5.4.1 后台 Subagent 做增量更新）
         # 前置：要求 Auto Compact 开启，否则不启用（见 4.4.2）。
-        self.session_id = uuid.uuid4().hex
+        # M6 会话恢复：统一 session_id（daemon/CLI 创建时传入，与持久化行一致）
+        self.session_id = session_id or uuid.uuid4().hex
+        self.session_store = session_store
+        if self.session_store is not None:
+            self.session_store.create(
+                self.session_id, plan_mode=plan_mode, plan_path=plan_path
+            )
         self.session_memory: SessionMemory | None = None
         if settings.context.session_memory_enabled and settings.context.auto_compact_enabled:
             self.session_memory = SessionMemory(
@@ -180,6 +187,11 @@ class Session:
             if self.context_mgr is not None:
                 self.context_mgr.set_conv(self.messages)
 
+            event_sink = (
+                SessionStoreSink(self.session_store, self.session_id)
+                if self.session_store is not None
+                else None
+            )
             res = await self.loop.run(
                 current_task,
                 self.messages,
@@ -189,7 +201,10 @@ class Session:
                 transport=transport,
                 parent_span=self.root_span,
                 context_mgr=self.context_mgr,
+                event_sink=event_sink,
             )
+            if self.session_store is not None:
+                self.session_store.touch(self.session_id)
             self.messages = list(res.messages or self.messages)
             self.clarify_total = res.clarify_total
 
@@ -205,7 +220,6 @@ class Session:
                 if self.context_mgr.should_compact():
                     await self.context_mgr.compact()
                     self.messages = self.context_mgr.conv
-
 
             # ① 澄清回填
             if res.needs_clarification:

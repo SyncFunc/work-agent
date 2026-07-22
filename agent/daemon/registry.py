@@ -84,13 +84,13 @@ class SessionRegistry:
         self,
         name: str | None = None,
         *,
-        session_factory: "Callable[[], SessionLike] | None" = None,
+        session_factory: "Callable[[str], SessionLike] | None" = None,
         transport_factory: "Callable[[SessionHandle], BridgeTransport] | None" = None,
     ) -> SessionHandle:
         sid = uuid.uuid4().hex
         sf = session_factory or self._session_factory
         tf = transport_factory or self._transport_factory
-        session = sf() if sf is not None else None
+        session = sf(sid) if sf is not None else None
         handle = SessionHandle(sid, name, session, None)
         if tf is not None:
             handle.transport = tf(handle)

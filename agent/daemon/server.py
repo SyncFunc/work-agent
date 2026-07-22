@@ -59,7 +59,7 @@ class Connection:
 # --------------------------------------------------------------------------- #
 # 默认会话 / 传输工厂（真实 daemon 使用；测试可注入 fake）
 # --------------------------------------------------------------------------- #
-def _default_session_factory(settings: Settings) -> Session:
+def _default_session_factory(settings: Settings, session_id: str) -> Session:
     from agent.core.model import create_model
     from agent.core.session import Session
     from agent.obs.store import TraceStore
@@ -76,6 +76,7 @@ def _default_session_factory(settings: Settings) -> Session:
         tracer,
         plan_mode=settings.plan.mode,
         trace_store=trace_store,
+        session_id=session_id,
     )
 
 
@@ -310,7 +311,7 @@ async def _serve(settings: Settings, registry: SessionRegistry, stop_event: asyn
 def start_daemon(settings: Settings) -> None:
     """启动守护进程：HTTP /health（独立端口）+ WebSocket 服务；直到 Ctrl-C。"""
     registry = SessionRegistry(
-        session_factory=lambda: _default_session_factory(settings),
+        session_factory=lambda sid: _default_session_factory(settings, sid),
         transport_factory=_default_transport_factory,
     )
     registry._token = settings.daemon.token  # 供 hello 鉴权（可选）

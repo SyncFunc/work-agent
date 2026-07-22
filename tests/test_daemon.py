@@ -24,7 +24,8 @@ from agent.daemon.server import create_ws_server
 class FakeSession:
     """最小可驱动会话：发出 TEXT + 瞬时 TOOL_CALL_DELTA + 向 transport 提问 + FINAL。"""
 
-    def __init__(self) -> None:
+    def __init__(self, session_id: str | None = None) -> None:
+        self.session_id = session_id
         self.plan_mode = False
         self.plan_path = None
         self.context_mgr = None
@@ -50,7 +51,7 @@ class FakeSession:
 
 def _make_registry() -> SessionRegistry:
     return SessionRegistry(
-        session_factory=FakeSession,
+        session_factory=lambda sid: FakeSession(sid),
         transport_factory=lambda h: BridgeTransport(h),
     )
 

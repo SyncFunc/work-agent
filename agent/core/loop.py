@@ -15,7 +15,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, TYPE_CHECKING
+from typing import Any, Callable, TYPE_CHECKING
 
 from agent.config.settings import Settings
 from agent.core.control_tools import (
@@ -121,6 +121,7 @@ class AgentLoop:
         parent_span=None,
         context_mgr: "ContextManager | None" = None,
         name: str = "",
+        event_sink: "Callable[[Event], None] | None" = None,
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
@@ -141,6 +142,8 @@ class AgentLoop:
         stream = EventStream()
         if transport is not None:
             transport.bind(stream)
+        if event_sink is not None:
+            stream.subscribe(event_sink)  # M6 会话持久化：append 即落盘（瞬时不落）
         usage_total: dict[str, int] = {}
 
         last_callset: frozenset[tuple[str, str]] | None = None
