@@ -128,6 +128,8 @@ python -m agent.cli chat
 | `health` | 健康检查：`--watch`（轮询）、`--port 9090`（HTTP `/health` 端点）。 |
 | `daemon` | 启动 agentrunner 守护进程（常驻，仅绑 `127.0.0.1`）。`--port` 覆盖端口。 |
 | `client` | 连接 daemon 的 CLI 前端。`--session <id>` attach 指定会话、`--resume` 恢复最近会话、`--run "<task>"` 一次性模式。 |
+| `resume <id>` | 跨重启恢复指定会话（从 SQLite 事件流重建消息，可继续未完成任务；中断处自动注入「继续」）。 |
+| `fork <id>` | 从指定会话 fork 出新分支（复制事件前缀，记录 `parent_session_id` 血缘）。 |
 
 ### chat REPL 内置命令
 
@@ -144,6 +146,18 @@ python -m agent.cli chat
 | `/compact` | 手动压缩上下文 |
 
 输入 `exit` / `quit` 退出（退出时会优雅等待后台 Subagent 收尾）。
+
+### 会话恢复与 fork（M6）
+
+会话持久化到 `<project>/.agent/sessions/` 下的 SQLite（事件流 + 元数据），**跨重启可恢复**：
+
+```bash
+python -m agent.cli resume <id>     # 从持久化事件流重建消息并继续；中断处自动注入「继续」
+python -m agent.cli fork <id>       # 派生独立分支（复制父会话事件前缀，记录血缘）
+python -m agent.cli client --resume # daemon 模式：恢复最近会话
+```
+
+`chat` REPL 内也支持 `/resume <id>`、`/fork <id>` 即时切换会话分支。恢复基于完整未压缩的 `EventStream`，fork 为复制语义、恢复路径无特殊分支。
 
 ---
 
@@ -235,7 +249,7 @@ knowledge/     跨里程碑知识沉淀
 | M3 可观测与韧性层 | ✅ 已完成 |
 | M4 上下文与记忆 | 🟡 部分完成（M4.1–M4.7 已落地，M4.5–M4.7 见文档） |
 | M5 扩展能力 | ✅ 已完成 |
-| M6 生产化（会话恢复 / 测试金字塔 / CI） | ⚪ 待启动 |
+| M6 生产化（会话恢复 / 测试金字塔 / CI） | ✅ 已完成 |
 | M7 agentrunner 守护进程分离 | ✅ 已完成（全量 `pytest` 380 passed） |
 
 ---
@@ -244,10 +258,16 @@ knowledge/     跨里程碑知识沉淀
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                       # 跑全部测试
-pytest --cov=agent             # 带覆盖率（需 pip install pytest-cov）
-pytest tests/test_daemon.py     # 单跑某文件
+pytest -q                       # 跑 unit + integration（默认跳过 slow/e2e）
+pytest -m slow                  # 跑 e2e（非确定/慢，CI 走 nightly / workflow_dispatch）
+ruff check .                    # lint
+ruff format --check .           # 格式检查
+basedpyright                    # 类型检查（standard 模式）
+pytest --cov=agent --cov-report=xml   # 带覆盖率（需 pip install pytest-cov）
 ```
+
+> CI：`.github/workflows/ci.yml` 在 push/PR 跑 `fast` job（ruff + basedpyright + pytest + cov），
+> `slow` job 仅 nightly / 手动触发跑 e2e（真实 LLM 调用只在此处，绝不进 PR 门禁）。
 
 - LLM 一律可 Mock：`Model` 抽象 + `FakeModel` / `RecordingModel`，测试不依赖真实 API。
 - 异步测试：`pytest-asyncio`（`asyncio_mode = "auto"`）。
