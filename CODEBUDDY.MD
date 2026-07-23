@@ -58,6 +58,7 @@
 | 可观测 | 自研 `Tracer`(OTel 语义)，可导出 JSON / 接 Langfuse |
 | 测试 | `pytest` + `pytest-asyncio`；LLM 一律可 Mock |
 | 提示词 | Markdown + frontmatter，与代码分离 |
+| 代码质量 | `ruff` 做 lint + format，**CI 强制**：提交前必须 `ruff check .` 与 `ruff format --check .` 全绿；禁止把 lambda 赋值给变量（`x = lambda:` 触发 E731），一律用 `def` 替代 |
 
 **目录约定**（详见报告 §5）：`agent/core`(循环/意图/模型)、`agent/runtime`(注册/审批/沙箱)、`agent/context`(管理/压缩/记忆)、`agent/skills`、`agent/subagent.py`、`agent/resilience`、`agent/obs`、`agent/config`、`tools/`、`skills/`、`tests/`、`milestones/`、`knowledge/`。
 
@@ -85,10 +86,18 @@ pip install -e ".[dev]"
 pytest -q
 # 跑单测带覆盖
 pytest --cov=agent
-# 启动交互
+# 启动交互（默认 Textual 全屏 TUI；非 TTY 自动退回旧渲染）
 python -m agent.cli chat
+# 强制旧版非全屏渲染
+python -m agent.cli chat --legacy
 # 一次性执行
 python -m agent.cli run "把 TODO 注释清理掉"
 # 恢复会话
 python -m agent.cli resume <session_id>
+# lint 检查（CI 强制通过，含 E731 等规则）
+ruff check .
+# 自动格式化
+ruff format .
+# 仅检查格式是否合规（不改文件）
+ruff format --check .
 ```

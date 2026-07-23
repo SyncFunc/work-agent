@@ -11,6 +11,7 @@
 import asyncio
 
 import pytest
+import typer
 from typer.testing import CliRunner
 
 from agent.cli import app
@@ -511,3 +512,50 @@ def test_shutdown_background_cancels_pending():
     t, cancelled = asyncio.run(_run())
     assert "bg1" in cancelled
     assert t.cancelled() or t.done()
+
+
+# --------------------------------------------------------------------------- #
+# M8.7：迁移切换（chat 默认进入 Textual TUI，--legacy 退回旧渲染）
+# --------------------------------------------------------------------------- #
+def test_chat_default_enters_tui_when_tty(runner, monkeypatch):
+    """M8.7：chat 无 flag 且在交互终端（TTY）下默认进入 Textual 全屏 TUI（ChatApp.run 被调用）。"""
+    _patch_model(monkeypatch, FakeModel([Decision(text="hi")]))
+    # 模拟「交互终端」决策：强制走 TUI 分支（避免依赖 Click 在 CI 下对 sys.stdin 的替换）。
+    monkeypatch.setattr("agent.cli._chat_should_use_tui", lambda legacy: True)
+
+    calls: list[str] = []
+
+    class FakeApp:
+        def __init__(self, session, settings, session_store):
+            calls.append("init")
+
+        def run(self):
+            calls.append("run")
+            raise typer.Exit(0)
+
+    monkeypatch.setattr("agent.tui.app.ChatApp", FakeApp)
+    # 不传 input：命中 TUI 分支后 FakeApp.run 立即 typer.Exit，不会真的进入 Textual 主循环。
+    result = runner.invoke(app, ["chat"])
+    assert "run" in calls
+    assert result.exit_code == 0
+
+
+def test_chat_legacy_flag_uses_old_repl(runner, monkeypatch):
+    """M8.7：chat --legacy 强制走旧 TerminalTransport REPL，不进入 TUI（非交互输入即可退出）。"""
+    _patch_model(monkeypatch, FakeModel([Decision(text="hi")]))
+
+    calls: list[str] = []
+
+    class FakeApp:
+        def __init__(self, session, settings, session_store):
+            calls.append("init")
+
+        def run(self):
+            calls.append("run")
+            raise typer.Exit(0)
+
+    monkeypatch.setattr("agent.tui.app.ChatApp", FakeApp)
+    # 非交互环境（CliRunner 无 TTY）：默认与 --legacy 都走旧渲染；断言 TUI 未被使用。
+    result = runner.invoke(app, ["chat", "--legacy"], input="exit\n")
+    assert calls == []  # Textual ChatApp 完全未被实例化/运行
+    assert result.exit_code == 0

@@ -112,8 +112,11 @@ python -m agent.cli run "把 TODO 注释清理掉"
 # PLAN 模式：先产出计划，确认后再执行
 python -m agent.cli run --plan "重构 utils 模块"
 
-# 交互式 REPL：多轮对话，单会话持续累积历史
+# 交互式 REPL：多轮对话，单会话持续累积历史（默认进入 Textual 全屏 TUI，对标 Claude Code）
 python -m agent.cli chat
+
+# 强制使用旧版非全屏渲染（CI / 管道 / 偏好旧交互时）
+python -m agent.cli chat --legacy
 ```
 
 ---
@@ -123,7 +126,7 @@ python -m agent.cli chat
 | 命令 | 说明 |
 |---|---|
 | `run <task>` | 一次性执行任务。选项：`--plan/--no-plan`（PLAN 起步）、`--yes`（跳过计划确认）、`--no-clarify`（关澄清）、`--no-trace`（关 trace）。 |
-| `chat` | 交互式 REPL，多轮对话。 |
+| `chat` | 交互式 REPL，多轮对话。默认进入 **Textual 全屏 TUI**（需交互终端 TTY）；非交互环境（CI / 管道）自动退回旧渲染；`--legacy` 强制旧版非全屏渲染。 |
 | `init` | 生成 `.agent/` 配置骨架（settings.yaml / skills / agents / AGENTS.md）。 |
 | `health` | 健康检查：`--watch`（轮询）、`--port 9090`（HTTP `/health` 端点）。 |
 | `daemon` | 启动 agentrunner 守护进程（常驻，仅绑 `127.0.0.1`）。`--port` 覆盖端口。 |

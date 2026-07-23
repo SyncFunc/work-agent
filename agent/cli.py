@@ -68,6 +68,15 @@ def _ensure_scaffold() -> None:
         typer.echo(f"[init] 已为项目创建配置骨架 .agent/：{', '.join(made)}", err=True)
 
 
+def _chat_should_use_tui(legacy: bool) -> bool:
+    """M8.7：是否使用 Textual 全屏 TUI。
+
+    默认（未指定 ``--legacy`` 且当前为交互终端 TTY）走 TUI；否则退回旧 TerminalTransport 渲染。
+    抽成独立函数，便于在无 TTY 的 CI 环境做单测时直接 mock 决策结果。
+    """
+    return (not legacy) and sys.stdin.isatty()
+
+
 def _render_soft_limit(res) -> None:
     """max_iterations 软上限命中提示：不中断会话，仅告知用户上下文已保留、可接棒续跑。"""
     if res is None:
@@ -169,11 +178,16 @@ def run(
 
 @app.command()
 def chat(
-    tui: bool = typer.Option(
-        False, "--tui", help="使用 Textual 全屏 TUI（需交互终端 TTY；对标 Claude Code 体验）"
+    legacy: bool = typer.Option(
+        False,
+        "--legacy",
+        help="使用旧版 TerminalTransport 非全屏渲染（默认已是 Textual 全屏 TUI；非交互环境自动退回旧渲染）",
     ),
 ) -> None:
     """交互式 REPL：多轮对话，单一会话持续累积历史。
+
+    默认进入 **Textual 全屏 TUI**（对标 Claude Code 体验）；非交互环境（管道 / CI / CliRunner）
+    自动退回旧版 TerminalTransport 渲染，保证不卡死且旧单测继续绿。加 ``--legacy`` 强制旧渲染。
 
     任意轮次用命令切换模式：/plan（探索） / exec（执行） / approve（批准计划并切执行）
     / mode（查看当前模式）。扩展命令：/skills（列出 skill）、/agents（列出 subagent 类型）、
@@ -208,15 +222,11 @@ def chat(
         session_store=session_store,
     )
 
-    # M8：全屏 TUI 路径。仅在「真正 TTY」下进入；非交互（管道 / CI / CliRunner）退回传统模式，
-    # 避免 Textual 在无可交互终端时卡死。旧 `chat`（无 --tui）走下方 TerminalTransport 路径，一行不改。
-    if tui:
-        if not sys.stdin.isatty():
-            typer.echo(
-                "TUI 需要交互终端（TTY），当前为非交互环境，请改用默认 `chat` 进入传统模式。",
-                err=True,
-            )
-            raise typer.Exit(code=1)
+    # M8.7：默认进入 Textual 全屏 TUI；仅当显式 `--legacy` 或当前非交互终端（CI / 管道 /
+    # CliRunner）时退回旧 TerminalTransport REPL，避免 Textual 在无可交互终端时卡死，
+    # 旧 CliRunner 单测继续走此路径。
+    use_tui = _chat_should_use_tui(legacy)
+    if use_tui:
         from agent.tui.app import ChatApp
 
         app = ChatApp(session=session, settings=settings, session_store=session_store)
