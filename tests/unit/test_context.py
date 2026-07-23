@@ -704,6 +704,7 @@ async def test_compact_no_sawtooth_via_mark_boundary():
     ac = AutoCompact(model, recent_keep=2)
     # 小窗口：effective_window = 60_000 - 2_000 = 58_000，阈值 45_000
     m = ContextManager(auto_compact=ac, context_window=60_000, max_output_tokens=2_000)
+
     # 每条大消息约 20_000 tokens（CJK 1 token/字），3 条即超阈值
     def big():
         return _msg("user", _big_cjk(20_000))

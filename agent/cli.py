@@ -155,9 +155,7 @@ def run(
 
             decisions = decisions_from_eventstream(res.events)
             dump_tape(decisions, record)
-            typer.echo(
-                f"[record] 已录制 {len(decisions)} 条决策 → {record}", err=True
-            )
+            typer.echo(f"[record] 已录制 {len(decisions)} 条决策 → {record}", err=True)
         transport.report_usage(res.usage, res.text)
         _render_soft_limit(res)
         # 最终答案已通过流式 Live 实时渲染，无需重复打印 res.text
