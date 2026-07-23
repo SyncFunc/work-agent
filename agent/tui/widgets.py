@@ -7,8 +7,6 @@ Collapsible + Syntax），但对外类名保持稳定，便于测试按类型断
 
 from __future__ import annotations
 
-import json
-
 from rich.markdown import Markdown
 from rich.panel import Panel
 from rich.text import Text

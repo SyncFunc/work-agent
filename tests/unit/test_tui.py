@@ -6,16 +6,21 @@
 
 from __future__ import annotations
 
+import asyncio
+
+from textual.widgets import TextArea
+
+from agent.config.settings import Settings
 from agent.core.events import Event, EventStream, EventType
+from agent.core.intent import Question
 from agent.core.model import Decision, FakeModel, ToolCall
 from agent.core.session import Session
-from agent.config.settings import Settings
+from agent.runtime.approval import Action
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
-from agent.tui.app import ChatApp, _StaticLine
-from agent.tui.widgets import AssistantMessage, ToolBlock, UserMessage
 from agent.runtime.textual_transport import TextualTransport
-from textual.widgets import TextArea
-import asyncio
+from agent.tui.app import ChatApp, _StaticLine
+from agent.tui.screens import ApproveScreen, AskScreen, PlanScreen
+from agent.tui.widgets import AssistantMessage, ToolBlock, UserMessage
 
 
 async def test_app_boots():
@@ -92,3 +97,183 @@ async def test_slash_command_dispatched():
         # /context 不触发模型，仅经 dispatch_command 渲染上下文占用信息（notify 行存在）
         assert len(pilot.app.query(_StaticLine)) >= 1
 
+
+# --------------------------------------------------------------------------- #
+# M8.3：HITL 模态屏（ModalScreen + 线程安全 Future）
+# --------------------------------------------------------------------------- #
+async def _wait_for_screen(pilot, cls, *, timeout: float = 5.0) -> bool:
+    """轮询直到 app.screen 变为给定模态屏类型（worker 线程经 call_from_thread 推屏）。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if isinstance(pilot.app.screen, cls):
+            return True
+        await pilot.pause()
+    return False
+
+
+async def _wait_for(pred, *, timeout: float = 5.0) -> bool:
+    """轮询直到谓词成立。"""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + timeout
+    while loop.time() < deadline:
+        if pred():
+            return True
+        await asyncio.sleep(0.02)
+    return False
+
+
+async def test_hitl_ask_multichoice():
+    """M8.3：AskScreen 数字键选择 → ask 返回对应选项文本。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        q = Question(question="选哪个?", options=["A", "B", "C"])
+        task = asyncio.create_task(t.ask(q))
+        await pilot.pause()
+        assert isinstance(app.screen, AskScreen)
+        await pilot.press("2")
+        await pilot.pause()
+        assert await task == "B"
+        assert not isinstance(app.screen, AskScreen)
+
+
+async def test_hitl_ask_freetext():
+    """M8.3：无选项时 AskScreen 用 Input 自由输入，回车提交。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        q = Question(question="你叫什么?")
+        task = asyncio.create_task(t.ask(q))
+        await pilot.pause()
+        assert isinstance(app.screen, AskScreen)
+        await pilot.press("a", "l", "i", "c", "e")
+        await pilot.press("enter")
+        await pilot.pause()
+        assert await task == "alice"
+        assert not isinstance(app.screen, AskScreen)
+
+
+async def test_hitl_approve():
+    """M8.3：ApproveScreen 按 y → approve 返回 True。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        action = Action(tool="bash", risk="exec", args={"cmd": "rm -rf /"}, description="危险命令")
+        task = asyncio.create_task(t.approve(action))
+        await pilot.pause()
+        assert isinstance(app.screen, ApproveScreen)
+        await pilot.press("y")
+        await pilot.pause()
+        assert await task is True
+        assert not isinstance(app.screen, ApproveScreen)
+
+
+async def test_hitl_reject():
+    """M8.3：ApproveScreen 按 n → approve 返回 False。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        action = Action(tool="bash", risk="exec", args={"cmd": "rm -rf /"}, description="危险命令")
+        task = asyncio.create_task(t.approve(action))
+        await pilot.pause()
+        assert isinstance(app.screen, ApproveScreen)
+        await pilot.press("n")
+        await pilot.pause()
+        assert await task is False
+        assert not isinstance(app.screen, ApproveScreen)
+
+
+async def test_hitl_plan_confirm():
+    """M8.3：PlanScreen 按 y → confirm_plan 返回 True。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        task = asyncio.create_task(t.confirm_plan())
+        await pilot.pause()
+        assert isinstance(app.screen, PlanScreen)
+        await pilot.press("y")
+        await pilot.pause()
+        assert await task is True
+        assert not isinstance(app.screen, PlanScreen)
+
+
+async def test_hitl_plan_decline():
+    """M8.3：PlanScreen 按 n → confirm_plan 返回 False。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        task = asyncio.create_task(t.confirm_plan())
+        await pilot.pause()
+        assert isinstance(app.screen, PlanScreen)
+        await pilot.press("n")
+        await pilot.pause()
+        assert await task is False
+        assert not isinstance(app.screen, PlanScreen)
+
+
+def _make_approval_session(model, *, mode: str = "on-request") -> Session:
+    """构造会在执行前触发审批门的会话（on-request 模式 + approval_request=True）。
+
+    注意：用 ``risk="exec"`` 注册 echo 工具——gate 对 ``read`` 风险有「只读自动放行」
+    的早返回分支，会先于 ``approval_request`` 判定，导致永不弹审批框。
+    """
+
+    async def _echo(args):
+        return ToolResult(ok=True, output="done")
+
+    reg = ToolRegistry()
+    reg.register(tool("echo", risk="exec")(_echo))
+    settings = Settings()
+    settings.approval.mode = mode
+    return Session(model, reg, settings, tracer=None)
+
+
+async def test_hitl_approve_e2e():
+    """M8.3：worker 线程触发审批门 → ApproveScreen → 按 y 放行 → 会话继续产出最终答案。"""
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(id="t1", name="echo", arguments={"x": 1}, approval_request=True)
+                ]
+            ),
+            Decision(text="approved path"),
+        ]
+    )
+    session = _make_approval_session(model)
+    app = ChatApp(session=session, settings=session.settings)
+    async with app.run_test() as pilot:
+        ta = pilot.app.query_one(TextArea)
+        ta.text = "do echo"
+        await pilot.press("ctrl+j")
+        assert await _wait_for_screen(pilot, ApproveScreen)
+        await pilot.press("y")
+        assert await _wait_for(lambda: len(pilot.app.query(AssistantMessage)) >= 1, timeout=5.0)
+        # 放行后工具执行 + 下一轮最终答案都已流式渲染
+        assert len(pilot.app.query(AssistantMessage)) >= 1
+
+
+async def test_hitl_reject_e2e():
+    """M8.3：worker 线程触发审批门 → ApproveScreen → 按 n 拒绝 → 会话进入拒绝分支继续。"""
+    model = FakeModel(
+        [
+            Decision(
+                tool_calls=[
+                    ToolCall(id="t1", name="echo", arguments={"x": 1}, approval_request=True)
+                ]
+            ),
+            Decision(text="rejected path"),
+        ]
+    )
+    session = _make_approval_session(model)
+    app = ChatApp(session=session, settings=session.settings)
+    async with app.run_test() as pilot:
+        ta = pilot.app.query_one(TextArea)
+        ta.text = "do echo"
+        await pilot.press("ctrl+j")
+        assert await _wait_for_screen(pilot, ApproveScreen)
+        await pilot.press("n")
+        assert await _wait_for(lambda: len(pilot.app.query(AssistantMessage)) >= 1, timeout=5.0)
+        # 拒绝后工具返回 rejected，循环继续到下一轮最终答案，会话未中断
+        assert len(pilot.app.query(AssistantMessage)) >= 1

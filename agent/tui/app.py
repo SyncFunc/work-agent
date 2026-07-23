@@ -88,9 +88,10 @@ class ChatApp(App):
 
     def on_mount(self) -> None:
         self.title = "Agent · 全屏会话"
-        self._mount(
-            UserMessage("欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；输入 / 查看命令）。")
-        )
+        # 缓存日志区引用：worker 线程经 call_from_thread 高频挂载部件，
+        # 每次 query_one 在并发回调下偶发 NoMatches（屏幕就绪竞态），缓存后稳定。
+        self._log = self.query_one("#log", VerticalScroll)
+        self._mount(UserMessage("欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；输入 / 查看命令）。"))
         # 有 session 时：创建 transport 并启动 worker 线程驱动 Session.step（方案 B）。
         if self.session is not None:
             self.transport = TextualTransport(self, context_mgr=self.session.context_mgr)
@@ -165,7 +166,7 @@ class ChatApp(App):
                 )
             except Exception as e:  # 任何未捕获异常优雅通知，不崩 UI
                 self.transport.notify(f"error: {type(e).__name__}: {e}")
-                res, err = None, 1
+                res = None
             else:
                 if res is not None:
                     self.transport.report_usage(res.usage, res.text)
@@ -173,12 +174,11 @@ class ChatApp(App):
             self.transport.close()
 
     # ------------------------------------------------------------------ #
-    # 内部工具：挂载部件 + 自动吸底
+    # 内部工具：挂载部件 + 自动吸底（#log 引用在 on_mount 缓存，避免并发查询竞态）
     # ------------------------------------------------------------------ #
     def _mount(self, widget: Any) -> None:
-        log = self.query_one("#log", VerticalScroll)
-        log.mount(widget)
-        log.scroll_end(animate=False)
+        self._log.mount(widget)
+        self._log.scroll_end(animate=False)
 
     # ------------------------------------------------------------------ #
     # 事件 → 部件 渲染（由 TextualTransport 经 call_from_thread 调用）
@@ -237,7 +237,9 @@ class ChatApp(App):
             table.add_column("title")
             table.add_column("status", style="yellow")
             for s in res.plan_steps:
-                table.add_row(getattr(s, "id", "?"), getattr(s, "title", ""), getattr(s, "status", ""))
+                table.add_row(
+                    getattr(s, "id", "?"), getattr(s, "title", ""), getattr(s, "status", "")
+                )
             parts.append(table)
         body = Group(*parts) if parts else Text("(空计划)")
         self._mount(_StaticLine(Panel(body, title="📋 计划", border_style="magenta")))

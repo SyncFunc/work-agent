@@ -11,7 +11,8 @@
 
 from __future__ import annotations
 
-import json
+import asyncio
+import concurrent.futures
 import threading
 from typing import Any
 
@@ -121,13 +122,27 @@ class TextualTransport(AgentTransport):
         self._bridge(self._app.report_usage, usage, answer)
 
     # ------------------------------------------------------------------ #
-    # HITL：M8.3 用 ModalScreen + 线程安全 Future 实现；此处先占位。
+    # HITL：在 worker 线程被 await；经 call_from_thread 把模态屏推到主线程，
+    # 用户操作后由屏幕（主线程）set_result 唤醒。Future 跨线程安全；
+    # worker 线程用 asyncio.wrap_future 挂回自己的事件循环。
     # ------------------------------------------------------------------ #
     async def ask(self, question: Question) -> str:
-        raise NotImplementedError("M8.3 实现 ask 模态")
+        from agent.tui.screens import AskScreen
+
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        self._bridge(self._app.push_screen, AskScreen(question, fut))
+        return await asyncio.wrap_future(fut)
 
     async def confirm_plan(self) -> bool:
-        raise NotImplementedError("M8.3 实现 confirm_plan 模态")
+        from agent.tui.screens import PlanScreen
+
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        self._bridge(self._app.push_screen, PlanScreen(fut))
+        return await asyncio.wrap_future(fut)
 
     async def approve(self, action: Action) -> bool:
-        raise NotImplementedError("M8.3 实现 approve 模态")
+        from agent.tui.screens import ApproveScreen
+
+        fut: concurrent.futures.Future = concurrent.futures.Future()
+        self._bridge(self._app.push_screen, ApproveScreen(action, fut))
+        return await asyncio.wrap_future(fut)
