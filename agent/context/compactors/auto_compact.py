@@ -67,33 +67,39 @@ class AutoCompact:
         self.recent_keep = max(1, recent_keep)
 
     async def compact(self, conv: list[Message], boundary: int) -> list[Message]:
-        """把 boundary 之前的历史压缩为摘要，返回替换后的消息列表。
+        """把除最近 ``recent_keep`` 条外的全部历史压缩为摘要，返回替换后的消息列表。
 
-        修复：``boundary <= 0`` 时（首次压缩，尚无已压缩边界）不再直接 no-op，
-        而是自动取 ``len(conv) - recent_keep`` 作为压缩点，压缩更早的历史、保留最近
-        ``recent_keep`` 条消息，使第一次超阈值也能真正生成摘要。
+        实际压缩点恒为 ``cut = max(1, len(conv) - recent_keep)``：始终保留最近
+        ``recent_keep`` 条原文，压缩更早的历史。``boundary`` 仅用于日志与越界提示，
+        **不再截断压缩点**。
+
+        这样设计是为了消除「锯齿效应」：旧实现里 ``mark_boundary`` 会把本轮保留的
+        活跃区也标入「已压边界之前」，导致下一轮 ``AutoCompact`` 只压掉很小的
+        ``[summary] + 上一轮保留区``、却把本轮新增全部留作巨大的保留区；再下一轮
+        保留区早已爆满、触发巨量压缩。改为「每轮恒留最近 ``recent_keep`` 条」后，
+        压缩量稳定、保留区恒定，不再锯齿。
+
+        注意：压缩点在 ``cut``，``conv[cut:]`` 整体保留。调用方需保证 ``cut`` 不落在
+        ``tool_use`` / ``tool_result`` 配对中间（否则会孤立任一方）；本实现沿用上层
+        约定，不在此处拆分配对。
         """
         with _span(self.tracer, "compact.auto_compact", kind="compact") as ac_span:
             if ac_span is not None:
                 ac_span.log("boundary", boundary)
                 ac_span.log("conv_len", len(conv))
-            # 首次压缩：boundary<=0 表示尚无「已压缩边界」，自动切分保留最近上下文。
-            if boundary <= 0:
-                if len(conv) <= self.recent_keep:
-                    if ac_span is not None:
-                        ac_span.log("skip", "conv 过短无需压缩，原样返回", level="warn")
-                    return conv
-                boundary = max(1, len(conv) - self.recent_keep)
-            if boundary > len(conv):
+            # 太短：不足以留出 recent_keep 条保留，原样返回。
+            if len(conv) <= self.recent_keep:
                 if ac_span is not None:
-                    ac_span.log("skip", "boundary 越界，原样返回", level="warn")
+                    ac_span.log("skip", "conv 过短无需压缩，原样返回", level="warn")
                 return conv
             if self.failure_count >= self.max_failures:
                 if ac_span is not None:
                     ac_span.log("skip", "失败断路器已触发，放弃压缩", level="warn")
                 return conv
 
-            history = conv[:boundary]
+            # 实际压缩点：恒留最近 recent_keep 条，与传入的 boundary 无关。
+            cut = max(1, len(conv) - self.recent_keep)
+            history = conv[:cut]
             history_text = self._format_history(history)
 
             prompt = COMPACT_USER_TEMPLATE.format(history_text=history_text)
@@ -108,10 +114,11 @@ class AutoCompact:
             self.failure_count = 0
             if ac_span is not None:
                 ac_span.log("summary_len", len(summary))
-            # 用摘要替换 boundary 前历史
+                ac_span.log("cut", cut)
+            # 用摘要替换 cut 之前的历史，保留 cut 之后的原文
             return [
                 Message(role="user", content=f"[Compact Summary]\n{summary}"),
-            ] + conv[boundary:]
+            ] + conv[cut:]
 
     async def _call_model(self, prompt: str) -> str | None:
         """调用模型获取摘要。返回 <summary> 标签内文本，失败返回 None。"""

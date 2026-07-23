@@ -142,8 +142,20 @@ class ContextManager:
         return usage.used_pct >= _COMPACT_TRIGGER_PCT
 
     def mark_boundary(self) -> None:
-        """记录当前 conv 索引为压缩边界。"""
-        self.compact_boundary = len(self.conv)
+        """记录压缩边界：指向最新压缩摘要之后（活跃区起点）。
+
+        压缩后 conv 形如 ``[Compact Summary] + 活跃消息``，最新的摘要位于索引 0。
+        因此活跃区起点恒为 1：边界之前仅剩最新摘要（几乎不占 token），边界之后
+        （含上一轮保留的原文与本轮新增）全部计入计量。
+
+        关键修复（锯齿效应）：旧实现写成 ``compact_boundary = len(conv)``，会把本轮
+        保留的活跃区也标进「已压边界之前」。下一轮 ``AutoCompact`` 收到该巨大
+        ``boundary`` 后只压掉很小的 ``[summary] + 上一轮保留区``，却把本轮新增全部留作
+        巨大保留区；再下一轮保留区爆满、又触发一次巨量压缩。改为恒为 1 后，下一轮
+        ``AutoCompact`` 会按 ``recent_keep`` 把活跃区中「除最近 N 条外」重新压成新摘要，
+        压缩量稳定、保留区恒定。
+        """
+        self.compact_boundary = 1
 
     async def apply_microcompact(self) -> list[Message]:
         """执行 Microcompact（零成本），返回处理后的 conv（原地替换旧 tool 内容）。

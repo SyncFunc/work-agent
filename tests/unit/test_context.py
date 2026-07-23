@@ -123,24 +123,34 @@ def test_should_compact_true_with_big_messages():
 # --------------------------------------------------------------------------- #
 # 边界
 # --------------------------------------------------------------------------- #
-def test_mark_boundary_equals_conv_len():
+def test_mark_boundary_points_to_active_region_start():
+    # 压缩后 conv = [Compact Summary] + 活跃消息，边界应指向最新摘要之后（活跃区起点）。
     m = ContextManager()
     m.set_conv([_msg("user", "a"), _msg("assistant", "b"), _msg("user", "c")])
     m.mark_boundary()
-    assert m.compact_boundary == len(m.conv) == 3
+    assert m.compact_boundary == 1
 
 
-def test_boundary_excludes_old_from_estimate():
+def test_boundary_marks_active_region_start_and_counts_active():
     m = ContextManager()
-    old = [_msg("user", _big_cjk(50_000))]
-    m.set_conv(old)
-    before = m.estimate_usage().messages
+    # 模拟压缩后 conv = [摘要] + 活跃消息
+    m.set_conv(
+        [
+            _msg("user", "摘要内容"),
+            _msg("user", "活跃A"),
+            _msg("user", "活跃B"),
+        ]
+    )
     m.mark_boundary()
-    # 边界后追加新消息，计量只统计新消息
-    m.conv.append(_msg("assistant", "新"))
-    after = m.estimate_usage().messages
-    assert before > 0
-    assert after < before
+    # 边界指向最新摘要之后
+    assert m.compact_boundary == 1
+    # 边界之后（活跃区）计入计量
+    active = m.estimate_usage().messages
+    assert active > 0
+    # 边界之前（最新摘要）原本计入，但后续追加的消息仍在活跃区、被计入
+    before = m.estimate_usage().messages
+    m.conv.append(_msg("assistant", "新消息"))
+    assert m.estimate_usage().messages > before
 
 
 # --------------------------------------------------------------------------- #
@@ -369,34 +379,38 @@ async def test_auto_compact_boundary_zero_noop():
 
 async def test_auto_compact_summary_tag_parsed():
     model = _fake_model([Decision(text="<summary>压缩后的摘要内容</summary>")])
-    ac = AutoCompact(model)
+    ac = AutoCompact(model, recent_keep=1)
     conv = [
         Message(role="user", content="第一段长历史" * 200),
         Message(role="assistant", content="回复" * 50),
     ]
     out = await ac.compact(conv, len(conv))
-    assert len(out) == 1  # 摘要替换了全部历史
+    # 压缩点恒为 len(conv) - recent_keep = 1：压第 1 条，保留最近 1 条
+    assert len(out) == 2  # 摘要 + 保留的 1 条
     assert "[Compact Summary]" in (out[0].content or "")
     assert "压缩后的摘要内容" in (out[0].content or "")
 
 
 async def test_auto_compact_no_tag_fallback():
     model = _fake_model([Decision(text="纯文本摘要，没有标签")])
-    ac = AutoCompact(model)
-    conv = [Message(role="user", content="历史")]
+    ac = AutoCompact(model, recent_keep=1)
+    conv = [
+        Message(role="user", content="历史"),
+        Message(role="user", content="活跃"),
+    ]
     out = await ac.compact(conv, len(conv))
-    assert len(out) == 1
+    assert len(out) == 2  # 摘要 + 保留的 1 条
     assert "纯文本摘要" in (out[0].content or "")
 
 
 async def test_auto_compact_preserves_active_messages():
     model = _fake_model([Decision(text="<summary>摘要</summary>")])
-    ac = AutoCompact(model)
+    ac = AutoCompact(model, recent_keep=1)
     conv = [
         Message(role="user", content="旧历史"),
         Message(role="user", content="新活跃消息"),
     ]
-    out = await ac.compact(conv, 1)  # boundary=1：只压缩第 1 条
+    out = await ac.compact(conv, 1)  # 压缩点恒为 len-recent_keep=1：压旧历史，留新活跃
     assert len(out) == 2  # 摘要 + 第 2 条
     assert "[Compact Summary]" in (out[0].content or "")
     assert out[1].content == "新活跃消息"
@@ -409,7 +423,8 @@ async def test_auto_compact_failure_breaker():
             raise ValueError("模型挂了")
 
     ac = AutoCompact(_AlwaysFail(), max_failures=3)
-    conv = [Message(role="user", content="历史")]
+    # 足够长以越过「过短跳过」、真正调用模型（触发失败计数）
+    conv = [Message(role="user", content=f"历史{i}") for i in range(10)]
     # 第一次
     out1 = await ac.compact(conv, len(conv))
     assert out1 is conv  # 原样返回
@@ -432,7 +447,8 @@ async def test_auto_compact_success_resets_failure_count():
     model = _fake_model([Decision(text="<summary>ok</summary>")])
     ac = AutoCompact(model, max_failures=3)
     ac.failure_count = 2
-    conv = [Message(role="user", content="历史")]
+    # 足够长以越过「过短跳过」、真正调用模型（触发失败计数重置）
+    conv = [Message(role="user", content=f"历史{i}") for i in range(10)]
     out = await ac.compact(conv, len(conv))
     assert out is not conv  # 成功压缩
     assert ac.failure_count == 0  # 重置
@@ -452,7 +468,7 @@ async def test_auto_compact_empty_history():
 
 async def test_auto_compact_format_history_includes_tool_calls():
     model = _fake_model([Decision(text="<summary>摘要</summary>")])
-    ac = AutoCompact(model)
+    ac = AutoCompact(model, recent_keep=1)
     conv = [
         Message(
             role="assistant", tool_calls=[ToolCall(id="t1", name="bash", arguments={"cmd": "ls"})]
@@ -460,8 +476,12 @@ async def test_auto_compact_format_history_includes_tool_calls():
         Message(role="tool", content="file1\nfile2", tool_call_id="t1"),
     ]
     out = await ac.compact(conv, len(conv))
-    assert len(out) == 1
+    # 压缩点 = len(conv) - recent_keep = 1：压 assistant(tool_call)，保留 tool 结果
+    assert len(out) == 2
     assert "[Compact Summary]" in (out[0].content or "")
+    # tool_use / tool_result 配对在最终 conv 中保持完整
+    assert out[1].content == "file1\nfile2"
+    assert out[1].tool_call_id == "t1"
 
 
 # --------------------------------------------------------------------------- #
@@ -469,7 +489,7 @@ async def test_auto_compact_format_history_includes_tool_calls():
 # --------------------------------------------------------------------------- #
 async def test_context_manager_compact_with_auto_compact():
     model = _fake_model([Decision(text="<summary>摘要</summary>")])
-    ac = AutoCompact(model)
+    ac = AutoCompact(model, recent_keep=1)
     m = ContextManager(auto_compact=ac)
     conv = [
         Message(role="user", content="旧历史（将被压缩）" * 1000),
@@ -537,7 +557,7 @@ async def test_compact_emits_trace_tree():
     model.act 与 microcompact 通过 contextvars 自动成为 context.compact 的子 span。"""
     tracer = Tracer()
     model = _fake_model([Decision(text="<summary>摘要</summary>")])
-    ac = AutoCompact(model, tracer=tracer)
+    ac = AutoCompact(model, tracer=tracer, recent_keep=1)
     m = ContextManager(auto_compact=ac, tracer=tracer)
     conv = [
         Message(role="user", content="旧历史（将被压缩）" * 1000),
@@ -593,7 +613,7 @@ async def test_auto_compact_model_act_span_records_usage():
             )
         ]
     )
-    ac = AutoCompact(model, tracer=tracer)
+    ac = AutoCompact(model, tracer=tracer, recent_keep=1)
     # 在 context.compact 隐式父 span 内调用，验证自动继承
     with tracer.span("context.compact", kind="compact"):
         out = await ac.compact(
@@ -612,7 +632,7 @@ async def test_auto_compact_model_act_span_records_usage():
 async def test_compact_trace_noop_when_tracer_none():
     """未注入 tracer 时降级为 no-op，不报错且行为不变（保持现有用例契约）。"""
     model = _fake_model([Decision(text="<summary>摘要</summary>")])
-    ac = AutoCompact(model)  # tracer=None
+    ac = AutoCompact(model, recent_keep=1)  # tracer=None
     m = ContextManager(auto_compact=ac)  # tracer=None
     conv = [
         Message(role="user", content="旧历史" * 1000),
@@ -646,6 +666,60 @@ async def test_auto_compact_first_compaction_boundary_zero():
     assert len(m.conv) < len(conv)
     # 最近消息被保留（摘要之后仍有原文）
     assert any("最早的摘要" in (x.content or "") for x in m.conv)
+
+
+async def test_auto_compact_keeps_recent_across_rounds():
+    """回归（锯齿效应修复）：多次压缩后保留区不无限膨胀。
+
+    旧实现中 ``mark_boundary`` 把本轮保留的活跃区标入「已压边界之前」，下一轮
+    ``AutoCompact`` 收到巨大 ``boundary`` 后只压很小一段、却把本轮新增全部留作巨大
+    保留区；再下一轮保留区爆满又触发巨量压缩。修复后压缩点恒为
+    ``max(1, len(conv) - recent_keep)``，每轮只留最近 ``recent_keep`` 条，conv 长度有界。
+    """
+    # 注意：_fake_model 按次 pop 出脚本，多轮需准备足够条数
+    model = _fake_model([Decision(text="<summary>累计摘要</summary>")] * 3)
+    ac = AutoCompact(model, recent_keep=2)
+
+    # 第 1 轮：20 条 → 1 摘要 + 最近 2 条 = 3 条
+    conv = [Message(role="user", content=f"历史{i}") for i in range(20)]
+    out1 = await ac.compact(conv, 0)
+    assert len(out1) == 3
+
+    # 第 2 轮：上一轮输出 + 新增 15 条（模拟下一轮对话累积）
+    conv2 = out1 + [Message(role="user", content=f"新{i}") for i in range(15)]
+    out2 = await ac.compact(conv2, 0)
+    # 仍只保留最近 2 条，不会膨胀成 3 + 15 = 18 条
+    assert len(out2) == 3
+    assert any("累计摘要" in (x.content or "") for x in out2)
+
+
+async def test_compact_no_sawtooth_via_mark_boundary():
+    """回归（端到端）：manager.mark_boundary 指向活跃区起点后，多轮压缩保留区恒定。
+
+    构造小上下文窗口使阈值易触发；验证第 1、2 轮压缩后 conv 长度都收敛到
+    ``recent_keep + 1``，而非逐轮把保留区越堆越大。
+    """
+    # 注意：_fake_model 按次 pop 出脚本，多轮需准备足够条数
+    model = _fake_model([Decision(text="<summary>累计</summary>")] * 3)
+    ac = AutoCompact(model, recent_keep=2)
+    # 小窗口：effective_window = 60_000 - 2_000 = 58_000，阈值 45_000
+    m = ContextManager(auto_compact=ac, context_window=60_000, max_output_tokens=2_000)
+    # 每条大消息约 20_000 tokens（CJK 1 token/字），3 条即超阈值
+    big = lambda: _msg("user", _big_cjk(20_000))
+
+    # 第 1 轮：20 条大消息
+    m.set_conv([big() for _ in range(20)])
+    await m.compact()
+    assert len(m.conv) == 3  # 摘要 + 最近 2 条
+    assert m.compact_boundary == 1  # 边界指向活跃区起点
+
+    # 第 2 轮前又累积 15 条新消息
+    for _ in range(15):
+        m.conv.append(big())
+    await m.compact()
+    # 修复后保留区恒定：仍为摘要 + 最近 2 条，不会把上一轮保留的 2 条 + 15 条全留着
+    assert len(m.conv) == 3
+    assert any("累计" in (x.content or "") for x in m.conv)
 
 
 # --------------------------------------------------------------------------- #
@@ -782,7 +856,7 @@ async def test_context_manager_compact_session_memory_fallback_to_auto(tmp_path)
     sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s10")
     # 注意：未 save → load() 为 None
     model = _fake_model([Decision(text="<summary>自动摘要</summary>")])
-    ac = AutoCompact(model)
+    ac = AutoCompact(model, recent_keep=1)
     m = ContextManager(auto_compact=ac, session_memory=sm)
     conv = [
         Message(role="user", content="旧历史" * 1000),

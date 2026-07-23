@@ -110,15 +110,26 @@ def _read_agents_md(settings) -> str | None:
 def _build_dynamic_segment(settings) -> str:
     """构建 System Prompt 动态段（每轮更新，不进 prompt cache）。
 
-    含：当前日期（外移出静态段以改善缓存命中）、AGENTS.md 固定底座、
-    以及 Git 仓库状态（分支 + 简短 status）。
+    含：AGENTS.md 固定底座、当前工作目录、当前日期、Git 仓库状态。
+
+    排序优化（prompt caching）：动态段内部按「易变性从低到高」排列——
+    最不易变的排最前以延长连续缓存前缀：
+
+        ① AGENTS.md（仅用户编辑才变） → ② cwd（会话内基本不变）
+        → ③ 日期（当日不变·午夜轮换） → ④ Git 状态（每次文件改动都变）
+
+    这样前缀缓存从「只覆盖静态段」扩展到「静态段 + AGENTS.md + cwd +（当日）日期」，
+    把不易变部分重新纳入缓存；最易变的 Git 状态留最尾，单独变动不破坏前面更长的前缀。
     """
     parts: list[str] = []
-    # 日期：移出静态段，避免每轮变化破坏稳定前缀的缓存命中。
-    parts.append(f"## 当前日期\n{date.today().isoformat()}\n")
+    # ① AGENTS.md 固定底座（最不易变，排首位以纳入缓存前缀）：永不压缩，每次从磁盘重新读取注入。
+    if settings.context.agents_md_enabled:
+        agents_content = _read_agents_md(settings)
+        if agents_content:
+            parts.append(f"<system-reminder>\n## AGENTS.md\n{agents_content}\n</system-reminder>\n")
 
-    # 当前工作目录（每轮可能变化，属动态段）：让模型明确知道自己在哪个目录工作，
-    # 尤其是从其他目录用 AGENT_PROJECT_ROOT 启动、或 cwd 与项目根不一致时。
+    # ② 当前工作目录（会话内基本不变，排第二位）：让模型明确知道自己在哪个目录工作，
+    #    尤其是从其他目录用 AGENT_PROJECT_ROOT 启动、或 cwd 与项目根不一致时。
     cwd = Path.cwd()
     proj_root_env = os.environ.get("AGENT_PROJECT_ROOT")
     if proj_root_env:
@@ -126,13 +137,10 @@ def _build_dynamic_segment(settings) -> str:
     else:
         parts.append(f"## 当前工作目录\n{cwd}\n")
 
-    # AGENTS.md 固定底座：永不压缩，每次从磁盘重新读取注入首条 <system-reminder>。
-    if settings.context.agents_md_enabled:
-        agents_content = _read_agents_md(settings)
-        if agents_content:
-            parts.append(f"<system-reminder>\n## AGENTS.md\n{agents_content}\n</system-reminder>\n")
+    # ③ 当前日期（当日不变，午夜自然轮换，排第三位）。
+    parts.append(f"## 当前日期\n{date.today().isoformat()}\n")
 
-    # Git 仓库状态（最佳努力，失败静默跳过）。
+    # ④ Git 仓库状态（最易变，留最尾，单独变动不破坏前面更长的前缀缓存）。
     try:
         branch = subprocess.check_output(
             ["git", "branch", "--show-current"],
@@ -193,7 +201,8 @@ def build_system_prompt(
     """构建完整 System Prompt（静态段 + 动态段），稳定前缀在前以复用 prompt cache。
 
     静态段来自 ``system.md`` 渲染（身份 / 安全约束 / 工具规范 / 模式指引 / skill·agent 目录），
-    动态段（日期 / AGENTS.md / Git 状态）追加其后且每轮重新生成。
+    动态段按「易变性从低到高」追加其后且每轮重新生成：AGENTS.md / 当前工作目录 /
+    当前日期 / Git 状态（详见 ``_build_dynamic_segment``）。
     """
     static, dynamic = _build_system_parts(
         settings,

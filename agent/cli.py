@@ -112,6 +112,12 @@ def run(
     yes: bool = typer.Option(False, "--yes", help="跳过计划确认，直接进入执行"),
     no_clarify: bool = typer.Option(False, "--no-clarify", help="关闭意图澄清"),
     no_trace: bool = typer.Option(False, "--no-trace", help="关闭 trace 记录"),
+    record: str | None = typer.Option(
+        None,
+        "--record",
+        help="将本次运行的模型决策序列（录像带）录制为 tape 文件（JSON），供 CI 回放；"
+        "接真实 LLM 运行时即产出真实录像",
+    ),
 ) -> None:
     _ensure_scaffold()
     settings = load_settings(clarify_enabled=not no_clarify, plan_mode=plan)
@@ -144,6 +150,14 @@ def run(
     # 一轮 ReAct 循环结束：停止 Live（保留最终答案），打印 token 用量
     transport.close()
     if res is not None:
+        if record:
+            from agent.testing.recorded_model import decisions_from_eventstream, dump_tape
+
+            decisions = decisions_from_eventstream(res.events)
+            dump_tape(decisions, record)
+            typer.echo(
+                f"[record] 已录制 {len(decisions)} 条决策 → {record}", err=True
+            )
         transport.report_usage(res.usage, res.text)
         _render_soft_limit(res)
         # 最终答案已通过流式 Live 实时渲染，无需重复打印 res.text
