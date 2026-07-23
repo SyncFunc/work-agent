@@ -212,7 +212,7 @@ class ChatApp(App):
     def update_tool_result(self, tc: Any, res: Any) -> None:
         block = self._tool_blocks.get(tc.id)
         if block is not None:
-            block.set_result(res.output or res.error or "", res.ok)
+            block.set_result(res.output or res.error or "", res.ok, res.diff)
 
     def append_plan_progress(self, ev: Any) -> None:
         upd = ev.plan_update or {}
@@ -222,7 +222,9 @@ class ChatApp(App):
         self._mount(_StaticLine(line))
 
     def finalize_stream(self) -> None:
-        # 一轮决策结束：定稿当前流式块（下次文本另起新块）
+        # 一轮决策结束：定稿当前流式块（把剩余未刷增量一次性渲染），下次文本另起新块
+        if self._current is not None:
+            self._current.flush()
         self._current = None
         self._current_is_reasoning = False
 

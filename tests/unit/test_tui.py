@@ -7,8 +7,10 @@
 from __future__ import annotations
 
 import asyncio
+from unittest import mock
 
-from textual.widgets import TextArea
+from rich.syntax import Syntax
+from textual.widgets import Collapsible, TextArea
 
 from agent.config.settings import Settings
 from agent.core.events import Event, EventStream, EventType
@@ -277,3 +279,75 @@ async def test_hitl_reject_e2e():
         assert await _wait_for(lambda: len(pilot.app.query(AssistantMessage)) >= 1, timeout=5.0)
         # 拒绝后工具返回 rejected，循环继续到下一轮最终答案，会话未中断
         assert len(pilot.app.query(AssistantMessage)) >= 1
+
+
+# --------------------------------------------------------------------------- #
+# M8.4：流式节流 + 可折叠工具块 + diff 高亮
+# --------------------------------------------------------------------------- #
+async def test_streaming_throttle():
+    """M8.4：连续 50 次 TEXT 增量，Markdown.update 调用次数远小于 50（coalesce 节流生效），最终文本完整。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        es = EventStream()
+        t.bind(es)
+
+        updates: list[int] = []
+        orig = AssistantMessage.update
+
+        def _count(self, renderable):
+            updates.append(1)
+            return orig(self, renderable)
+
+        chunks = [f"chunk{i} " for i in range(50)]
+        with mock.patch.object(AssistantMessage, "update", _count):
+            for ch in chunks:
+                es.append(Event(type=EventType.TEXT, text=ch, kind="content"))
+            await pilot.pause()
+            await asyncio.sleep(0.3)
+            await pilot.pause()
+
+        # 节流：update 次数应远小于增量次数
+        assert len(updates) < 50
+        # 最终文本完整
+        am = app.query_one(AssistantMessage)
+        assert am.full == "".join(chunks)
+
+
+async def test_tool_block():
+    """M8.4：TOOL_USE + TOOL_RESULT(diff) → 出现 Collapsible 工具块，结果区为 diff 高亮。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        t = TextualTransport(app)
+        es = EventStream()
+        t.bind(es)
+
+        es.append(
+            Event(
+                type=EventType.TOOL_USE,
+                tool_use=ToolCall(id="t1", name="write", arguments={"path": "a.py"}),
+            )
+        )
+        es.append(
+            Event(
+                type=EventType.TOOL_RESULT,
+                tool_call_id="t1",
+                tool_result=ToolResult(
+                    ok=True,
+                    output="written",
+                    error=None,
+                    diff="--- a.py\n+++ b.py\n@@\n+print(1)\n",
+                ),
+            )
+        )
+        await pilot.pause()
+        await asyncio.sleep(0.2)
+        await pilot.pause()
+
+        # 工具块以 Collapsible 形态出现（ToolBlock 继承 Collapsible）
+        assert len(app.query(Collapsible)) >= 1
+        block = app.query_one(ToolBlock)
+        assert block._result_widget is not None
+        # 结果区渲染为 diff 高亮（Syntax，lexer=diff）
+        assert isinstance(block._result_body, Syntax)
+        assert "print(1)" in block._result_body.code
