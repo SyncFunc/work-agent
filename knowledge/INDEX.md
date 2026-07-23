@@ -10,7 +10,7 @@
 - **98/1.6 法则**：AI 只做决策，循环/权限/路由/压缩/持久化全部确定性实现且可独立测试。
 - **安全在 OS 层**：沙箱是独立可插拔执行层（Local seccomp / Docker），prompt 仅软约束。→ 影响 M2；**完整设计见 `knowledge/sandbox-approval-design.md`**（Codex 模式：local/docker/external + 三档 profile + 网络默认拒绝 + AskForApproval 四模式）。
 - **上下文稀缺**：静态(系统提示/规则) 与 动态(对话/工具结果) 分离；稳定前缀走 prompt caching；超阈值递归摘要。→ 影响 M4。
-- **上下文管理设计文档**：`knowledge/context-management.md`（独立文档）。核心结论：**工具结果 = 对话历史，既保存也注入**（伪二选一）；本项目双轨映射——`EventStream` 全量不可变（保存/审计/压缩派生源）vs `conv`/`Session.messages` 可压缩投影（注入）；压缩只作用于 `conv`，绝不碰 `EventStream`；配对铁律（tool_use+tool_result 成对）；采用 **Claude Code 四层渐进压缩防线**（Microcompact→Snip/Collapse→Session Memory 零成本→AI 9 段摘要→Reactive Compact）；大输出走子代理隔离（M5）。详见该文档。
+- **上下文管理设计文档**：`knowledge/context-management.md`（独立文档）。核心结论：**工具结果 = 对话历史，既保存也注入**（伪二选一）；本项目双轨映射——`EventStream` 全量不可变（保存/审计/压缩派生源）vs `conv`/`Session.messages` 可压缩投影（注入）；压缩只作用于 `conv`，绝不碰 `EventStream`；配对铁律（tool_use+tool_result 成对）；采用 **Claude Code 四层渐进压缩防线**（Microcompact→Snip/Collapse→Session Memory 零成本→AI 9 段摘要→Reactive Compact）；大输出走子代理隔离（M5）。详见该文档。 → **面向用户的介绍见 [`docs/上下文与记忆体系介绍.md`](./docs/上下文与记忆体系介绍.md)**（背景/四层防线/完整 mermaid 流程图/计量触发/防漂移）。
 - **能力正交**：Tool(原子) / Skill(按需包) / Subagent(隔离上下文) 三层。→ 影响 M5。
 - **两条全局主线**：事件流（状态单一事实来源）+ Trace/Span（OTel 语义，父子 parent_id）。→ 事件流在 M1.3 落地，trace 在 M1.6 占位，M3 完善。
 - **可恢复**：检查点用 `session_id` + sqlite，路径 `<project>/.agent/sessions/<id>/`。→ 影响 M6 与项目隔离 M?（项目隔离贯穿）。
