@@ -97,6 +97,8 @@ class ChatApp(App):
         ("ctrl+c", "quit", "退出"),
         ("ctrl+j", "submit", "发送"),
         ("ctrl+p", "open_commands", "命令面板"),
+        ("ctrl+up", "scroll_log_up", "上滚记录"),
+        ("ctrl+down", "scroll_log_down", "下滚记录"),
     ]
 
     def __init__(
@@ -136,7 +138,8 @@ class ChatApp(App):
         self._log = self.query_one("#log", VerticalScroll)
         self._mount(
             UserMessage(
-                "欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；Ctrl+P 命令面板；输入 / 查看命令）。"
+                "欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；Ctrl+P 命令面板；"
+                "Ctrl+↑/↓ 浏览历史；输入 / 或 /help 查看命令）。"
             )
         )
         # 顶部状态栏：周期刷新 ctx%（set_interval 在 app 主线程触发，可直接更新 Header）。
@@ -150,6 +153,14 @@ class ChatApp(App):
     def action_open_commands(self) -> None:
         """Ctrl+P：打开命令面板（手动注入 AgentCommandProvider，绕过 App.COMMANDS）。"""
         self.push_screen(CommandPalette(providers=[AgentCommandProvider]))
+
+    def action_scroll_log_up(self) -> None:
+        """Ctrl+↑：向上浏览聊天记录（TextArea 占用 up/down/pageup，故用 ctrl 组合键）。"""
+        self._log.scroll_relative(y=-max(1, self._log.size.height - 2), animate=False)
+
+    def action_scroll_log_down(self) -> None:
+        """Ctrl+↓：向下浏览聊天记录。"""
+        self._log.scroll_relative(y=max(1, self._log.size.height - 2), animate=False)
 
     def _refresh_ctx(self) -> None:
         """周期刷新顶部状态栏的 ctx% 副标题（来自 ContextManager.estimate_usage）。"""
@@ -244,8 +255,11 @@ class ChatApp(App):
     # 内部工具：挂载部件 + 自动吸底（#log 引用在 on_mount 缓存，避免并发查询竞态）
     # ------------------------------------------------------------------ #
     def _mount(self, widget: Any) -> None:
+        # 仅当用户已停在底部时才自动吸底；否则保留其浏览历史的滚动位置。
+        at_bottom = self._log.scroll_offset.y >= (self._log.max_scroll_y - 1)
         self._log.mount(widget)
-        self._log.scroll_end(animate=False)
+        if at_bottom:
+            self._log.scroll_end(animate=False)
 
     # ------------------------------------------------------------------ #
     # 事件 → 部件 渲染（由 TextualTransport 经 call_from_thread 调用）

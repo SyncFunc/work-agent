@@ -101,6 +101,64 @@ async def test_slash_command_dispatched():
         assert len(pilot.app.query(_StaticLine)) >= 1
 
 
+async def test_slash_help_lists_commands():
+    """M8.8：输入 / 经 dispatch_command 在主区渲染命令清单。"""
+    session = _make_session(FakeModel([]))
+    app = ChatApp(session=session, settings=Settings())
+    async with app.run_test() as pilot:
+        ta = pilot.app.query_one(TextArea)
+        ta.text = "/"
+        await pilot.press("ctrl+j")
+        await pilot.pause()
+        await asyncio.sleep(0.1)
+        text = "\n".join(
+            (w.content.plain if hasattr(w.content, "plain") else str(w.content))
+            for w in pilot.app.query(_StaticLine)
+        )
+        assert "可用命令" in text
+        assert "/plan" in text
+
+
+async def test_scroll_log_and_preserve_position():
+    """M8.8：Ctrl+↑/↓ 可滚动记录；用户不在底部时新消息不拽回底部。"""
+    async with ChatApp().run_test(size=(80, 40)) as pilot:
+        app = pilot.app
+        # 灌入大量消息制造溢出
+        for i in range(80):
+            app._mount(UserMessage(f"line {i} " + "x" * 40))
+        await pilot.pause()
+        assert app._log.max_scroll_y > 0
+
+        # Ctrl+↑ 应上滚（scroll_offset 减小）
+        bottom = app._log.scroll_offset.y
+        app.action_scroll_log_up()
+        await pilot.pause()
+        after_up = app._log.scroll_offset.y
+        assert after_up < bottom
+
+        # 此时不在底部，新消息不应把视图拽回底部（保留浏览位置）
+        app._mount(UserMessage("new message while scrolled up"))
+        await pilot.pause()
+        assert app._log.scroll_offset.y == after_up
+
+
+async def test_autoscroll_when_at_bottom():
+    """M8.8：用户在底部时，新消息自动吸底。"""
+    async with ChatApp().run_test(size=(80, 40)) as pilot:
+        app = pilot.app
+        for i in range(80):
+            app._mount(UserMessage(f"line {i} " + "x" * 40))
+        await pilot.pause()
+        # 停在底部
+        app._log.scroll_end(animate=False)
+        await pilot.pause()
+        assert app._log.scroll_offset.y >= app._log.max_scroll_y - 1
+        # 新消息后仍在底部
+        app._mount(UserMessage("fresh"))
+        await pilot.pause()
+        assert app._log.scroll_offset.y >= app._log.max_scroll_y - 1
+
+
 # --------------------------------------------------------------------------- #
 # M8.3：HITL 模态屏（ModalScreen + 线程安全 Future）
 # --------------------------------------------------------------------------- #

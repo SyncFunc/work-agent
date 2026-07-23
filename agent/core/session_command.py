@@ -24,6 +24,23 @@ if TYPE_CHECKING:
     from agent.core.transport import AgentTransport
 
 
+# 帮助清单（/ 或 /help 展示）：命令 -> 说明
+_HELP_ROWS: tuple[tuple[str, str], ...] = (
+    ("/plan", "进入计划模式（只探索，不修改任何文件）"),
+    ("/exec", "切换到执行模式（可执行工具）"),
+    ("/approve", "批准当前计划并切到执行模式"),
+    ("/mode", "查看当前模式与计划路径"),
+    ("/context", "查看上下文用量"),
+    ("/compact", "手动压缩上下文"),
+    ("/skills", "列出已注册 Skill"),
+    ("/agents", "列出已注册 Subagent 类型"),
+    ("/skill <name>", "把某 skill 加载到下一轮对话"),
+    ("/agent <name> <task>", "后台启动一个 Subagent"),
+    ("/bg", "查看后台 Subagent 任务状态"),
+    ("/help", "显示本帮助"),
+)
+
+
 async def dispatch_command(
     session: SessionLike,
     raw: str,
@@ -41,6 +58,15 @@ async def dispatch_command(
         return False
 
     fb = feedback or _default_feedback()
+
+    # ---- 帮助 ----
+    if cmd in {"/", "/help"}:
+        lines = ["可用命令："]
+        width = max(len(c) for c, _ in _HELP_ROWS)
+        for c, d in _HELP_ROWS:
+            lines.append(f"  {c:<{width}}  {d}")
+        fb("\n".join(lines))
+        return True
 
     # ---- 模式切换 ----
     if cmd in {"/plan"}:

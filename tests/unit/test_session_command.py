@@ -58,3 +58,21 @@ async def test_dispatch_non_slash_returns_false():
     t = TerminalTransport(interactive=False)
     settings = load_settings()
     assert await dispatch_command(s, "do something", t, settings) is False
+
+
+async def test_dispatch_help_lists_commands():
+    s = FakeSession()
+    t = TerminalTransport(interactive=False)
+    settings = load_settings()
+    captured: list[str] = []
+
+    def feedback(msg: str) -> None:
+        captured.append(msg)
+
+    # 裸 / 与 /help 都应展示命令清单
+    assert await dispatch_command(s, "/", t, settings, feedback=feedback) is True
+    assert await dispatch_command(s, "/help", t, settings, feedback=feedback) is True
+    text = "\n".join(captured)
+    assert "可用命令" in text
+    for cmd in ("/plan", "/exec", "/context", "/compact", "/skills", "/agents", "/help"):
+        assert cmd in text
