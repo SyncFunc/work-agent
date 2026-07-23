@@ -7,11 +7,15 @@
 from __future__ import annotations
 
 from agent.core.events import Event, EventStream, EventType
-from agent.core.model import ToolCall
-from agent.runtime.registry import ToolResult
-from agent.tui.app import ChatApp
+from agent.core.model import Decision, FakeModel, ToolCall
+from agent.core.session import Session
+from agent.config.settings import Settings
+from agent.runtime.registry import ToolRegistry, ToolResult, tool
+from agent.tui.app import ChatApp, _StaticLine
 from agent.tui.widgets import AssistantMessage, ToolBlock, UserMessage
 from agent.runtime.textual_transport import TextualTransport
+from textual.widgets import TextArea
+import asyncio
 
 
 async def test_app_boots():
@@ -51,4 +55,40 @@ async def test_transport_maps_events():
         assert len(app.query(UserMessage)) >= 1
         assert len(app.query(AssistantMessage)) >= 1
         assert len(app.query(ToolBlock)) >= 1
+
+
+def _make_session(model):
+    async def _echo(args):
+        return ToolResult(ok=True, output="done")
+
+    reg = ToolRegistry()
+    reg.register(tool("echo", risk="read")(_echo))
+    return Session(model, reg, Settings(), tracer=None)
+
+
+async def test_input_drives_step():
+    """M8.2：TextArea 提交任务 → worker 线程跑 Session.step → 主区出现助理回复。"""
+    session = _make_session(FakeModel([Decision(text="hello from agent")]))
+    app = ChatApp(session=session, settings=Settings())
+    async with app.run_test() as pilot:
+        ta = pilot.app.query_one(TextArea)
+        ta.text = "say hello"
+        await pilot.press("ctrl+j")
+        await pilot.pause()
+        await asyncio.sleep(0.2)  # 等待 worker 线程把事件桥接回主线程渲染
+        assert len(pilot.app.query(AssistantMessage)) >= 1
+
+
+async def test_slash_command_dispatched():
+    """M8.2：/ 命令经 dispatch_command 处理（/context 触发 notify 输出）。"""
+    session = _make_session(FakeModel([]))
+    app = ChatApp(session=session, settings=Settings())
+    async with app.run_test() as pilot:
+        ta = pilot.app.query_one(TextArea)
+        ta.text = "/context"
+        await pilot.press("ctrl+j")
+        await pilot.pause()
+        await asyncio.sleep(0.1)
+        # /context 不触发模型，仅经 dispatch_command 渲染上下文占用信息（notify 行存在）
+        assert len(pilot.app.query(_StaticLine)) >= 1
 

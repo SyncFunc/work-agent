@@ -9,7 +9,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import queue
+import threading
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Group
@@ -21,6 +24,8 @@ from textual.app import App, ComposeResult
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, Header, Static, TextArea
 
+from agent.core.session_command import dispatch_command
+from agent.runtime.textual_transport import TextualTransport
 from agent.tui.widgets import (
     AssistantMessage,
     ReasoningMessage,
@@ -31,7 +36,9 @@ from agent.tui.widgets import (
 if TYPE_CHECKING:
     from agent.config.settings import Settings
     from agent.core.session import Session
-    from agent.runtime.textual_transport import TextualTransport
+
+
+_SENTINEL = object()  # 任务队列哨兵：通知 worker 线程退出
 
 
 class _StaticLine(Static):
@@ -52,6 +59,7 @@ class ChatApp(App):
     BINDINGS = [
         ("ctrl+q", "quit", "退出"),
         ("ctrl+c", "quit", "退出"),
+        ("ctrl+j", "submit", "发送"),
     ]
 
     def __init__(
@@ -80,7 +88,89 @@ class ChatApp(App):
 
     def on_mount(self) -> None:
         self.title = "Agent · 全屏会话"
-        self._mount(UserMessage("欢迎使用全屏 chat（Ctrl+Q 退出；M8.2 起可输入任务）。"))
+        self._mount(
+            UserMessage("欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；输入 / 查看命令）。")
+        )
+        # 有 session 时：创建 transport 并启动 worker 线程驱动 Session.step（方案 B）。
+        if self.session is not None:
+            self.transport = TextualTransport(self, context_mgr=self.session.context_mgr)
+            self._start_driver()
+        self.query_one(TextArea).focus()
+
+    def on_unmount(self) -> None:
+        self._stop_driver()
+
+    # ------------------------------------------------------------------ #
+    # 输入与 chat 循环（方案 B：thread worker 跑 Session.step）
+    # ------------------------------------------------------------------ #
+    async def action_submit(self) -> None:
+        """Ctrl+J：提交输入。空输入忽略；exit/quit 退出；/ 命令走 dispatch_command；
+        其余作为任务投递给 worker 线程跑 Session.step。"""
+        ta = self.query_one(TextArea)
+        text = ta.text.strip()
+        if not text:
+            return
+        ta.text = ""
+        low = text.lower()
+        if low in {"exit", "quit"}:
+            self.exit()
+            return
+        if text.startswith("/"):
+            await self._handle_command(text)
+            return
+        if self.session is None or not hasattr(self, "_task_queue"):
+            self.notify("（无活动会话，无法提交任务）")
+            return
+        self._task_queue.put(text)
+
+    async def _handle_command(self, raw: str) -> None:
+        if self.session is None or self.transport is None:
+            self.notify("（无活动会话）")
+            return
+        handled = await dispatch_command(
+            self.session, raw, self.transport, self.settings, feedback=self.notify
+        )
+        if not handled:
+            self.notify(f"未知命令: {raw}")
+
+    def _start_driver(self) -> None:
+        """启动独立线程 + 独立 asyncio loop 消费任务队列，跑 Session.step。"""
+        self._task_queue: queue.Queue = queue.Queue()
+        self._worker = threading.Thread(target=self._run_worker, daemon=True)
+        self._worker.start()
+
+    def _stop_driver(self) -> None:
+        if hasattr(self, "_worker") and self._worker is not None:
+            self._task_queue.put(_SENTINEL)
+            self._worker.join(timeout=2)
+
+    def _run_worker(self) -> None:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._worker_loop = loop
+        try:
+            loop.run_until_complete(self._session_loop())
+        finally:
+            loop.close()
+
+    async def _session_loop(self) -> None:
+        """消费任务队列，逐轮跑 Session.step；事件经 TextualTransport 桥接回主线程。"""
+        while True:
+            task = await asyncio.get_running_loop().run_in_executor(None, self._task_queue.get)
+            if task is _SENTINEL:
+                break
+            try:
+                res, err = await self.session.step(
+                    task, self.transport, yes=False, fatal_plan_decline=False
+                )
+            except Exception as e:  # 任何未捕获异常优雅通知，不崩 UI
+                self.transport.notify(f"error: {type(e).__name__}: {e}")
+                res, err = None, 1
+            else:
+                if res is not None:
+                    self.transport.report_usage(res.usage, res.text)
+            # 一轮结束：收尾 transport（退订当前流、刷通知）
+            self.transport.close()
 
     # ------------------------------------------------------------------ #
     # 内部工具：挂载部件 + 自动吸底
