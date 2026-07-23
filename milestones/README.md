@@ -12,6 +12,7 @@
 | **M5 扩展能力** | 可组合可伸缩 | `SkillLoader` + `SubagentSpawner` + CLI 命令 + 测试验收 | 🟢 已完成（Skill 双轨加载/触发目录 + Subagent 内置 explore/plan/general-purpose + 主循环集成/工具白名单 + CLI `/skills`/`/agents`/`/skill`/`/agent`/`/bg` + 全量测试 314 passed） |
 | **M6 生产化** | 可恢复可观测可测 | 会话恢复 + 测试金字塔 + CI | ⚪ 待启动 |
 | **M7 agentrunner 守护进程分离** | 渲染层与 agentrunner 完全分离为守护进程 + 前端 | daemon + WS 协议 + CLI 客户端 + 多会话切换 | 🟢 已完成（M7.1–M7.6 全部落地，全量 `pytest` 380 passed） |
+| **M8 CLI 全屏重构** | Textual 全屏 TUI，对标 Claude Code 美观与交互 | `TextualTransport`(新 `AgentTransport` 实现) + 全屏 `App` + 流式 Markdown / 可折叠工具块 / diff 高亮 / HITL 模态 / 命令面板 / 多主题 | 🔵 文档已生成（`milestones/M8-CLI全屏重构/`，M8.0–M8.7 分步计划就绪，待编码落地） |
 
 ## M1 步骤文件
 
@@ -42,6 +43,19 @@
 - `milestones/M7-agentrunner守护进程分离/M7.4-session切换回放.md`
 - `milestones/M7-agentrunner守护进程分离/M7.5-与run-chat共存.md`
 - `milestones/M7-agentrunner守护进程分离/M7.6-安全与端到端验收.md`
+
+## M8 步骤文件（分步计划已生成，待编码落地）
+
+- 设计依据：`knowledge/调研-Textual全屏CLI重构方案.md`（Textual 全屏重构调研，含架构/事件循环集成/迁移策略）
+- `milestones/M8-CLI全屏重构/README.md` — 里程碑计划与步骤索引
+- `milestones/M8-CLI全屏重构/M8.0-依赖与骨架.md`
+- `milestones/M8-CLI全屏重构/M8.1-TextualTransport事件桥接.md`
+- `milestones/M8-CLI全屏重构/M8.2-输入与chat循环.md`
+- `milestones/M8-CLI全屏重构/M8.3-HITL模态.md`
+- `milestones/M8-CLI全屏重构/M8.4-流式工具块diff高亮.md`
+- `milestones/M8-CLI全屏重构/M8.5-主题命令面板状态栏.md`
+- `milestones/M8-CLI全屏重构/M8.6-子agent渲染接入与验收.md`
+- `milestones/M8-CLI全屏重构/M8.7-迁移切换.md`
 
 ## M5 步骤文件（5.1–5.5 已全部编码落地，全量 `pytest` 314 passed）
 

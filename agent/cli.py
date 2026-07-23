@@ -168,7 +168,11 @@ def run(
 
 
 @app.command()
-def chat() -> None:
+def chat(
+    tui: bool = typer.Option(
+        False, "--tui", help="使用 Textual 全屏 TUI（需交互终端 TTY；对标 Claude Code 体验）"
+    ),
+) -> None:
     """交互式 REPL：多轮对话，单一会话持续累积历史。
 
     任意轮次用命令切换模式：/plan（探索） / exec（执行） / approve（批准计划并切执行）
@@ -203,6 +207,28 @@ def chat() -> None:
         session_id=session_id,
         session_store=session_store,
     )
+
+    # M8：全屏 TUI 路径。仅在「真正 TTY」下进入；非交互（管道 / CI / CliRunner）退回传统模式，
+    # 避免 Textual 在无可交互终端时卡死。旧 `chat`（无 --tui）走下方 TerminalTransport 路径，一行不改。
+    if tui:
+        if not sys.stdin.isatty():
+            typer.echo(
+                "TUI 需要交互终端（TTY），当前为非交互环境，请改用默认 `chat` 进入传统模式。",
+                err=True,
+            )
+            raise typer.Exit(code=1)
+        from agent.tui.app import ChatApp
+
+        app = ChatApp(session=session, settings=settings, session_store=session_store)
+        try:
+            app.run()
+        except KeyboardInterrupt:
+            pass
+        if tracer is not None and trace_store is not None:
+            trace_store.save_trace(tracer)
+        _print_trace(tracer)
+        raise typer.Exit(code=0)
+
     transport = TerminalTransport(interactive=True, context_mgr=session.context_mgr)
 
     typer.echo(

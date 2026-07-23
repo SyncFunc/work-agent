@@ -26,6 +26,11 @@ dev = [
     "ruff>=0.5",
     "pytest-xdist>=3.5",
     "basedpyright>=1.10",
+    "textual>=0.80",  # M8 全屏 TUI（headless run_test 测试依赖）
+]
+# M8 全屏 TUI：仅 TUI 路径需要的依赖，与核心解耦（核心依赖不强制引入）。
+tui = [
+    "textual>=0.80",
 ]
 
 [tool.hatch.build.targets.wheel]
