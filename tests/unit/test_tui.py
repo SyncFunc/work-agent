@@ -20,7 +20,7 @@ from agent.core.session import Session
 from agent.runtime.approval import Action
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.runtime.textual_transport import TextualTransport
-from agent.tui.app import ChatApp, _StaticLine
+from agent.tui.app import AgentCommandProvider, ChatApp, _StaticLine
 from agent.tui.screens import ApproveScreen, AskScreen, PlanScreen
 from agent.tui.widgets import AssistantMessage, ToolBlock, UserMessage
 
@@ -351,3 +351,65 @@ async def test_tool_block():
         # 结果区渲染为 diff 高亮（Syntax，lexer=diff）
         assert isinstance(block._result_body, Syntax)
         assert "print(1)" in block._result_body.code
+
+
+# --------------------------------------------------------------------------- #
+# M8.5：主题 + 命令面板 + 状态栏
+# --------------------------------------------------------------------------- #
+async def test_theme_switch():
+    """M8.5：run_test 下切换主题为 catppuccin-mocha 不抛错且 app.theme 生效。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        # 默认从 settings.ui.theme 落回 textual-dark
+        assert app.theme == "textual-dark"
+        app.theme = "catppuccin-mocha"
+        await pilot.pause()
+        assert app.theme == "catppuccin-mocha"
+
+
+async def test_command_palette():
+    """M8.5：Ctrl+P 打开命令面板并注册 /compact 命令；其回调调用 _handle_command。"""
+    from textual.command import CommandPalette
+
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        app.action_open_commands()
+        await pilot.pause()
+        assert isinstance(app.screen, CommandPalette)
+
+        # 提供器能搜出 /compact 命令
+        provider = AgentCommandProvider(app.screen)
+        hits = [h async for h in provider.search("/compact")]
+        names = [h.text for h in hits]
+        assert "/compact" in names
+
+        # 调用命中命令的回调 → 经 call_later 触发 _handle_command("/compact")（spy）
+        spy = mock.AsyncMock()
+        with mock.patch.object(app, "_handle_command", spy):
+            idx = names.index("/compact")
+            hits[idx].command()
+            await asyncio.sleep(0.1)
+            await pilot.pause()
+        spy.assert_called_with("/compact")
+
+
+async def test_ctx_header():
+    """M8.5：Header 副标题显示 ctx%，且随 context_mgr.estimate_usage 变化。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        # 注入 mock context_mgr，模拟不同用量
+        cm = mock.Mock()
+        cm.estimate_usage.return_value = mock.Mock(used_pct=0.42)
+        app.session = mock.Mock()
+        app.session.context_mgr = cm
+
+        app._refresh_ctx()
+        await pilot.pause()
+        assert "ctx:" in app.sub_title
+        assert "42%" in app.sub_title
+
+        # 用量变化后刷新应更新副标题
+        cm.estimate_usage.return_value = mock.Mock(used_pct=0.77)
+        app._refresh_ctx()
+        await pilot.pause()
+        assert "77%" in app.sub_title

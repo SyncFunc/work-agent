@@ -13,6 +13,7 @@ import asyncio
 import json
 import queue
 import threading
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from rich.console import Group
@@ -21,9 +22,11 @@ from rich.panel import Panel
 from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
+from textual.command import CommandPalette, Hit, Hits, Provider
 from textual.containers import VerticalScroll
 from textual.widgets import Footer, Header, Static, TextArea
 
+from agent.config.settings import ui_theme
 from agent.core.session_command import dispatch_command
 from agent.runtime.textual_transport import TextualTransport
 from agent.tui.widgets import (
@@ -48,8 +51,41 @@ class _StaticLine(Static):
         super().__init__(renderable)
 
 
+class AgentCommandProvider(Provider):
+    """命令面板提供器（M8.5）：注册 /plan /exec /skills /compact /context。
+
+    回调统一转发到 ``ChatApp._handle_command``（经 ``call_later`` 回到主线程安全执行）。
+    """
+
+    _COMMANDS = (
+        ("/plan", "进入计划模式"),
+        ("/exec", "执行 shell 命令"),
+        ("/skills", "列出已注册 Skill"),
+        ("/compact", "手动压缩上下文"),
+        ("/context", "查看上下文用量"),
+    )
+
+    async def search(self, query: str) -> Hits:
+        q = query.lower().strip().lstrip("/")
+        for name, desc in self._COMMANDS:
+            if q == "" or q in name.lower().lstrip("/"):
+                yield Hit(1.0, name, self._make_run(name), name, desc)
+
+    async def discover(self) -> Hits:
+        for name, desc in self._COMMANDS:
+            yield Hit(1.0, name, self._make_run(name), name, desc)
+
+    def _make_run(self, name: str):
+        def run() -> None:
+            self.app.call_later(self.app._handle_command, name)
+
+        return run
+
+
 class ChatApp(App):
     """全屏 chat 应用：顶部状态栏 + 滚动消息区 + 底部输入 + 快捷键栏。"""
+
+    CSS_PATH = [Path(__file__).parent / "tui.tcss"]
 
     CSS = """
     #log { height: 1fr; }
@@ -60,6 +96,7 @@ class ChatApp(App):
         ("ctrl+q", "quit", "退出"),
         ("ctrl+c", "quit", "退出"),
         ("ctrl+j", "submit", "发送"),
+        ("ctrl+p", "open_commands", "命令面板"),
     ]
 
     def __init__(
@@ -88,15 +125,45 @@ class ChatApp(App):
 
     def on_mount(self) -> None:
         self.title = "Agent · 全屏会话"
+        # 主题（M8.5）：从 settings.ui.theme 取 Textual 主题名，落回默认暗色。
+        theme = ui_theme(self.settings.ui.theme if self.settings else None)
+        try:
+            self.theme = theme
+        except Exception:
+            self.theme = "textual-dark"
         # 缓存日志区引用：worker 线程经 call_from_thread 高频挂载部件，
         # 每次 query_one 在并发回调下偶发 NoMatches（屏幕就绪竞态），缓存后稳定。
         self._log = self.query_one("#log", VerticalScroll)
-        self._mount(UserMessage("欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；输入 / 查看命令）。"))
+        self._mount(
+            UserMessage(
+                "欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；Ctrl+P 命令面板；输入 / 查看命令）。"
+            )
+        )
+        # 顶部状态栏：周期刷新 ctx%（set_interval 在 app 主线程触发，可直接更新 Header）。
+        self.set_interval(1.0, self._refresh_ctx)
         # 有 session 时：创建 transport 并启动 worker 线程驱动 Session.step（方案 B）。
         if self.session is not None:
             self.transport = TextualTransport(self, context_mgr=self.session.context_mgr)
             self._start_driver()
         self.query_one(TextArea).focus()
+
+    def action_open_commands(self) -> None:
+        """Ctrl+P：打开命令面板（手动注入 AgentCommandProvider，绕过 App.COMMANDS）。"""
+        self.push_screen(CommandPalette(providers=[AgentCommandProvider]))
+
+    def _refresh_ctx(self) -> None:
+        """周期刷新顶部状态栏的 ctx% 副标题（来自 ContextManager.estimate_usage）。"""
+        pct = ""
+        try:
+            cm = self.session.context_mgr if self.session is not None else None
+            if cm is not None and hasattr(cm, "estimate_usage"):
+                usage = cm.estimate_usage()
+                used = float(getattr(usage, "used_pct", 0.0) or 0.0)
+                pct = f"ctx: {int(round(used * 100))}%"
+        except Exception:
+            pct = ""
+        if self.sub_title != pct:
+            self.sub_title = pct
 
     def on_unmount(self) -> None:
         self._stop_driver()

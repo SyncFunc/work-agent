@@ -163,6 +163,43 @@ class DaemonConfig(BaseModel):
     token: str = ""  # 非空时要求客户端 hello 携带相同 token（本机鉴权，可选）
 
 
+class UIConfig(BaseModel):
+    """全屏 TUI（M8）外观配置：主题名映射到 Textual 内置主题。
+
+    ``theme`` 取值为 Textual 已注册主题名，如 ``textual-dark`` / ``textual-light`` /
+    ``catppuccin-mocha`` / ``dracula`` 等。默认 ``textual-dark``（对齐 Claude Code 暗色观感）。
+    仅影响 TUI 外观，不改动旧 TerminalTransport / 任何 core 逻辑。
+    """
+
+    theme: str = "textual-dark"
+
+
+# Textual 主题名校验（宽松：仅作提示，未知名 Textual 会回退默认主题不报错）。
+_ALLOWED_THEMES = (
+    "textual-dark",
+    "textual-light",
+    "catppuccin-mocha",
+    "catppuccin-latte",
+    "dracula",
+    "github-dark",
+    "github-light",
+    "gruvbox",
+    "monokai",
+    "solarized-dark",
+    "solarized-light",
+    "nord",
+    "flexoki-dark",
+    "flexoki-light",
+)
+
+
+def ui_theme(name: str | None) -> str:
+    """把配置主题名规整为合法 Textual 主题名；空值落回默认暗色。"""
+    if not name:
+        return "textual-dark"
+    return name
+
+
 # --------------------------------------------------------------------------- #
 # 主 Settings
 # --------------------------------------------------------------------------- #
@@ -182,6 +219,7 @@ class Settings(BaseSettings):
     skills: SkillsConfig = SkillsConfig()
     subagents: SubagentsConfig = SubagentsConfig()
     daemon: DaemonConfig = DaemonConfig()
+    ui: UIConfig = UIConfig()
 
     @classmethod
     def settings_customise_sources(

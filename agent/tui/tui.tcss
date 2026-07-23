@@ -1,0 +1,86 @@
+/* 全屏 TUI 主题（M8.5）：布局与配色，对齐 Claude Code 暗色观感。
+   仅作用于 TUI；旧 TerminalTransport 不受影响。 */
+
+Screen {
+    background: $surface;
+}
+
+/* 顶部状态栏：暗色、低对比，承载标题与 ctx% 副标题 */
+Header {
+    background: $primary-darken-2;
+    color: $text;
+    text-style: bold;
+    height: 1;
+}
+
+Header .header-title {
+    color: $accent;
+    text-style: bold;
+}
+
+Header .header-subtitle {
+    color: $text-muted;
+    text-style: none;
+}
+
+/* 底部快捷键栏 */
+Footer {
+    background: $primary-darken-3;
+    color: $text-muted;
+}
+
+/* 消息滚动区占满剩余空间 */
+#log {
+    height: 1fr;
+    background: $surface;
+    overflow-y: auto;
+}
+
+/* 用户输入区：5 行，聚焦时高亮边框 */
+#input {
+    height: 5;
+    border: round $primary;
+    background: $boost;
+}
+
+#input:focus {
+    border: round $accent;
+}
+
+/* 用户/助手/思考 消息 */
+UserMessage {
+    border-left: wide $accent;
+    padding: 0 1;
+    margin: 0 1 1 1;
+    color: $text;
+}
+
+AssistantMessage {
+    margin: 0 1 1 1;
+    color: $text;
+}
+
+ReasoningMessage {
+    margin: 0 1 1 1;
+    color: $text-muted;
+}
+
+/* 工具块：可折叠，展开显示参数/结果高亮 */
+ToolBlock {
+    margin: 0 1 1 1;
+    border: round $panel;
+}
+
+ToolBlock.-collapsed {
+    height: auto;
+}
+
+/* 计划/技能面板（_StaticLine 内 Panel） */
+_StaticLine {
+    margin: 0 1 1 1;
+}
+
+/* 命令面板微调 */
+.command-palette {
+    background: $surface;
+}
