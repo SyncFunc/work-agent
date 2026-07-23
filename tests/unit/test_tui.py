@@ -17,6 +17,7 @@ from agent.core.events import Event, EventStream, EventType
 from agent.core.intent import Question
 from agent.core.model import Decision, FakeModel, ToolCall
 from agent.core.session import Session
+from agent.runtime._subagent_tui_transport import _SubAgentTuiTransport
 from agent.runtime.approval import Action
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.runtime.textual_transport import TextualTransport
@@ -413,3 +414,46 @@ async def test_ctx_header():
         app._refresh_ctx()
         await pilot.pause()
         assert "77%" in app.sub_title
+
+
+# --------------------------------------------------------------------------- #
+# M8.6：子 agent 渲染接入（_SubAgentTuiTransport）
+# --------------------------------------------------------------------------- #
+async def test_subagent_render():
+    """M8.6：子 agent 事件经 _SubAgentTuiTransport 汇入主区，断言出现「▶ subagent」前缀块。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        parent = TextualTransport(app)
+        sub = _SubAgentTuiTransport(parent, name="researcher")
+        es = EventStream()
+        sub.bind(es)
+
+        # 连续两段文本（同一消息流）+ 一次工具调用 + 新一段文本（应重新加前缀）
+        es.append(Event(type=EventType.TEXT, text="hello", kind="content"))
+        es.append(Event(type=EventType.TEXT, text=" world", kind="content"))
+        es.append(
+            Event(
+                type=EventType.TOOL_USE,
+                tool_use=ToolCall(id="s1", name="search", arguments={"q": "x"}),
+            )
+        )
+        es.append(
+            Event(
+                type=EventType.TOOL_RESULT,
+                tool_call_id="s1",
+                tool_result=ToolResult(ok=True, output="found", error=None, diff=None),
+            )
+        )
+        es.append(Event(type=EventType.TEXT, text="done", kind="content"))
+        es.append(Event(type=EventType.DECISION))
+        await pilot.pause()
+        await asyncio.sleep(0.2)
+        await pilot.pause()
+
+        # 主区出现助手消息，且至少一段含子 agent 前缀
+        ams = app.query(AssistantMessage)
+        assert len(ams) >= 1
+        full = "".join(a.full for a in ams)
+        assert "▶ subagent: researcher" in full
+        # 工具调用也汇入主区（ToolBlock 出现）
+        assert len(app.query(ToolBlock)) >= 1

@@ -532,6 +532,7 @@ flowchart TD
 
 ## M8 全屏 TUI 关键决策（2026-07-24 沉淀）
 - **M8.5 主题/命令面板/状态栏**：`settings.py` 加 `UIConfig(theme="textual-dark")` + `Settings.ui`；`ui_theme(name)` 规整（空→`textual-dark`）。`agent/tui/tui.tcss` 经 `ChatApp.CSS_PATH` 加载；`text-style` 合法值**不含 `normal`**（用 `none`，否则 `StylesheetParseError` 整屏崩）。Textual 8.2.8 `CommandPalette` 在 `textual.command`，**无内置 `App.COMMANDS`**；命令注册=自定义 `Provider` 子类（实现 `search`/`discover`，yield `Hit(1.0, name, callback, name, desc)`）+ `BINDINGS` 加 `("ctrl+p","open_commands")` + `action_open_commands` 推 `CommandPalette(providers=[AgentCommandProvider])`。`Provider.app` 是 property；回调经 `call_later` 回主线程（**会 await 协程**）。`Header` 的 `sub_title` 是 **App** 属性（`self.sub_title`），不是 `Header.sub_title`；`set_interval(1.0, _refresh_ctx)` 读 `session.context_mgr.estimate_usage().used_pct` 显示 `ctx: NN%`。测试见 `tests/unit/test_tui.py` 的 `test_theme_switch`/`test_command_palette`/`test_ctx_header`。详见 `milestones/M8-CLI全屏重构/M8.5-主题命令面板状态栏.md`。
+- **M8.6 子 agent 渲染接入**：新建 `agent/runtime/_subagent_tui_transport.py`（`_SubAgentTuiTransport(TextualTransport)`），对应旧 `_SubAgentTransport(TerminalTransport)`。**对齐**：子 agent 独立 EventStream 不变；HITL 委派父传输；非 HITL 复用父渲染。**差异**：旧版累积成 Panel 列表 + `SubagentPanelHub` 单一 Live；TUI 版把事件**前缀汇入父 `ChatApp` 主区 `#log`**（连续 TEXT 首块加 `▶ subagent: <name>` 前缀，遇 TOOL_USE/DECISION/USER/PLAN_PROGRESS 重置前缀标记）。接线：`agent/subagent.py` 按 `isinstance(parent_transport, TextualTransport)` 选 TUI 版，否则旧版。`test_subagent_render` 断言主区含 `▶ subagent` 前缀文本 + `ToolBlock`。详见 `milestones/M8-CLI全屏重构/M8.6-子agent渲染接入与验收.md`。
 
 
 

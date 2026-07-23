@@ -42,10 +42,12 @@ from agent.core.model import Message, Model, OpenAICompatibleModel
 from agent.core.prompts import _split_frontmatter
 from agent.core.transport import AgentTransport
 from agent.obs.tracer import Tracer
+from agent.runtime._subagent_tui_transport import _SubAgentTuiTransport
 from agent.runtime.approval import ApprovalGate
 from agent.runtime.registry import ToolRegistry, default_registry
 from agent.runtime.sandbox import SandboxProfile, build_executor
 from agent.runtime.terminal_transport import _SubAgentTransport
+from agent.runtime.textual_transport import TextualTransport
 
 
 # --------------------------------------------------------------------------- #
@@ -267,12 +269,20 @@ class SubagentSpawner:
         # ④ fork：share_history=True 时继承父 conv
         initial = list(parent_messages) if (spec.share_history and parent_messages) else []
 
-        sub_transport = _SubAgentTransport(
-            parent=parent_transport,
-            name=spec.name,
-            panel_height=spec.panel_height,
-            live=live,
-        )
+        # 父传输为 Textual TUI 时，子 agent 渲染走 _SubAgentTuiTransport（前缀汇入主区）；
+        # 否则沿用旧 _SubAgentTransport（rich 面板集）。两者行为对齐、互不污染。
+        if isinstance(parent_transport, TextualTransport):
+            sub_transport = _SubAgentTuiTransport(
+                parent=parent_transport,
+                name=spec.name,
+            )
+        else:
+            sub_transport = _SubAgentTransport(
+                parent=parent_transport,
+                name=spec.name,
+                panel_height=spec.panel_height,
+                live=live,
+            )
 
         # max_turns 限制：克隆 settings 覆盖循环上限
         sub_settings = self.settings
