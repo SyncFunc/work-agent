@@ -75,6 +75,45 @@ ToolBlock.-collapsed {
     height: auto;
 }
 
+/* 子 agent 独立块 */
+.subagent-block {
+    margin: 0 1 1 1;
+    border: round $primary;
+    height: auto;
+}
+
+.subagent-title {
+    background: $primary-darken-2;
+    color: $text;
+    padding: 0 1;
+    text-style: bold;
+}
+
+#subagent_log {
+    height: auto;
+}
+
+/* 命令提示下拉（输入 / 时） */
+#cmd_hint {
+    height: auto;
+    max-height: 14;
+    background: $panel;
+    border: round $accent;
+    margin: 0 1;
+    padding: 0 1;
+}
+
+.hint-item {
+    height: 1;
+    padding: 0 1;
+}
+
+.hint-item.-active {
+    background: $accent;
+    color: $text;
+    text-style: bold;
+}
+
 /* 计划/技能面板（_StaticLine 内 Panel） */
 _StaticLine {
     margin: 0 1 1 1;

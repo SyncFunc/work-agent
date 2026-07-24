@@ -10,7 +10,7 @@ import asyncio
 from unittest import mock
 
 from rich.syntax import Syntax
-from textual.widgets import Collapsible, TextArea
+from textual.widgets import Collapsible, Static, TextArea
 
 from agent.config.settings import Settings
 from agent.core.events import Event, EventStream, EventType
@@ -21,7 +21,7 @@ from agent.runtime._subagent_tui_transport import _SubAgentTuiTransport
 from agent.runtime.approval import Action
 from agent.runtime.registry import ToolRegistry, ToolResult, tool
 from agent.runtime.textual_transport import TextualTransport
-from agent.tui.app import AgentCommandProvider, ChatApp, _StaticLine
+from agent.tui.app import AgentCommandProvider, ChatApp, SubagentBlock, _StaticLine
 from agent.tui.screens import ApproveScreen, AskScreen, PlanScreen
 from agent.tui.widgets import AssistantMessage, ToolBlock, UserMessage
 
@@ -407,9 +407,12 @@ async def test_tool_block():
         assert len(app.query(Collapsible)) >= 1
         block = app.query_one(ToolBlock)
         assert block._result_widget is not None
-        # 结果区渲染为 diff 高亮（Syntax，lexer=diff）
-        assert isinstance(block._result_body, Syntax)
-        assert "print(1)" in block._result_body.code
+        # 结果区渲染为 diff 高亮（Syntax，lexer=diff）；参数与结果都进入 Contents 容器
+        assert isinstance(block._result_widget.content, Syntax)
+        assert "print(1)" in block._result_widget.content.code
+        contents = block.query_one(Collapsible.Contents)
+        # 参数 Static 与结果 Static 都在 Contents 内（分离且随折叠显隐）
+        assert len(contents.query(Static)) >= 2
 
 
 # --------------------------------------------------------------------------- #
@@ -478,7 +481,7 @@ async def test_ctx_header():
 # M8.6：子 agent 渲染接入（_SubAgentTuiTransport）
 # --------------------------------------------------------------------------- #
 async def test_subagent_render():
-    """M8.6：子 agent 事件经 _SubAgentTuiTransport 汇入主区，断言出现「▶ subagent」前缀块。"""
+    """M8.8：子 agent 事件经 _SubAgentTuiTransport 汇入专属 SubagentBlock（独立块，非前缀文本）。"""
     async with ChatApp().run_test() as pilot:
         app = pilot.app
         parent = TextualTransport(app)
@@ -486,7 +489,7 @@ async def test_subagent_render():
         es = EventStream()
         sub.bind(es)
 
-        # 连续两段文本（同一消息流）+ 一次工具调用 + 新一段文本（应重新加前缀）
+        # 连续两段文本（同一消息流）+ 一次工具调用 + 结果 + 新一段文本
         es.append(Event(type=EventType.TEXT, text="hello", kind="content"))
         es.append(Event(type=EventType.TEXT, text=" world", kind="content"))
         es.append(
@@ -508,10 +511,102 @@ async def test_subagent_render():
         await asyncio.sleep(0.2)
         await pilot.pause()
 
-        # 主区出现助手消息，且至少一段含子 agent 前缀
-        ams = app.query(AssistantMessage)
-        assert len(ams) >= 1
-        full = "".join(a.full for a in ams)
-        assert "▶ subagent: researcher" in full
-        # 工具调用也汇入主区（ToolBlock 出现）
-        assert len(app.query(ToolBlock)) >= 1
+        # 出现独立的子 agent 块（带标题），且块内有助手消息与工具块
+        blocks = app.query(SubagentBlock)
+        assert len(blocks) >= 1
+        blk = blocks[0]
+        assert len(blk.query(AssistantMessage)) >= 1
+        assert len(blk.query(ToolBlock)) >= 1
+        # 主区不再用「▶ subagent」前缀文本方式混入
+        main_ams = app.query(AssistantMessage)
+        full = "".join(a.full for a in main_ams)
+        assert "▶ subagent: researcher" not in full
+
+
+async def test_command_hint_dropdown():
+    """M8.8：输入 / 触发命令提示下拉，展示匹配命令；accept_hint 填充输入框。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        ta = pilot.app.query_one(TextArea)
+        ta.text = "/"
+        app._update_hints()
+        await pilot.pause()
+        assert app._hint_open is True
+        assert any(c == "/plan" for c, _ in app._hint_items)
+
+        # 方向键移动高亮
+        app.move_hint(1)
+        await pilot.pause()
+        assert app._hint_index == 1
+
+        # 接受高亮项，填充输入框并关闭下拉
+        app.accept_hint()
+        await pilot.pause()
+        assert ta.text.startswith("/")
+        assert app._hint_open is False
+
+
+async def test_command_hint_directory_in_palette():
+    """M8.8：Ctrl+P 命令面板含「📑 命令目录」入口。"""
+    async with ChatApp().run_test() as pilot:
+        provider = AgentCommandProvider(pilot.app.screen)
+        hits = [hit async for hit in provider.search("")]
+        names = [h.text for h in hits]
+        assert "📑 命令目录" in names
+
+
+async def test_tool_block_collapsible_and_separated():
+    """M8.8：ToolBlock 可折叠，且参数与结果都进入 Contents（分离、整体显隐）。"""
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        # 构造一个工具块并写入结果
+        tc = ToolCall(id="t1", name="write", arguments={"path": "a.py", "content": "x=1"})
+        app.append_tool_use(tc)
+        app.update_tool_result(
+            tc,
+            ToolResult(ok=True, output="written", error=None, diff="--- a.py\n+++ b.py\n@@\n+x=1"),
+        )
+        await pilot.pause()
+
+        blocks = app.query(ToolBlock)
+        assert len(blocks) == 1
+        blk = blocks[0]
+        # 结果在 Contents 容器内（参数与结果分离，整体随折叠显隐）
+        contents = blk.query_one(Collapsible.Contents)
+        assert contents is not None
+        # 折叠/展开切换
+        assert blk.collapsed is False
+        blk.action_toggle()
+        await pilot.pause()
+        assert blk.collapsed is True
+        blk.action_toggle()
+        await pilot.pause()
+        assert blk.collapsed is False
+
+
+async def test_tool_block_truncates_large_result():
+    """M8.8：超大结果被截断，避免单部件过重导致滚动卡顿。"""
+    from agent.tui.widgets import _truncate
+
+    big = "line\n" * 5000  # ~35000 字符
+    truncated = _truncate(big)
+    assert "已截断" in truncated
+    assert len(truncated) < len(big)
+
+    async with ChatApp().run_test() as pilot:
+        app = pilot.app
+        big_diff = "diff line\n" * 5000
+        tc = ToolCall(id="t2", name="write", arguments={"path": "big.py"})
+        app.append_tool_use(tc)
+        app.update_tool_result(tc, ToolResult(ok=True, output="", error=None, diff=big_diff))
+        await pilot.pause()
+        blk = app.query_one(ToolBlock)
+        res_widget = blk.query_one(Collapsible.Contents).query(Static)[-1]
+        # diff 渲染为 Syntax，截断提示应进入 .code
+        code = (
+            res_widget.content.code
+            if hasattr(res_widget.content, "code")
+            else str(res_widget.content)
+        )
+        assert "已截断" in code
+        assert len(code) < len(big_diff)

@@ -5,21 +5,17 @@
 - 真正推理由 ``Session`` 在独立 worker 线程跑 ``Session.step`` 驱动（M8.2），
   事件经 ``TextualTransport`` 用 ``app.call_from_thread`` 安全桥接回主线程。
 - ``AgentTransport`` 协议 / ``EventStream`` / loop / daemon 协议**一字不改**。
+- 渲染逻辑（流式文本 / 工具块 / 计划进度）抽到 ``MessageRenderer`` 复用，主区与子 agent 块共用。
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import queue
 import threading
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from rich.console import Group
-from rich.markdown import Markdown
-from rich.panel import Panel
-from rich.table import Table
 from rich.text import Text
 from textual.app import App, ComposeResult
 from textual.command import CommandPalette, Hit, Hits, Provider
@@ -27,14 +23,9 @@ from textual.containers import VerticalScroll
 from textual.widgets import Footer, Header, Static, TextArea
 
 from agent.config.settings import ui_theme
-from agent.core.session_command import dispatch_command
+from agent.core.session_command import _HELP_ROWS, dispatch_command
 from agent.runtime.textual_transport import TextualTransport
-from agent.tui.widgets import (
-    AssistantMessage,
-    ReasoningMessage,
-    ToolBlock,
-    UserMessage,
-)
+from agent.tui.render import MessageRenderer, SubagentBlock, _StaticLine
 
 if TYPE_CHECKING:
     from agent.config.settings import Settings
@@ -44,20 +35,17 @@ if TYPE_CHECKING:
 _SENTINEL = object()  # 任务队列哨兵：通知 worker 线程退出
 
 
-class _StaticLine(Static):
-    """把任意 Rich renderable 包成一个可挂载的静态行。"""
-
-    def __init__(self, renderable: Any) -> None:
-        super().__init__(renderable)
-
-
 class AgentCommandProvider(Provider):
-    """命令面板提供器（M8.5）：注册 /plan /exec /skills /compact /context。
+    """命令面板提供器（M8.5/M8.8）：注册 /plan /exec /skills /compact /context，
+    并额外提供「📑 命令目录」入口，选择后展示全部可用命令。
 
     回调统一转发到 ``ChatApp._handle_command``（经 ``call_later`` 回到主线程安全执行）。
     """
 
+    _DIRECTORY = "📑 命令目录"
+
     _COMMANDS = (
+        (_DIRECTORY, "查看全部可用命令"),
         ("/plan", "进入计划模式"),
         ("/exec", "执行 shell 命令"),
         ("/skills", "列出已注册 Skill"),
@@ -77,19 +65,72 @@ class AgentCommandProvider(Provider):
 
     def _make_run(self, name: str):
         def run() -> None:
-            self.app.call_later(self.app._handle_command, name)
+            if name == self._DIRECTORY:
+                self.app.call_later(self.app._show_command_directory)
+            else:
+                self.app.call_later(self.app._handle_command, name)
 
         return run
 
 
-class ChatApp(App):
-    """全屏 chat 应用：顶部状态栏 + 滚动消息区 + 底部输入 + 快捷键栏。"""
+class ChatInput(TextArea):
+    """输入框（TextArea 子类）：当命令提示下拉打开时，拦截方向键 / 回车 / Esc 用于选择。
+
+    拦截逻辑只在提示打开时生效；关闭时完全退回 TextArea 默认行为（光标移动 / 换行 / 缩进）。
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+
+    async def _on_key(self, event: Any) -> None:
+        app = self.app
+        if getattr(app, "_hint_open", False):
+            if event.key == "enter":
+                app.accept_hint()
+                event.stop()
+                event.prevent_default()
+                return
+            if event.key == "escape":
+                app.close_hints()
+                event.stop()
+                event.prevent_default()
+                return
+            if event.key == "up":
+                app.move_hint(-1)
+                event.stop()
+                event.prevent_default()
+                return
+            if event.key == "down":
+                app.move_hint(1)
+                event.stop()
+                event.prevent_default()
+                return
+        await super()._on_key(event)
+
+    def action_cursor_up(self) -> None:
+        app = self.app
+        if getattr(app, "_hint_open", False):
+            app.move_hint(-1)
+            return
+        super().action_cursor_up()
+
+    def action_cursor_down(self) -> None:
+        app = self.app
+        if getattr(app, "_hint_open", False):
+            app.move_hint(1)
+            return
+        super().action_cursor_down()
+
+
+class ChatApp(MessageRenderer, App):
+    """全屏 chat 应用：顶部状态栏 + 滚动消息区 + 命令提示下拉 + 底部输入 + 快捷键栏。"""
 
     CSS_PATH = [Path(__file__).parent / "tui.tcss"]
 
     CSS = """
     #log { height: 1fr; }
     #input { height: 5; }
+    #cmd_hint { display: none; }
     """
 
     BINDINGS = [
@@ -113,20 +154,24 @@ class ChatApp(App):
         self.settings = settings
         self.session_store = session_store
         self.transport = transport
-        # 流式渲染状态（M8.1/M8.4）
-        self._current: Any = None  # 当前正在流式更新的消息部件
-        self._current_is_reasoning = False
-        self._tool_blocks: dict[str, Any] = {}  # tool_call_id -> ToolBlock
-        self._plan_steps: list[Any] | None = None
+        # 子 agent 块：name -> SubagentBlock
+        self._subagent_blocks: dict[str, SubagentBlock] = {}
+        # 命令提示下拉状态
+        self._hint_open = False
+        self._hint_items: list[tuple[str, str]] = []
+        self._hint_index = 0
+        self._hint_box: Any = None
 
     def compose(self) -> ComposeResult:
         yield Header()
         yield VerticalScroll(id="log")
-        yield TextArea(id="input", theme="css", tab_behavior="indent")
+        yield VerticalScroll(id="cmd_hint")
+        yield ChatInput(id="input", theme="css", tab_behavior="indent")
         yield Footer()
 
     def on_mount(self) -> None:
         self.title = "Agent · 全屏会话"
+        self._init_render_state()
         # 主题（M8.5）：从 settings.ui.theme 取 Textual 主题名，落回默认暗色。
         theme = ui_theme(self.settings.ui.theme if self.settings else None)
         try:
@@ -136,10 +181,13 @@ class ChatApp(App):
         # 缓存日志区引用：worker 线程经 call_from_thread 高频挂载部件，
         # 每次 query_one 在并发回调下偶发 NoMatches（屏幕就绪竞态），缓存后稳定。
         self._log = self.query_one("#log", VerticalScroll)
+        self._hint_box = self.query_one("#cmd_hint", VerticalScroll)
         self._mount(
-            UserMessage(
-                "欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；Ctrl+P 命令面板；"
-                "Ctrl+↑/↓ 浏览历史；输入 / 或 /help 查看命令）。"
+            _StaticLine(
+                Text(
+                    "欢迎使用全屏 chat（Ctrl+Q 退出；Ctrl+J 发送；Ctrl+P 命令面板；"
+                    "Ctrl+↑/↓ 浏览历史；输入 / 查看命令；写入大文件时已自动折叠/截断）。"
+                )
             )
         )
         # 顶部状态栏：周期刷新 ctx%（set_interval 在 app 主线程触发，可直接更新 Header）。
@@ -148,11 +196,83 @@ class ChatApp(App):
         if self.session is not None:
             self.transport = TextualTransport(self, context_mgr=self.session.context_mgr)
             self._start_driver()
-        self.query_one(TextArea).focus()
+        self.query_one(ChatInput).focus()
 
     def action_open_commands(self) -> None:
         """Ctrl+P：打开命令面板（手动注入 AgentCommandProvider，绕过 App.COMMANDS）。"""
         self.push_screen(CommandPalette(providers=[AgentCommandProvider]))
+
+    # ------------------------------------------------------------------ #
+    # 命令提示下拉（M8.8）：输入 / 时显示可选命令/skill 列表
+    # ------------------------------------------------------------------ #
+    def _command_candidates(self) -> list[tuple[str, str]]:
+        cands: list[tuple[str, str]] = list(_HELP_ROWS)
+        # 动态补充已注册 Skill
+        if self.session is not None and hasattr(self.session, "list_skills"):
+            try:
+                for s in self.session.list_skills():
+                    name = getattr(s, "name", "?")
+                    desc = (getattr(s, "description", "") or "")[:60]
+                    cands.append((f"/skill {name}", desc))
+            except Exception:
+                pass
+        return cands
+
+    def _update_hints(self) -> None:
+        ta = self.query_one(ChatInput)
+        line = ta.text.split("\n", 1)[0]
+        if not line.startswith("/") or " " in line:
+            self.close_hints()
+            return
+        q = line.lower()
+        matches = [(c, d) for c, d in self._command_candidates() if c.lower().startswith(q)]
+        if not matches:
+            self.close_hints()
+            return
+        self._hint_items = matches[:12]
+        self._hint_index = 0
+        self._render_hint()
+        self._hint_box.display = True
+        self._hint_open = True
+
+    def _render_hint(self) -> None:
+        self._hint_box.remove_children()
+        for i, (c, d) in enumerate(self._hint_items):
+            cls = "hint-item -active" if i == self._hint_index else "hint-item"
+            item = Static(f"{c}  {d}", classes=cls)
+            item.can_focus = False
+            idx = i
+            item.on_click = lambda e, idx=idx: self.accept_hint(idx)  # type: ignore[assignment]
+            self._hint_box.mount(item)
+
+    def accept_hint(self, i: int | None = None) -> None:
+        if not self._hint_open:
+            return
+        if i is None:
+            i = self._hint_index
+        if i < 0 or i >= len(self._hint_items):
+            return
+        cmd, _ = self._hint_items[i]
+        ta = self.query_one(ChatInput)
+        ta.text = cmd + " "
+        last_row = ta.document.line_count - 1
+        ta.cursor_location = (last_row, len(ta.document[last_row]))
+        self.close_hints()
+        ta.focus()
+
+    def move_hint(self, delta: int) -> None:
+        if not self._hint_open or not self._hint_items:
+            return
+        self._hint_index = (self._hint_index + delta) % len(self._hint_items)
+        self._render_hint()
+
+    def close_hints(self) -> None:
+        self._hint_open = False
+        if self._hint_box is not None:
+            self._hint_box.display = False
+
+    def on_text_area_changed(self, event: Any) -> None:
+        self._update_hints()
 
     def action_scroll_log_up(self) -> None:
         """Ctrl+↑：向上浏览聊天记录（TextArea 占用 up/down/pageup，故用 ctrl 组合键）。"""
@@ -180,12 +300,24 @@ class ChatApp(App):
         self._stop_driver()
 
     # ------------------------------------------------------------------ #
+    # 子 agent 独立块（M8.8）
+    # ------------------------------------------------------------------ #
+    def ensure_subagent_block(self, name: str) -> SubagentBlock:
+        """取得（或创建并挂载）某个子 agent 的专属块；幂等。"""
+        if name not in self._subagent_blocks:
+            blk = SubagentBlock(name)
+            self._subagent_blocks[name] = blk
+            self._mount(blk)
+        return self._subagent_blocks[name]
+
+    # ------------------------------------------------------------------ #
     # 输入与 chat 循环（方案 B：thread worker 跑 Session.step）
     # ------------------------------------------------------------------ #
     async def action_submit(self) -> None:
         """Ctrl+J：提交输入。空输入忽略；exit/quit 退出；/ 命令走 dispatch_command；
         其余作为任务投递给 worker 线程跑 Session.step。"""
-        ta = self.query_one(TextArea)
+        self.close_hints()
+        ta = self.query_one(ChatInput)
         text = ta.text.strip()
         if not text:
             return
@@ -211,6 +343,10 @@ class ChatApp(App):
         )
         if not handled:
             self.notify(f"未知命令: {raw}")
+
+    def _show_command_directory(self) -> None:
+        """Ctrl+P 命令目录：在主区展示全部可用命令（复用 /help 输出）。"""
+        self.run_worker(self._handle_command("/help"), exclusive=False)
 
     def _start_driver(self) -> None:
         """启动独立线程 + 独立 asyncio loop 消费任务队列，跑 Session.step。"""
@@ -260,119 +396,3 @@ class ChatApp(App):
         self._log.mount(widget)
         if at_bottom:
             self._log.scroll_end(animate=False)
-
-    # ------------------------------------------------------------------ #
-    # 事件 → 部件 渲染（由 TextualTransport 经 call_from_thread 调用）
-    # ------------------------------------------------------------------ #
-    def append_user(self, text: str) -> None:
-        self._mount(UserMessage(text))
-
-    def append_text(self, text: str, kind: str) -> None:
-        if kind == "reasoning":
-            if self._current is None or not self._current_is_reasoning:
-                self._current = ReasoningMessage()
-                self._current_is_reasoning = True
-                self._mount(self._current)
-            self._current.append(text)
-        else:
-            if self._current is None or self._current_is_reasoning:
-                self._current = AssistantMessage()
-                self._current_is_reasoning = False
-                self._mount(self._current)
-            self._current.append(text)
-
-    def append_tool_use(self, tc: Any) -> None:
-        # 工具调用前先定稿当前流式消息
-        self._current = None
-        self._current_is_reasoning = False
-        args = json.dumps(tc.arguments, ensure_ascii=False, indent=2)
-        block = ToolBlock(tc.name, args)
-        self._tool_blocks[tc.id] = block
-        self._mount(block)
-
-    def update_tool_result(self, tc: Any, res: Any) -> None:
-        block = self._tool_blocks.get(tc.id)
-        if block is not None:
-            block.set_result(res.output or res.error or "", res.ok, res.diff)
-
-    def append_plan_progress(self, ev: Any) -> None:
-        upd = ev.plan_update or {}
-        line = f"📋 计划进度: {upd.get('step_id', '?')} → {upd.get('status', '?')}"
-        if upd.get("note"):
-            line += f"  ({upd['note']})"
-        self._mount(_StaticLine(line))
-
-    def finalize_stream(self) -> None:
-        # 一轮决策结束：定稿当前流式块（把剩余未刷增量一次性渲染），下次文本另起新块
-        if self._current is not None:
-            self._current.flush()
-        self._current = None
-        self._current_is_reasoning = False
-
-    def show_plan(self, res: Any) -> None:
-        parts: list[Any] = []
-        if res.plan:
-            parts.append(Markdown(res.plan))
-        if res.plan_steps:
-            self._plan_steps = list(res.plan_steps)
-            table = Table(show_header=True, header_style="bold")
-            table.add_column("id", style="cyan", no_wrap=True)
-            table.add_column("title")
-            table.add_column("status", style="yellow")
-            for s in res.plan_steps:
-                table.add_row(
-                    getattr(s, "id", "?"), getattr(s, "title", ""), getattr(s, "status", "")
-                )
-            parts.append(table)
-        body = Group(*parts) if parts else Text("(空计划)")
-        self._mount(_StaticLine(Panel(body, title="📋 计划", border_style="magenta")))
-
-    def notify(self, message: str) -> None:
-        self._mount(_StaticLine(f"[dim]{message}[/dim]"))
-
-    def show_skills(self, specs: list) -> None:
-        self._mount(_StaticLine(_specs_panel(specs, "🧩 已注册 Skill", "name")))
-
-    def show_agents(self, specs: list) -> None:
-        self._mount(_StaticLine(_specs_panel(specs, "🤖 已注册 Subagent 类型", "name")))
-
-    def report_usage(self, usage: dict[str, int] | None, answer: str | None = None) -> None:
-        if usage:
-            body = "  ".join(
-                f"■ {k}={v}"
-                for k, v in (
-                    ("prompt", usage.get("prompt_tokens", 0)),
-                    ("completion", usage.get("completion_tokens", 0)),
-                    ("total", usage.get("total_tokens", 0)),
-                    ("reasoning", usage.get("reasoning_tokens", 0)),
-                    ("cache_hit", usage.get("prompt_cache_hit_tokens", 0)),
-                    ("cache_miss", usage.get("prompt_cache_miss_tokens", 0)),
-                )
-            )
-            self._mount(_StaticLine(Panel(body, title="📊 tokens", border_style="bright_black")))
-        elif answer:
-            est = _estimate_tokens(answer)
-            self._mount(
-                _StaticLine(
-                    Panel(
-                        f"[dim]模型未返回用量；输出估算≈{est} tokens[/dim]",
-                        title="📊 tokens",
-                        border_style="bright_black",
-                    )
-                )
-            )
-
-
-def _specs_panel(specs: list, title: str, name_key: str) -> Panel:
-    """把 Skill/Subagent 精简列表渲染为表格面板。"""
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("name", style="cyan", no_wrap=True)
-    table.add_column("description")
-    for s in specs:
-        table.add_row(getattr(s, name_key, "?"), (getattr(s, "description", "") or "")[:80])
-    return Panel(table, title=title, border_style="blue")
-
-
-def _estimate_tokens(text: str) -> int:
-    """粗略 token 估算（与 agent.context.tokens 解耦，避免引入重依赖）。"""
-    return max(1, len(text) // 4)
