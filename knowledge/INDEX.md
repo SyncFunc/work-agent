@@ -627,6 +627,15 @@ flowchart TD
 - **已知限制**：`TOOL_USE` 事件目前不含 `risk`（`ToolCall` 仅 id/name/arguments，`agent/core/events.py`），故工具块标题暂不能挂风险徽章；风险仅在审批模态呈现。若需工具块直显，须在 daemon `loop.py` 发 `TOOL_USE` 时带 risk（同步 M9.2 契约测试）。
 - **验收**：`npm run lint`/`build` 全绿；`npm run test` **35 passed**（新增 `hitlMachine.test.ts` 5 例：ask 入队/出队、show_plan+confirm_plan 配对、approve、plan_progress 刷新、多并发不串）。
 
+## M9.6 沉淀（设置面板与命令面板）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.6-设置面板与命令面板.md`。`features/settings` + `features/command` + `features/notices` + `main/settings.ts` IPC。
+
+- **设置写回合并策略**：渲染进程无 node fs（`contextIsolation`+`nodeIntegration:false`），故经 IPC：主进程 `ipcMain.handle('settings:read'/'settings:write')`（`main/settings.ts` 用 `fs`+`js-yaml`）↔ preload `agentApi.readSettings/writeSettings` ↔ 渲染 `settingsApi`。`mergeSettings(base,patch)` 深合并（对象递归、数组整体替换），仅覆盖 patch 键，保留其余配置。**坑**：`js-yaml` v4 用**具名导入** `load`/`dump`（无 default 导出，否则 rollup 报 “default is not exported”）。生效范围：daemon 惰性 `load_settings(project_root)`，已建会话沿用旧值 → 设置对新会话/重启 daemon 生效（不热重载）。
+- **命令面板 ↔ M7.5**：`useCommands.COMMANDS` 静态对齐 M7.5 命令集（`/context` `/compact` `/plan` `/skills` `/agents` `/mode` `/exec` `/approve` `/bg` `/sessions` `/resume` `/fork` `/skill` `/agent` `/help`）；`resume`/`fork` 标 `needsSession`。执行 → `DaemonClient.command(name,args)`；daemon `dispatch_command` 经 `notify`/`show_skills`/`show_agents` 反馈，前端 `useNotices` 订阅展示 `NoticeHost` toast。`InputBar` `/` 前缀走 `parseSlash` 直发 `command`（与 M7.3 CLI REPL 一致）。`CommandPalette` 由 Ctrl/Cmd+K 唤起。
+- **theme 映射**：前端自有 `light`/`dark` 持久化到 `localStorage`（即时生效 `document.body.dataset.theme`）+ 同步写 `ui.theme`；`theme.css` 响应 `body[data-theme="dark"]`。因 App 多用内联样式，主题仅全局元素生效（证明机制）。
+- **验收**：`npm run lint`/`build` 全绿；`npm run test` **43 passed**（新增 `settings.test.ts` 4 + `parseSlash.test.ts` 4 + `useCommands.test.ts` 2）。
+
 
 
 

@@ -1,6 +1,7 @@
 import { app, BrowserWindow, dialog, ipcMain } from 'electron'
 import { join } from 'node:path'
 import { DaemonManager } from './daemon'
+import { readSettings, writeSettings } from './settings'
 import type { DaemonConfig } from '../shared/daemon-config'
 
 // 全局单一 daemon：整个应用生命周期仅 spawn 一次。
@@ -15,6 +16,11 @@ app.whenReady().then(boot).catch((err: unknown) => {
 async function boot(): Promise<void> {
   const config = await daemon.start()
   ipcMain.handle('daemon:config', () => daemon.getConfig())
+  // 设置读写（M9.6）：仅在主进程访问 fs，渲染进程经 agentApi 调用。
+  ipcMain.handle('settings:read', (_e, projectRoot: string) => readSettings(projectRoot))
+  ipcMain.handle('settings:write', (_e, projectRoot: string, patch: Record<string, unknown>) =>
+    writeSettings(projectRoot, patch),
+  )
   createWindow(config)
 }
 

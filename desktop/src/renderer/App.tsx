@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from 'react'
+import './theme.css'
 import type { DaemonConfig } from '../shared/daemon-config'
 import { DaemonClient } from '../protocol/client'
 import { ProjectSwitcher, loadProjectRoot } from '../features/projects/ProjectSwitcher'
@@ -9,6 +10,13 @@ import { MessageList } from '../features/chat/MessageList'
 import { useChatModel } from '../features/chat/useEventReducer'
 import { HitlModalHost } from '../features/hitl/HitlModalHost'
 import { useHitl } from '../features/hitl/useHitl'
+import { SettingsPanel } from '../features/settings/SettingsPanel'
+import { applyTheme, loadTheme } from '../features/settings/settingsApi'
+import { CommandPalette } from '../features/command/CommandPalette'
+import { useCommands } from '../features/command/useCommands'
+import { parseSlash } from '../features/command/parseSlash'
+import { NoticeHost } from '../features/notices/NoticeHost'
+import { useNotices } from '../features/notices/useNotices'
 
 export default function App(): React.ReactElement {
   const [config, setConfig] = useState<DaemonConfig | null>(null)
@@ -16,6 +24,13 @@ export default function App(): React.ReactElement {
   const [client, setClient] = useState<DaemonClient | null>(null)
   const [projectRoot, setProjectRoot] = useState<string>('')
   const [draft, setDraft] = useState<string>('')
+  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [paletteOpen, setPaletteOpen] = useState(false)
+
+  // 应用启动时套用持久化主题。
+  useEffect(() => {
+    applyTheme(loadTheme())
+  }, [])
 
   // 拉取 daemon 配置并建连（DaemonClient 默认用全局 WebSocket 直连 daemon）。
   useEffect(() => {
@@ -39,16 +54,36 @@ export default function App(): React.ReactElement {
     if (config) setProjectRoot(loadProjectRoot(''))
   }, [config])
 
+  // 全局快捷键：Ctrl/Cmd+K 打开命令面板。
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
+
   const sessions = useSessions(client, projectRoot)
   const active = sessions.state.tabs.find((t) => t.id === sessions.state.activeId) ?? null
   const model = useChatModel(active ? active.events : [])
   const hitl = useHitl(client)
   const hitlPending = hitl.pending
+  const commands = useCommands(client)
+  const notices = useNotices(client)
 
   const submit = (): void => {
     const text = draft.trim()
     if (!text) return
-    sessions.sendTask(text)
+    const slash = parseSlash(text)
+    if (slash && client) {
+      // 斜杠命令：直接发 command（与 M7.3 CLI REPL 一致）。
+      client.command(slash.name, slash.args ? slash.args : null)
+    } else {
+      sessions.sendTask(text)
+    }
     setDraft('')
   }
 
@@ -56,8 +91,9 @@ export default function App(): React.ReactElement {
     <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif' }}>
       {/* 侧栏：项目切换 + 会话列表 */}
       <aside style={{ width: 260, borderRight: '1px solid #eee', display: 'flex', flexDirection: 'column' }}>
-        <h1 style={{ fontSize: 16, margin: 0, padding: '10px 12px', borderBottom: '1px solid #eee' }}>
-          Work Agent
+        <h1 style={{ fontSize: 16, margin: 0, padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>Work Agent</span>
+          <button type="button" onClick={() => setSettingsOpen(true)} title="设置" style={{ fontSize: 14 }}>⚙</button>
         </h1>
         <ProjectSwitcher projectRoot={projectRoot} onChange={setProjectRoot} />
         <SessionList
@@ -99,21 +135,36 @@ export default function App(): React.ReactElement {
             onKeyDown={(e) => {
               if (e.key === 'Enter') submit()
             }}
-            placeholder={active ? (hitlPending ? '等待人工确认…' : '输入任务，回车发送…') : '请先打开会话'}
+            placeholder={
+              active
+                ? hitlPending
+                  ? '等待人工确认…'
+                  : '输入任务，或 / 开头执行命令（Ctrl/Cmd+K 命令面板）'
+                : '请先打开会话'
+            }
             disabled={!active || hitlPending}
             style={{ flex: 1 }}
           />
           <button onClick={submit} disabled={!active || hitlPending}>
-            发送
+            {parseSlash(draft) ? '执行' : '发送'}
           </button>
         </footer>
       </main>
+      {settingsOpen && <SettingsPanel projectRoot={projectRoot} onClose={() => setSettingsOpen(false)} />}
+      {paletteOpen && (
+        <CommandPalette
+          commands={commands.commands}
+          onRun={commands.run}
+          onClose={() => setPaletteOpen(false)}
+        />
+      )}
       <HitlModalHost
         requests={hitl.requests}
         onAnswer={hitl.resolveAsk}
         onConfirm={hitl.resolvePlan}
         onApprove={hitl.resolveApprove}
       />
+      <NoticeHost notices={notices} />
     </div>
   )
 }

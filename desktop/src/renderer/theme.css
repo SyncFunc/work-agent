@@ -1,0 +1,24 @@
+/* 主题：浅色为默认；body[data-theme="dark"] 切换暗色。
+   注：App 大量使用内联样式，此处仅对少量全局元素做主题化，证明切换机制生效。 */
+
+body {
+  margin: 0;
+  background: #ffffff;
+  color: #1a1a1a;
+}
+body[data-theme='dark'] {
+  background: #1e1e1e;
+  color: #e6e6e6;
+}
+body[data-theme='dark'] aside,
+body[data-theme='dark'] .wa-modal-box {
+  background: #2a2a2a;
+  color: #e6e6e6;
+}
+body[data-theme='dark'] input,
+body[data-theme='dark'] textarea,
+body[data-theme='dark'] select {
+  background: #333;
+  color: #eee;
+  border: 1px solid #555;
+}
