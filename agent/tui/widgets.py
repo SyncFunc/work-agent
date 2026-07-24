@@ -124,8 +124,8 @@ class ToolBlock(Collapsible):
 
     DEFAULT_CSS = "ToolBlock { margin: 0 1 1 1; }"
     BINDINGS = [
-        Binding("space", "toggle", "折叠/展开", show=False),
-        Binding("enter", "toggle", "折叠/展开", show=False),
+        Binding("space", "toggle_collapse", "折叠/展开", show=False),
+        Binding("enter", "toggle_collapse", "折叠/展开", show=False),
     ]
 
     def __init__(self, name: str, args: str) -> None:
@@ -174,5 +174,5 @@ class ToolBlock(Collapsible):
             self._result_widget.update(body)
             self._result_widget.border_title = f"[{'✅' if ok else '❌'}] 结果"
 
-    def action_toggle(self) -> None:
+    def action_toggle_collapse(self) -> None:
         self.collapsed = not self.collapsed

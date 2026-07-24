@@ -14,7 +14,7 @@ import asyncio
 import queue
 import threading
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 from rich.text import Text
 from textual.app import App, ComposeResult
@@ -65,10 +65,11 @@ class AgentCommandProvider(Provider):
 
     def _make_run(self, name: str):
         def run() -> None:
+            app = cast("ChatApp", self.app)
             if name == self._DIRECTORY:
-                self.app.call_later(self.app._show_command_directory)
+                app.call_later(app._show_command_directory)
             else:
-                self.app.call_later(self.app._handle_command, name)
+                app.call_later(app._handle_command, name)
 
         return run
 
@@ -83,7 +84,7 @@ class ChatInput(TextArea):
         super().__init__(**kwargs)
 
     async def _on_key(self, event: Any) -> None:
-        app = self.app
+        app = cast("ChatApp", self.app)
         if getattr(app, "_hint_open", False):
             if event.key == "enter":
                 app.accept_hint()
@@ -107,19 +108,19 @@ class ChatInput(TextArea):
                 return
         await super()._on_key(event)
 
-    def action_cursor_up(self) -> None:
-        app = self.app
+    def action_cursor_up(self, select: bool = False) -> None:
+        app = cast("ChatApp", self.app)
         if getattr(app, "_hint_open", False):
             app.move_hint(-1)
             return
-        super().action_cursor_up()
+        super().action_cursor_up(select)
 
-    def action_cursor_down(self) -> None:
-        app = self.app
+    def action_cursor_down(self, select: bool = False) -> None:
+        app = cast("ChatApp", self.app)
         if getattr(app, "_hint_open", False):
             app.move_hint(1)
             return
-        super().action_cursor_down()
+        super().action_cursor_down(select)
 
 
 class ChatApp(MessageRenderer, App):
@@ -154,6 +155,8 @@ class ChatApp(MessageRenderer, App):
         self.settings = settings
         self.session_store = session_store
         self.transport = transport
+        # 消息挂载目标（VerticalScroll），on_mount 时赋值；声明为 Any 避免未绑定告警。
+        self._log_container: Any = None
         # 子 agent 块：name -> SubagentBlock
         self._subagent_blocks: dict[str, SubagentBlock] = {}
         # 命令提示下拉状态
@@ -180,7 +183,7 @@ class ChatApp(MessageRenderer, App):
             self.theme = "textual-dark"
         # 缓存日志区引用：worker 线程经 call_from_thread 高频挂载部件，
         # 每次 query_one 在并发回调下偶发 NoMatches（屏幕就绪竞态），缓存后稳定。
-        self._log = self.query_one("#log", VerticalScroll)
+        self._log_container = self.query_one("#log", VerticalScroll)
         self._hint_box = self.query_one("#cmd_hint", VerticalScroll)
         self._mount(
             _StaticLine(
@@ -276,11 +279,15 @@ class ChatApp(MessageRenderer, App):
 
     def action_scroll_log_up(self) -> None:
         """Ctrl+↑：向上浏览聊天记录（TextArea 占用 up/down/pageup，故用 ctrl 组合键）。"""
-        self._log.scroll_relative(y=-max(1, self._log.size.height - 2), animate=False)
+        self._log_container.scroll_relative(
+            y=-max(1, self._log_container.size.height - 2), animate=False
+        )
 
     def action_scroll_log_down(self) -> None:
         """Ctrl+↓：向下浏览聊天记录。"""
-        self._log.scroll_relative(y=max(1, self._log.size.height - 2), animate=False)
+        self._log_container.scroll_relative(
+            y=max(1, self._log_container.size.height - 2), animate=False
+        )
 
     def _refresh_ctx(self) -> None:
         """周期刷新顶部状态栏的 ctx% 副标题（来自 ContextManager.estimate_usage）。"""
@@ -348,6 +355,13 @@ class ChatApp(MessageRenderer, App):
         """Ctrl+P 命令目录：在主区展示全部可用命令（复用 /help 输出）。"""
         self.run_worker(self._handle_command("/help"), exclusive=False)
 
+    def notify(self, message: str, *args: Any, **kwargs: Any) -> None:
+        """覆盖 ``App.notify``：把通知渲染进聊天区（而非 toast）。
+
+        保持与基类相同的调用签名（多出的关键字参数忽略），以满足类型检查与兼容调用。
+        """
+        self.render_notify(message)
+
     def _start_driver(self) -> None:
         """启动独立线程 + 独立 asyncio loop 消费任务队列，跑 Session.step。"""
         self._task_queue: queue.Queue = queue.Queue()
@@ -370,29 +384,31 @@ class ChatApp(MessageRenderer, App):
 
     async def _session_loop(self) -> None:
         """消费任务队列，逐轮跑 Session.step；事件经 TextualTransport 桥接回主线程。"""
+        session = self.session
+        transport = self.transport
+        if session is None or transport is None:
+            return
         while True:
             task = await asyncio.get_running_loop().run_in_executor(None, self._task_queue.get)
             if task is _SENTINEL:
                 break
             try:
-                res, err = await self.session.step(
-                    task, self.transport, yes=False, fatal_plan_decline=False
-                )
+                res, err = await session.step(task, transport, yes=False, fatal_plan_decline=False)
             except Exception as e:  # 任何未捕获异常优雅通知，不崩 UI
-                self.transport.notify(f"error: {type(e).__name__}: {e}")
+                transport.notify(f"error: {type(e).__name__}: {e}")
                 res = None
             else:
                 if res is not None:
-                    self.transport.report_usage(res.usage, res.text)
+                    transport.report_usage(res.usage, res.text)
             # 一轮结束：收尾 transport（退订当前流、刷通知）
-            self.transport.close()
+            transport.close()
 
     # ------------------------------------------------------------------ #
     # 内部工具：挂载部件 + 自动吸底（#log 引用在 on_mount 缓存，避免并发查询竞态）
     # ------------------------------------------------------------------ #
     def _mount(self, widget: Any) -> None:
         # 仅当用户已停在底部时才自动吸底；否则保留其浏览历史的滚动位置。
-        at_bottom = self._log.scroll_offset.y >= (self._log.max_scroll_y - 1)
-        self._log.mount(widget)
+        at_bottom = self._log_container.scroll_offset.y >= (self._log_container.max_scroll_y - 1)
+        self._log_container.mount(widget)
         if at_bottom:
-            self._log.scroll_end(animate=False)
+            self._log_container.scroll_end(animate=False)

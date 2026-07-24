@@ -127,19 +127,19 @@ async def test_scroll_log_and_preserve_position():
         for i in range(80):
             app._mount(UserMessage(f"line {i} " + "x" * 40))
         await pilot.pause()
-        assert app._log.max_scroll_y > 0
+        assert app._log_container.max_scroll_y > 0
 
         # Ctrl+↑ 应上滚（scroll_offset 减小）
-        bottom = app._log.scroll_offset.y
+        bottom = app._log_container.scroll_offset.y
         app.action_scroll_log_up()
         await pilot.pause()
-        after_up = app._log.scroll_offset.y
+        after_up = app._log_container.scroll_offset.y
         assert after_up < bottom
 
         # 此时不在底部，新消息不应把视图拽回底部（保留浏览位置）
         app._mount(UserMessage("new message while scrolled up"))
         await pilot.pause()
-        assert app._log.scroll_offset.y == after_up
+        assert app._log_container.scroll_offset.y == after_up
 
 
 async def test_autoscroll_when_at_bottom():
@@ -150,13 +150,13 @@ async def test_autoscroll_when_at_bottom():
             app._mount(UserMessage(f"line {i} " + "x" * 40))
         await pilot.pause()
         # 停在底部
-        app._log.scroll_end(animate=False)
+        app._log_container.scroll_end(animate=False)
         await pilot.pause()
-        assert app._log.scroll_offset.y >= app._log.max_scroll_y - 1
+        assert app._log_container.scroll_offset.y >= app._log_container.max_scroll_y - 1
         # 新消息后仍在底部
         app._mount(UserMessage("fresh"))
         await pilot.pause()
-        assert app._log.scroll_offset.y >= app._log.max_scroll_y - 1
+        assert app._log_container.scroll_offset.y >= app._log_container.max_scroll_y - 1
 
 
 # --------------------------------------------------------------------------- #
@@ -576,10 +576,10 @@ async def test_tool_block_collapsible_and_separated():
         assert contents is not None
         # 折叠/展开切换
         assert blk.collapsed is False
-        blk.action_toggle()
+        blk.action_toggle_collapse()
         await pilot.pause()
         assert blk.collapsed is True
-        blk.action_toggle()
+        blk.action_toggle_collapse()
         await pilot.pause()
         assert blk.collapsed is False
 

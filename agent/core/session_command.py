@@ -45,7 +45,7 @@ async def dispatch_command(
     session: SessionLike,
     raw: str,
     transport: AgentTransport,
-    settings: Settings,
+    settings: Settings | None,
     *,
     feedback: Callable[[str], None] | None = None,
 ) -> bool:
@@ -75,12 +75,20 @@ async def dispatch_command(
         return True
     if cmd in {"/exec"}:
         session.plan_mode = False
-        if session.plan_path is None and os.path.isfile(settings.plan.file):
+        if (
+            settings is not None
+            and session.plan_path is None
+            and os.path.isfile(settings.plan.file)
+        ):
             session.plan_path = settings.plan.file
         fb("→ 已切换到 EXEC 模式（可执行）")
         return True
     if cmd in {"/approve"}:
-        if session.plan_path is None and os.path.isfile(settings.plan.file):
+        if (
+            settings is not None
+            and session.plan_path is None
+            and os.path.isfile(settings.plan.file)
+        ):
             session.plan_path = settings.plan.file
         if session.plan_path:
             session.plan_mode = False

@@ -2,7 +2,7 @@
 避免重复流式/工具块渲染逻辑。
 
 契约（子类必须提供）：
-- ``self._log``：消息挂载目标（``VerticalScroll`` 或内部滚动容器），在 ``on_mount`` 设置。
+- ``self._log_container``：消息挂载目标（``VerticalScroll`` 或内部滚动容器），在 ``on_mount`` 设置。
 - ``self._mount(widget)``：子类实现的挂载方法（``ChatApp`` 带自动吸底；``SubagentBlock`` 直接挂内部容器）。
 - ``self._init_render_state()``：初始化流式状态（``_current`` / ``_tool_blocks`` 等）。
 """
@@ -53,6 +53,10 @@ class MessageRenderer:
         self._current_is_reasoning = False
         self._tool_blocks: dict[str, Any] = {}  # tool_call_id -> ToolBlock
         self._plan_steps: list[Any] | None = None
+
+    def _mount(self, widget: Any) -> None:
+        """子类实现的挂载方法（``ChatApp`` 带自动吸底；``SubagentBlock`` 直接挂内部容器）。"""
+        raise NotImplementedError
 
     # ------------------------------------------------------------------ #
     # 事件 → 部件 渲染（由 Transport 经线程桥接调用）
@@ -124,7 +128,7 @@ class MessageRenderer:
         body = Group(*parts) if parts else Text("(空计划)")
         self._mount(_StaticLine(Panel(body, title="📋 计划", border_style="magenta")))
 
-    def notify(self, message: str) -> None:
+    def render_notify(self, message: str) -> None:
         self._mount(_StaticLine(f"[dim]{message}[/dim]"))
 
     def show_skills(self, specs: list) -> None:
@@ -169,7 +173,7 @@ class SubagentBlock(Container, MessageRenderer):
 
     def __init__(self, name: str) -> None:
         self._name = name
-        self._log: Any = None
+        self._log_container: Any = None
         self._pending: list[Any] = []  # 块尚未挂载完成前的暂存部件
         self._init_render_state()
         super().__init__(classes="subagent-block")
@@ -179,21 +183,21 @@ class SubagentBlock(Container, MessageRenderer):
         yield VerticalScroll(id="subagent_log")
 
     def on_mount(self) -> None:
-        self._log = self.query_one("#subagent_log", VerticalScroll)
+        self._log_container = self.query_one("#subagent_log", VerticalScroll)
         # 冲刷挂载竞态期间暂存的部件
         if self._pending:
             for w in self._pending:
-                self._log.mount(w)
+                self._log_container.mount(w)
             self._pending.clear()
 
     def _mount(self, widget: Any) -> None:
-        if self._log is None:
+        if self._log_container is None:
             try:
-                self._log = self.query_one("#subagent_log", VerticalScroll)
+                self._log_container = self.query_one("#subagent_log", VerticalScroll)
             except Exception:
-                self._log = None
-        if self._log is None:
+                self._log_container = None
+        if self._log_container is None:
             # 块尚未挂载完成，先暂存，待 on_mount 冲刷
             self._pending.append(widget)
             return
-        self._log.mount(widget)
+        self._log_container.mount(widget)

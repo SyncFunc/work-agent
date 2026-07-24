@@ -543,6 +543,15 @@ flowchart TD
   6. **子 agent 独立块**：新增 `agent/tui/render.py` 的 `MessageRenderer` mixin（抽出流式/工具块渲染，主区与子 agent 块共用）+ `SubagentBlock(Container, MessageRenderer)`（带标题「🤖 subagent: <name>」，内部 `#subagent_log`）。`_SubAgentTuiTransport` 改为把事件路由进 `SubagentBlock`（`_get_block` 跨线程安全取得/创建块，worker 线程 `fut.result()` 阻塞等创建）。`ChatApp` 继承 `MessageRenderer`，`ensure_subagent_block(name)` 幂等创建块。
   - 踩坑：`VerticalScroll` 在 `textual.containers`（不在 `textual.widgets`）；`Static` 内容用 `.content` 属性（非 `.renderable`），`Syntax` 用 `.code`；`Hit` 的展示名在 `.text`（非 `.name`）；`Collapsible` 的 Contents 容器类名 `Collapsible.Contents`。
   - 测试：`test_subagent_render`(独立块)、`test_command_hint_dropdown`、`test_command_hint_directory_in_palette`、`test_tool_block_collapsible_and_separated`、`test_tool_block_truncates_large_result`、`test_slash_help_lists_commands`、滚动相关 `test_scroll_log_and_preserve_position`/`test_autoscroll_when_at_bottom`。
+- **Textual + basedpyright 类型检查踩坑（CI 铁律，typeCheckingMode=standard，include=agent/scripts）**：
+  1. **不要用 `self._log` 缓存日志容器**：`App` 基类已有 `_log` 方法（日志），覆盖它会触发 `reportAttributeAccessIssue` 且后续 `.mount`/`.scroll_end` 被误判为 `MethodType`。统一改名为 `self._log_container`。
+  2. **mixin 的抽象方法必须在基类声明**：`MessageRenderer` 调用 `self._mount`，但该法只存在于子类中；必须在 `MessageRenderer` 里声明 `def _mount(self, widget): raise NotImplementedError`，否则 `reportAttributeAccessIssue`。
+  3. **`App.notify` 重写需兼容签名**：mixin 想把通知渲染进聊天区时，覆盖方法签名写成 `def notify(self, message, *args, **kwargs)` 以保持与 `App.notify(message, *, title=, severity=, timeout=, markup=)` 兼容，否则 `reportIncompatibleMethodOverride`。
+  4. **`DOMNode.action_toggle` 是保留动作**：自定义折叠不要叫 `action_toggle`（带 `attribute_name` 参数、协程返回），改名如 `action_toggle_collapse` 并同步 `BINDINGS` 的 `"toggle"` → `"toggle_collapse"`。
+  5. **`TextArea.action_cursor_up/down` 有 `select: bool = False` 参数**：子类重写必须带上，否则 `reportIncompatibleMethodOverride`。
+  6. **子类访问 app 专属方法**：在 `TextArea`/`Provider` 子类里 `self.app` 被推断为基类 `App`，调用 `ChatApp` 专属方法（如 `accept_hint`）需 `app = cast("ChatApp", self.app)`。
+  7. **`Settings | None` 进入 `dispatch_command`**：形参改为 `Settings | None` 并对 `.plan.file` 等访问加 `settings is not None` 守卫（worker 线程里 `self.session`/`self.transport` 取局部变量并 `if ... is None: return` 收窄类型）。
+  - 本地校验命令：`python -m basedpyright`（不带路径，遵循 pyproject 的 include）。CI 只查 `agent/`+`scripts/`，不查 `tests/`。
 
 
 
