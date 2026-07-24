@@ -7,6 +7,8 @@ import { SessionList } from '../features/sessions/SessionList'
 import { useSessions } from '../features/sessions/useSessions'
 import { MessageList } from '../features/chat/MessageList'
 import { useChatModel } from '../features/chat/useEventReducer'
+import { HitlModalHost } from '../features/hitl/HitlModalHost'
+import { useHitl } from '../features/hitl/useHitl'
 
 export default function App(): React.ReactElement {
   const [config, setConfig] = useState<DaemonConfig | null>(null)
@@ -40,6 +42,8 @@ export default function App(): React.ReactElement {
   const sessions = useSessions(client, projectRoot)
   const active = sessions.state.tabs.find((t) => t.id === sessions.state.activeId) ?? null
   const model = useChatModel(active ? active.events : [])
+  const hitl = useHitl(client)
+  const hitlPending = hitl.pending
 
   const submit = (): void => {
     const text = draft.trim()
@@ -95,15 +99,21 @@ export default function App(): React.ReactElement {
             onKeyDown={(e) => {
               if (e.key === 'Enter') submit()
             }}
-            placeholder={active ? '输入任务，回车发送…' : '请先打开会话'}
-            disabled={!active}
+            placeholder={active ? (hitlPending ? '等待人工确认…' : '输入任务，回车发送…') : '请先打开会话'}
+            disabled={!active || hitlPending}
             style={{ flex: 1 }}
           />
-          <button onClick={submit} disabled={!active}>
+          <button onClick={submit} disabled={!active || hitlPending}>
             发送
           </button>
         </footer>
       </main>
+      <HitlModalHost
+        requests={hitl.requests}
+        onAnswer={hitl.resolveAsk}
+        onConfirm={hitl.resolvePlan}
+        onApprove={hitl.resolveApprove}
+      />
     </div>
   )
 }

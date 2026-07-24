@@ -616,6 +616,17 @@ flowchart TD
 - **Markdown 策略**：`Markdown.tsx`(react-markdown + remark-gfm + rehype-highlight) 整段 content 重渲染（不逐字 diff，借助 React 不闪烁）；`highlight.js/styles/github.css` 主题在组件内 import。新增依赖 `react-markdown`/`remark-gfm`/`rehype-highlight`/`highlight.js`（desktop deps）。
 - **验收**：`npm run lint`/`build` 全绿；`npm run test` **30 passed**（新增 `useEventReducer.test.ts` 6 例：流式累积、双轮次、工具流、replay 一致性、user/error/final、final 不重复）。GUI 真机渲染需显示器（headless 仅验证构建+单测+协议对齐）。
 
+## M9.5 沉淀（HITL 模态与审批可视化）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.5-HITL模态与审批可视化.md`。`desktop/src/features/hitl/` 把 daemon HITL 协议消息渲染为模态 + 审批可视化。
+
+- **协议配对（对齐 `agent/daemon/bridge.py`）**：`ask{id,question}` → `answer{id,text}`；`show_plan{plan,plan_path,plan_steps}`（**无 id**，仅展示）→ 随后 `confirm_plan{id}`（带 id，真正 await）→ `confirm_plan{id,confirmed}`；`approve{id,action}` → `approve{id,approved}`。`DaemonClient` 的 `answer/confirmPlan/approve` 均带 `id` 回传（同 `id` 闭环）。**坑**：`show_plan` 不带 id，前端必须等 `confirm_plan{id}` 才补 id 使模态可操作，否则无法回传。
+- **纯 reducer `hitlMachine`**（同 M9.3 模式）：`queue: HitlRequest[]`；`ask`/`approve` 直接入队（带 id）；`show_plan` 入队 **id=null**，`confirm_plan{id}` 补填最近空 id 计划；`resolve_*` 按 id 出队；`plan_progress{stepId,status,note}` 原地更新计划步骤状态。`useHitl` 订阅 `ask`/`show_plan`/`confirm_plan`/`approve` + `plan_progress` 事件，并暴露 `resolveAsk/resolvePlan/resolveApprove`（调用 client 后 dispatch 出队）。
+- **阻塞性**：`useHitl.pending`(queue 非空) → `App.tsx` 禁输入框/发送；`HitlModalHost` 按 queue 渲染所有请求，各按自身 `id` 闭环，多并发不串。
+- **风险档配色（`ApprovalBadge.tsx`）**：`danger`红/`elevated`橙/`safe`绿，来自 `action.risk`；`SandboxViz` 同构映射 `read-only`/`workspace-write`/`danger-full`（状态栏/设置接入留 M9.6）。`ApproveModal` 展示 `action{tool,risk,args,description,approval_request}`。
+- **已知限制**：`TOOL_USE` 事件目前不含 `risk`（`ToolCall` 仅 id/name/arguments，`agent/core/events.py`），故工具块标题暂不能挂风险徽章；风险仅在审批模态呈现。若需工具块直显，须在 daemon `loop.py` 发 `TOOL_USE` 时带 risk（同步 M9.2 契约测试）。
+- **验收**：`npm run lint`/`build` 全绿；`npm run test` **35 passed**（新增 `hitlMachine.test.ts` 5 例：ask 入队/出队、show_plan+confirm_plan 配对、approve、plan_progress 刷新、多并发不串）。
+
 
 
 
