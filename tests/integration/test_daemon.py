@@ -6,12 +6,15 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import tempfile
 from types import SimpleNamespace
 
 import pytest
 import websockets
 
 from agent.config.settings import load_settings
+from agent.context.session_store import SessionStore
 from agent.core.events import Event, EventStream, EventType
 from agent.core.intent import Question
 from agent.core.loop import AgentResult
@@ -54,7 +57,7 @@ class FakeSession:
 
 def _make_registry() -> SessionRegistry:
     return SessionRegistry(
-        session_factory=lambda sid: FakeSession(sid),
+        session_factory=lambda pr, sid: FakeSession(sid),
         transport_factory=lambda h: BridgeTransport(h),
     )
 
@@ -121,8 +124,8 @@ async def _drive(ws, *, answer="a"):
 # --------------------------------------------------------------------------- #
 def test_registry_attach_switch_list():
     reg = SessionRegistry()
-    h1 = reg.new(name="a")
-    h2 = reg.new(name="b")
+    h1 = reg.new(os.getcwd(), name="a")
+    h2 = reg.new(os.getcwd(), name="b")
 
     class Conn:
         def __init__(self):
@@ -132,9 +135,9 @@ def test_registry_attach_switch_list():
             return None
 
     c = Conn()
-    assert reg.attach(c, h1.session_id) is h1
+    assert reg.attach(c, os.getcwd(), h1.session_id) is h1
     assert h1.attached_conn is c
-    reg.switch(c, h2.session_id)
+    reg.switch(c, os.getcwd(), h2.session_id)
     assert h2.attached_conn is c
     assert h1.attached_conn is None
     info = reg.list_info()
@@ -146,7 +149,7 @@ def test_registry_attach_switch_list():
 
 async def test_per_session_lock_serializes():
     reg = SessionRegistry()
-    h = reg.new()
+    h = reg.new(os.getcwd())
     order: list[int] = []
 
     async def work(n: int) -> None:
@@ -262,7 +265,7 @@ def test_attach_restores_from_factory_and_seeds_buffer():
     stream.append(Event(type=EventType.USER, text="hi"))
     stream.append(Event(type=EventType.DECISION, decision=Decision(text="ok")))
     fake = SimpleNamespace(session_id="x", event_stream=stream)
-    reg = SessionRegistry(restore_factory=lambda sid: fake if sid == "x" else None)
+    reg = SessionRegistry(restore_factory=lambda pr, sid: fake if sid == "x" else None)
 
     class Conn:
         def __init__(self):
@@ -272,8 +275,138 @@ def test_attach_restores_from_factory_and_seeds_buffer():
             return None
 
     c = Conn()
-    h = reg.attach(c, "x")
+    h = reg.attach(c, os.getcwd(), "x")
     assert h is not None
     assert h.session_id == "x"
     # 回放缓冲已播种最近事件（USER + DECISION）
     assert [e.type for e in h.event_buffer] == [EventType.USER, EventType.DECISION]
+
+
+# --------------------------------------------------------------------------- #
+# M9.0 多项目感知
+# --------------------------------------------------------------------------- #
+def _tmp_project() -> str:
+    return tempfile.mkdtemp(prefix="m9proj-")
+
+
+def test_registry_isolates_projects():
+    """两个不同 project_root 下 new 同名会话：list_info(pr) 各自隔离，sqlite 落在各自 .agent。"""
+
+    stores: dict[str, SessionStore] = {}
+
+    def store_factory(pr: str) -> SessionStore:
+        if pr not in stores:
+            db = os.path.join(pr, ".agent", "sessions", "sessions.db")
+            stores[pr] = SessionStore(db)
+        return stores[pr]
+
+    reg = SessionRegistry(
+        session_factory=lambda pr, sid: FakeSession(sid),
+        transport_factory=lambda h: BridgeTransport(h),
+        store_factory=store_factory,
+    )
+    pr_a, pr_b = _tmp_project(), _tmp_project()
+    ha = reg.new(pr_a, name="same")
+    hb = reg.new(pr_b, name="same")  # 同名、不同项目
+
+    list_a = reg.list_info(pr_a)
+    list_b = reg.list_info(pr_b)
+    assert [s["id"] for s in list_a] == [ha.session_id]
+    assert [s["id"] for s in list_b] == [hb.session_id]
+    # sqlite 文件落在各自项目根
+    assert os.path.isfile(os.path.join(pr_a, ".agent", "sessions", "sessions.db"))
+    assert os.path.isfile(os.path.join(pr_b, ".agent", "sessions", "sessions.db"))
+    # 无 project_root 时返回全部内存会话
+    assert len(reg.list_info()) == 2
+
+
+def test_list_info_merges_persisted_sessions():
+    """list_info(pr) 合并该项目已持久化但不在内存的会话（按 id 去重）。"""
+    pr = _tmp_project()
+    store = SessionStore(os.path.join(pr, ".agent", "sessions", "sessions.db"))
+    store.create("persisted-1", name="from-disk")
+
+    reg = SessionRegistry(
+        session_factory=lambda p, sid: FakeSession(sid),
+        transport_factory=lambda h: BridgeTransport(h),
+        store_factory=lambda p: store,
+    )
+    h = reg.new(pr, name="in-memory")
+    infos = reg.list_info(pr)
+    ids = {i["id"] for i in infos}
+    assert ids == {"persisted-1", h.session_id}
+    assert "persisted-1" in ids
+    assert len([i for i in infos if i["id"] == "persisted-1"]) == 1  # 去重
+
+
+@pytest.fixture
+async def multi_project_server():
+    """带真实 per-project SessionStore 的 daemon（drives 用 FakeSession）。"""
+    stores: dict[str, SessionStore] = {}
+
+    def store_factory(pr: str) -> SessionStore:
+        if pr not in stores:
+            stores[pr] = SessionStore(os.path.join(pr, ".agent", "sessions", "sessions.db"))
+        return stores[pr]
+
+    def session_factory(pr: str, sid: str) -> FakeSession:
+        store_factory(pr).create(sid, name=sid[:8])  # 在该项目 store 登记
+        return FakeSession(sid)
+
+    registry = SessionRegistry(
+        session_factory=session_factory,
+        transport_factory=lambda h: BridgeTransport(h),
+        store_factory=store_factory,
+    )
+    srv = await create_ws_server(registry, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    yield {
+        "registry": registry,
+        "store_factory": store_factory,
+        "port": port,
+        "pr_a": _tmp_project(),
+        "pr_b": _tmp_project(),
+    }
+    srv.close()
+    await srv.wait_closed()
+
+
+async def test_multi_project_session_isolation(multi_project_server):
+    """同一 daemon 服务两个项目：会话 Event 流与 SessionStore 完全隔离、互不串扰。"""
+    srv = multi_project_server
+
+    async with websockets.connect(f"ws://127.0.0.1:{srv['port']}") as ws:
+        await _handshake(ws)
+        await ws.send(make_message(MsgType.SESSION_NEW, {"project_root": srv["pr_a"]}))
+        created_a = await _recv_type(ws, MsgType.SESSION_CREATED)
+        sid_a = created_a["payload"]["session_id"]
+        assert created_a["payload"]["project_root"] == srv["pr_a"]
+        await _recv_type(ws, MsgType.ATTACHED)
+        await ws.send(make_message(MsgType.TASK_SEND, {"text": "hi"}))
+        msgs_a = await _drive(ws, answer="a")
+        finals_a = [
+            m
+            for m in msgs_a
+            if m["type"] == MsgType.EVENT.value
+            and m["payload"]["event"]["type"] == EventType.FINAL.value
+        ]
+        assert len(finals_a) == 1
+        assert finals_a[0]["payload"]["event"]["text"] == "ans=a"
+
+    async with websockets.connect(f"ws://127.0.0.1:{srv['port']}") as ws2:
+        await _handshake(ws2)
+        await ws2.send(make_message(MsgType.SESSION_NEW, {"project_root": srv["pr_b"]}))
+        created_b = await _recv_type(ws2, MsgType.SESSION_CREATED)
+        sid_b = created_b["payload"]["session_id"]
+        await _recv_type(ws2, MsgType.ATTACHED)
+        await ws2.send(make_message(MsgType.TASK_SEND, {"text": "hi"}))
+        await _drive(ws2, answer="b")
+
+    # 两个项目的 SessionStore 完全隔离
+    ids_a = {r["session_id"] for r in srv["store_factory"](srv["pr_a"]).list_sessions()}
+    ids_b = {r["session_id"] for r in srv["store_factory"](srv["pr_b"]).list_sessions()}
+    assert sid_a in ids_a and sid_a not in ids_b
+    assert sid_b in ids_b and sid_b not in ids_a
+    # 协议层列表也按项目隔离
+    assert {s["id"] for s in srv["registry"].list_info(srv["pr_a"])} == {sid_a}
+    assert {s["id"] for s in srv["registry"].list_info(srv["pr_b"])} == {sid_b}

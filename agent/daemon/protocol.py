@@ -18,6 +18,19 @@
   ``usage`` / ``close`` / ``error``
 
 事件 ``event`` 直接承载 ``Event.to_dict()``，是天然序列化边界（见 M7.2 知识沉淀）。
+
+M9.0 多项目感知：会话相关消息的 payload 携带 ``project_root``（项目根绝对路径），用于 daemon
+按项目隔离 settings 与 ``SessionStore``：
+
+- ``session.new``：``{name?, project_root}``（必带；CLI 缺省回退 cwd）
+- ``session.attach``：``{session_id, project_root}``
+- ``session.switch``：``{session_id, project_root}``
+- ``session.list``：``{project_root}`` → 仅列该项目会话；响应 ``{project_root, sessions}``
+- ``session.created`` / ``attached``：响应附带 ``project_root``
+- ``task.send``：会话已绑定 project_root，通常无需重复携带；保留 ``{text, yes?, plan?}``
+
+缺省规则：客户端未带 ``project_root`` 时，daemon 回退为 ``os.getcwd()``（仅用于 CLI 向后兼容）；
+任何 UI 调用都应显式携带目标项目根。
 """
 
 from __future__ import annotations

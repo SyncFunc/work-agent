@@ -553,6 +553,19 @@ flowchart TD
   7. **`Settings | None` 进入 `dispatch_command`**：形参改为 `Settings | None` 并对 `.plan.file` 等访问加 `settings is not None` 守卫（worker 线程里 `self.session`/`self.transport` 取局部变量并 `if ... is None: return` 收窄类型）。
   - 本地校验命令：`python -m basedpyright`（不带路径，遵循 pyproject 的 include）。CI 只查 `agent/`+`scripts/`，不查 `tests/`。
 
+## M9.0 沉淀（daemon 多项目感知）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.0-daemon多项目感知.md`。把单项目 daemon 改造为按 `project_root` 隔离的多项目 daemon，支撑「全局单一 daemon + UI 内切换项目根」（M9 前置）。
+
+- **双 settings 模型（铁律）**：`start_daemon(settings)` 的 `settings` **只用于 daemon 网络配置**（host/port/health_port/token），不再隐式绑定任何项目根。每个会话运行时按各自 `project_root` 经 `load_settings(project_root=...)` 解析项目级 settings（含 llm/sandbox/obs 等）。`daemon` CLI 命令仍 `load_settings()`（合并 cwd 项目级配置仅作用于网络项），无项目关联副作用。
+- **registry 双维度**：`SessionRegistry` 句柄 `SessionHandle` 新增 `project_root` 字段；工厂签名统一升级为 `(project_root, session_id)` 与 `(project_root, session_id) -> Session | None`（restore）。`new(project_root, name)` / `attach(conn, project_root, sid)` / `switch(conn, project_root, sid)` / `list_info(project_root=None)` 全部显式携带 `project_root`。`get(sid)` 仍可（id 全局唯一）。
+- **store 按项目隔离 + 路径锚定（关键坑）**：相对 db 路径（如 `obs.sessions_db_path=".agent/sessions/sessions.db"`、`obs.db_path`）默认相对 **cwd**，若直接用于多项目会串库。daemon 内 `_anchor_path(p, project_root)` 把相对路径 `os.path.join(project_root, p)` 锚定到项目根；`start_daemon` 用 `store_for(pr)` 惰性创建并缓存 `SessionStore`（按 project_root）。`list_info(pr)` 若提供 `store_factory`，额外合并该项目已持久化但不在内存的会话（按 id 去重）。
+- **协议 payload 扩展（向后兼容）**：`session.new`/`session.attach`/`session.switch`/`session.list` 的 payload 增加 `project_root`；`session.created`/`attached` 响应回带 `project_root`；`session.list` 响应 `{project_root, sessions}`。客户端未带 `project_root` 时 daemon 回退 `os.getcwd()`（仅 CLI 兼容）；UI 应显式传目标项目根。`task.send` 会话已绑定 project_root，无需重复带。
+- **CLI 客户端**：`run_client`/`_run` 新增 `project_root` 参数（默认 cwd），`SESSION_NEW`/`SESSION_ATTACH` 携带；`--resume` 取 `settings.obs.sessions_db_path` 经 `_anchor_for_cli` 锚定到 project_root 再 `SessionStore(...)`。
+- **不变量**：daemon 启动不再依赖 cwd 作为项目根；任何会话相关操作必须经 `project_root` 路由（CLI 缺省 cwd）。`/` 命令中的 `switch <id>` 取当前连接所属 handle 的 project_root 作为目标项目。
+- **fork 回传（M9.0 留待 M9.3）**：`dispatch_command` 当前未实现 `/fork`/`/resume`（仅 `/plan`/`/exec`/`/context`/`/compact`/`/skills`/`/agents`/`/agent`/`/bg` 等）；M9.0 未加 `command_result` 消息。M9.3 接通 `/fork` 时，可用「fork 后重新 `session.list` 取最新」兜底（或届时扩展 `command_result`）。
+- **测试**：`tests/integration/test_daemon.py` 新增 `test_registry_isolates_projects`（两项目 new 同名会话→list_info 各自隔离 + sqlite 落在各自 `.agent/sessions/`）、`test_list_info_merges_persisted_sessions`（store 合并去重）、`test_multi_project_session_isolation`（同一 daemon 服务两项目，Event 流与 SessionStore 完全隔离）。既有测试工厂签名改为 `(pr, sid)`。全量 `pytest` 430 passed（M9.0 阶段），`ruff check`/`ruff format --check` 全绿。
+
 
 
 

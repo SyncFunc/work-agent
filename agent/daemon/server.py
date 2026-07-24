@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
@@ -59,38 +60,9 @@ class Connection:
 # --------------------------------------------------------------------------- #
 # 默认会话 / 传输工厂（真实 daemon 使用；测试可注入 fake）
 # --------------------------------------------------------------------------- #
-def _default_session_factory(settings: Settings, store, session_id: str) -> Session:
-    from agent.core.model import create_model
-    from agent.core.session import Session
-    from agent.obs.store import TraceStore
-    from agent.obs.tracer import Tracer
-    from agent.runtime.registry import default_registry
-
-    tracer = Tracer() if settings.obs.enabled else None
-    model = create_model(settings, tracer=tracer)
-    trace_store = TraceStore(settings.obs.db_path) if settings.obs.enabled else None
-    # M6.2 冷启动：该 session_id 已存在于 sqlite → 从 store 恢复（重建 messages + event_stream）；
-    # 否则新建（并落初始行）。同一工厂同时服务新建与恢复两条路径。
-    if store.get_session(session_id) is not None:
-        return Session.from_store(
-            model,
-            default_registry,
-            settings,
-            store,
-            session_id,
-            tracer=tracer,
-            trace_store=trace_store,
-        )
-    return Session(
-        model,
-        default_registry,
-        settings,
-        tracer,
-        plan_mode=settings.plan.mode,
-        trace_store=trace_store,
-        session_id=session_id,
-        session_store=store,
-    )
+def _anchor_path(p: str, project_root: str) -> str:
+    """把相对 db 路径锚定到 ``project_root``（解决多项目隔离：相对路径默认相对 cwd 会串项目）。"""
+    return p if os.path.isabs(p) else os.path.join(project_root, p)
 
 
 def _default_transport_factory(handle: SessionHandle) -> BridgeTransport:
@@ -136,26 +108,35 @@ async def _route(
             {"daemon_version": DAEMON_VERSION, "protocol_version": PROTOCOL_VERSION},
         )
     elif mtype == MsgType.SESSION_NEW.value:
-        handle = registry.new(name=payload.get("name"))
+        project_root = payload.get("project_root") or os.getcwd()
+        handle = registry.new(project_root, name=payload.get("name"))
         conn.session_id = handle.session_id
         handle.attached_conn = conn
         await conn.send(
             MsgType.SESSION_CREATED,
-            {"session_id": handle.session_id, "name": handle.name},
+            {"session_id": handle.session_id, "name": handle.name, "project_root": project_root},
             session=handle.session_id,
         )
         await conn.send(
-            MsgType.ATTACHED, {"session_id": handle.session_id}, session=handle.session_id
+            MsgType.ATTACHED,
+            {"session_id": handle.session_id, "project_root": project_root},
+            session=handle.session_id,
         )
     elif mtype == MsgType.SESSION_ATTACH.value:
-        await _attach(conn, registry, payload.get("session_id"))
+        project_root = payload.get("project_root") or os.getcwd()
+        await _attach(conn, registry, project_root, payload.get("session_id"))
     elif mtype == MsgType.SESSION_SWITCH.value:
-        await _switch(conn, registry, payload.get("session_id"))
+        project_root = payload.get("project_root") or os.getcwd()
+        await _switch(conn, registry, project_root, payload.get("session_id"))
     elif mtype == MsgType.SESSION_DETACH.value:
         sid = registry.detach(conn)
         await conn.send(MsgType.DETACHED, {"session_id": sid})
     elif mtype == MsgType.SESSION_LIST.value:
-        await conn.send(MsgType.SESSION_LIST_RESP, {"sessions": registry.list_info()})
+        project_root = payload.get("project_root") or os.getcwd()
+        await conn.send(
+            MsgType.SESSION_LIST_RESP,
+            {"project_root": project_root, "sessions": registry.list_info(project_root)},
+        )
     elif mtype == MsgType.TASK_SEND.value:
         await _task_send(
             conn,
@@ -176,21 +157,29 @@ async def _route(
         await conn.send(MsgType.ERROR, {"code": "unknown_type", "message": mtype or ""})
 
 
-async def _attach(conn: Connection, registry: SessionRegistry, sid: str | None) -> None:
-    handle = registry.attach(conn, sid or "")
+async def _attach(
+    conn: Connection, registry: SessionRegistry, project_root: str, sid: str | None
+) -> None:
+    handle = registry.attach(conn, project_root, sid or "")
     if handle is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid or ""})
         return
-    await conn.send(MsgType.ATTACHED, {"session_id": sid}, session=sid)
+    await conn.send(
+        MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
+    )
     await _replay(conn, handle, sid)
 
 
-async def _switch(conn: Connection, registry: SessionRegistry, sid: str | None) -> None:
-    handle = registry.switch(conn, sid or "")
+async def _switch(
+    conn: Connection, registry: SessionRegistry, project_root: str, sid: str | None
+) -> None:
+    handle = registry.switch(conn, project_root, sid or "")
     if handle is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid or ""})
         return
-    await conn.send(MsgType.ATTACHED, {"session_id": sid}, session=sid)
+    await conn.send(
+        MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
+    )
     await _replay(conn, handle, sid)
 
 
@@ -290,7 +279,9 @@ async def _command(
         )
         return
     if name == "switch":
-        await _switch(conn, registry, args)
+        cur = registry.get(conn.session_id)
+        project_root = cur.project_root if cur is not None else os.getcwd()
+        await _switch(conn, registry, project_root, args)
         return
     raw = f"/{name}" + (f" {args}" if args else "")
     handled = await dispatch_command(handle.session, raw, handle.transport, handle.session.settings)
@@ -340,21 +331,84 @@ async def _serve(settings: Settings, registry: SessionRegistry, stop_event: asyn
 
 
 def start_daemon(settings: Settings) -> None:
-    """启动守护进程：HTTP /health（独立端口）+ WebSocket 服务；直到 Ctrl-C。"""
-    from agent.context.session_store import SessionStore
+    """启动守护进程：HTTP /health（独立端口）+ WebSocket 服务；直到 Ctrl-C。
 
-    store = SessionStore(settings.obs.sessions_db_path)  # M6.2 冷启动恢复的数据源
+    M9.0 多项目感知：``settings`` 仅用于 daemon **网络配置**（host/port/health_port/token），
+    不再隐式绑定任何项目根。每个会话在运行时按各自的 ``project_root`` 经
+    ``load_settings(project_root=...)`` 解析项目级 settings，并按项目隔离 ``SessionStore``
+    （db 路径锚定到 ``project_root``，避免多项目串扰）。
+    """
+    from agent.config.settings import load_settings
+    from agent.context.session_store import SessionStore
+    from agent.core.model import create_model
+    from agent.core.session import Session
+    from agent.obs.store import TraceStore
+    from agent.obs.tracer import Tracer
+    from agent.runtime.registry import default_registry
+
+    # 按 project_root 惰性解析并缓存 SessionStore（同一项目复用同一个 store 实例）。
+    store_cache: dict[str, SessionStore] = {}
+
+    def store_for(project_root: str) -> SessionStore:
+        cached = store_cache.get(project_root)
+        if cached is not None:
+            return cached
+        s = load_settings(project_root=project_root)
+        db = _anchor_path(s.obs.sessions_db_path, project_root)
+        store = SessionStore(db)
+        store_cache[project_root] = store
+        return store
+
+    def _build_session(project_root: str, session_id: str, store: SessionStore) -> Session:
+        s = load_settings(project_root=project_root)
+        tracer = Tracer() if s.obs.enabled else None
+        model = create_model(s, tracer=tracer)
+        trace_db = _anchor_path(s.obs.db_path, project_root)
+        trace_store = TraceStore(trace_db) if s.obs.enabled else None
+        # M6.2 冷启动：该 session_id 已存在于 sqlite → 从 store 恢复（重建 messages + event_stream）；
+        # 否则新建（并落初始行）。同一工厂同时服务新建与恢复两条路径。
+        if store.get_session(session_id) is not None:
+            return Session.from_store(
+                model,
+                default_registry,
+                s,
+                store,
+                session_id,
+                tracer=tracer,
+                trace_store=trace_store,
+            )
+        return Session(
+            model,
+            default_registry,
+            s,
+            tracer,
+            plan_mode=s.plan.mode,
+            trace_store=trace_store,
+            session_id=session_id,
+            session_store=store,
+        )
+
+    def session_factory(project_root: str, session_id: str) -> Session:
+        return _build_session(project_root, session_id, store_for(project_root))
+
+    def restore_factory(project_root: str, session_id: str):
+        store = store_for(project_root)
+        if store.get_session(session_id) is not None:
+            return _build_session(project_root, session_id, store)
+        return None
+
     registry = SessionRegistry(
-        session_factory=lambda sid: _default_session_factory(settings, store, sid),
+        session_factory=session_factory,
         transport_factory=_default_transport_factory,
-        restore_factory=lambda sid: _default_session_factory(settings, store, sid),
+        restore_factory=restore_factory,
+        store_factory=store_for,
     )
     registry._token = settings.daemon.token  # 供 hello 鉴权（可选）
     httpd = _start_health_server(settings.daemon.host, settings.daemon.health_port)
     stop = asyncio.Event()
     typer_echo = _safe_echo()
     typer_echo(
-        f"[daemon] 已启动：ws=ws://{settings.daemon.host}:{settings.daemon.port} "
+        f"[daemon] 已启动（多项目感知）：ws=ws://{settings.daemon.host}:{settings.daemon.port} "
         f"health=http://{settings.daemon.host}:{settings.daemon.health_port}/health",
         err=True,
     )
