@@ -579,6 +579,18 @@ flowchart TD
 - **安全**：`contextBridge` 仅暴露只读 ws 配置；renderer 直连 daemon（M9 qB 决策），主进程不做命令代理；token 仅本机回环鉴权。
 - **测试可达性（headless 限制）**：当前无显示器，GUI 启动/进程 kill 真机验收待有显示器环境。已验证 `npm run lint`/`npm run build` 全绿 + daemon `/health` 冒烟（独立 Python 进程 spawn 后返回 200，日志解析命中）。
 
+## M9.2 沉淀（TS 协议客户端库）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.2-TS协议客户端库.md`。`desktop/src/protocol/` 实现与 `agent/daemon/protocol.py` 对齐的 TS 消息类型 + `DaemonClient` + `parseEvent`，并加跨语言契约测试防漂移。
+
+- **MsgType 联合（单一事实来源）**：`desktop/src/protocol/types.ts` 用 `export const ALL_MSG_TYPES = [...] as const`（运行时集合），`export type MsgType = (typeof ALL_MSG_TYPES)[number]` 由它派生——改协议只动 `ALL_MSG_TYPES` 一处。与 `agent/daemon/protocol.py` 的 `MsgType(StrEnum)` 28 值逐一对应（C→S 11：hello/session.new/attach/switch/detach/list/task.send/answer/confirm_plan/approve/command；S→C 17：welcome/session.created/attached/detached/session_list/event/replay_start/replay_end/ask/show_questions/show_plan/show_skills/show_agents/notify/usage/close/error）。`Envelope = { type, id?, session?, payload }` 与 `make_message`/`parse_message` 一致。
+- **Event 反序列化字段映射（TS `events.ts` ↔ Python `events.py`）**：`parseEvent(dict)` 严格对齐 `Event.to_dict`/`from_dict`；`eventToDict(ev)` 反向（仅含非 null 字段）供双向 fixture。`AgentEvent` 字段：`seq/type/ts`（`type` 为 11 值 `EventTypeStr`）、`transient?`、`decision?{text?,tool_calls:[{id,name,arguments}]}`、`tool_use?{id,name,arguments}`、`tool_result?{ok,output?,error?}`、`tool_call_id?`、`tc_index?/tc_name?/tc_args?`、`text?/kind?`（text：reasoning|content）、`error?`、`questions?[{question,options?,multiSelect?}]`（对齐 `intent.Question.to_dict`）、`plan_path?`、`plan_update?{step_id,status,note?}`。嵌套解析对缺失/非法子结构容错返回 null（主事件仍解析），非法顶层（缺 seq/type、未知 type）抛 `TypeError`。
+- **DaemonClient API**：`connect()`（open 即 `hello`，返回 Promise）/ `close()`（manual 不重连）/ `onMessage(type,cb)`（含 HITL：`ask`/`show_*`/`notify`/`usage`/`close`/`session_list`）/ `onEvent(cb)`（收到 `event` 消息后 `parseEvent` 派发 `AgentEvent`）/ `onClose(cb)`；协议方法 `hello/newSession/attach/switch/listSessions/detach/sendTask/answer/confirmPlan/approve/command`。`event` 消息 `payload.event` 即 `Event.to_dict`；HITL 请求 `ask`/`confirm_plan`/`approve` 的 `id` 由客户端原样回传（`answer(id,text)` 等带 `id`）。`session.created`/`attached` 自动跟踪 `currentSessionId`+`project_root` 供重连恢复。
+- **重连（指数退避）**：`onclose` 且非 `manualClose` → `scheduleReconnect()`：`delay = min(500*2**attempt, reconnectMax=5000)`；重连后重新 `hello`，若 `currentSessionId` 存在则 `attach` 恢复订阅。注入 `WebSocketImpl`（默认全局 `WebSocket`，浏览器/Node22 可用）便于测试。
+- **契约测试机制（解析源文件，非生成）**：`desktop/scripts/check-msgtype.mjs` 纯 Node 正则抽取 Python `class MsgType` 块（到 `@runtime_checkable` 止）的 `NAME = "value"` 与 TS `ALL_MSG_TYPES = [...]` 字面量（单/双引号兼容），比对集合；无中间生成文件，两源文件即单一事实来源，漂移即失败。`tests/unit/test_m9_protocol_contract.py` 调 `node` 跑它并断言返回码 0（无 node 则 `skip`）。**踩坑（已修）**：TS 解析初版用双引号正则，而 `ALL_MSG_TYPES` 是单引号 → 匹配空（TS=0）；改 `/["']([^"']+)["']/g` 修复。**Python 端 subprocess 捕获**：`capture_output=True` 配 `encoding='utf-8'`（node 输出 UTF-8 含中文，默认 gbk 解码会 `UnicodeDecodeError`）。
+- **环境**：`desktop` 引入 `vitest`（devDep）+ `vitest.config.ts`（`environment:'node'`，`include: src/**/*.test.ts`）；`package.json` 加 `test`/`test:watch`。`tsconfig` `include: src/**` 使 `*.test.ts` 也受 `tsc --noEmit`（即 `lint`）检查。`npm run lint` 全绿 + `npm run test` 14 passed；`pytest` 全量 432 passed（含 2 契约用例）。
+- **测试可达性（headless）**：重连/订阅用注入假 `WebSocket` + `vi.useFakeTimers`；真实 daemon 握手由 `desktop/scripts/smoke-daemon.mjs`（Node22 全局 `WebSocket`）单独验证——已收到 `welcome {daemon_version:"0.1.0", protocol_version:"1.0"}`。
+
 
 
 
