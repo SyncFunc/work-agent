@@ -61,7 +61,7 @@ const fixtures: Record<string, unknown> = {
 
 describe('parseEvent', () => {
   it('逐字段重建各类 Event 并与 Python to_dict 输入相等', () => {
-    for (const [name, raw] of Object.entries(fixtures)) {
+    for (const [, raw] of Object.entries(fixtures)) {
       const ev = parseEvent(raw)
       expect(ev.seq).toBe((raw as { seq: number }).seq)
       expect(ev.type).toBe((raw as { type: string }).type)

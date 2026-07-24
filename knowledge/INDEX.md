@@ -591,6 +591,20 @@ flowchart TD
 - **环境**：`desktop` 引入 `vitest`（devDep）+ `vitest.config.ts`（`environment:'node'`，`include: src/**/*.test.ts`）；`package.json` 加 `test`/`test:watch`。`tsconfig` `include: src/**` 使 `*.test.ts` 也受 `tsc --noEmit`（即 `lint`）检查。`npm run lint` 全绿 + `npm run test` 14 passed；`pytest` 全量 432 passed（含 2 契约用例）。
 - **测试可达性（headless）**：重连/订阅用注入假 `WebSocket` + `vi.useFakeTimers`；真实 daemon 握手由 `desktop/scripts/smoke-daemon.mjs`（Node22 全局 `WebSocket`）单独验证——已收到 `welcome {daemon_version:"0.1.0", protocol_version:"1.0"}`。
 
+## M9.3 沉淀（项目管理与多会话）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.3-项目管理与多会话.md`。`desktop/src/features/` 实现项目根切换器、多会话标签页/列表、会话状态机、replay 缓冲，并接 `DaemonClient`。
+
+- **会话状态机（`features/sessions/sessionMachine.ts`）**：纯 `sessionsReducer(state, action)`（无副作用，可单测）。`SessionsState = { tabs: SessionTab[]; activeId: string|null; replaying: boolean; byId: Record<string, AgentEvent[]> }`；`SessionTab = { id; name?; project_root; attached }`。`id` 一律对齐 daemon `session_id`（daemon `list_info` 用 `id` 键，非 `session_id`）。
+  - **`upsertTab` 必保留已有 tab 的 `name`**：`attached`/`session_list` 消息常不带 `name`，若用 `id.slice(0,8)` 覆盖会丢失用户命名。
+  - **`liveEvent` 守卫**：`state.replaying || activeId == null` 时**不**追加事件，避免 replay 期间瞬时事件重复渲染（与 daemon `_replay` 仅补非 transient 一致）。
+- **replay 缓冲（`features/sessions/replay.ts`）**：`ReplayBuffer.start/push/end` + `isActive`；`isReplayStart/isReplayEnd` 判 `MsgType`。客户端只认 daemon 重放的**持久化**事件（瞬时事件 daemon 侧已排除），无需客户端二次过滤。
+- **`useSessions(client, projectRoot)` hook**：订阅 `welcome`/`session_list`/`session.created`/`attached`/`replay_start`/`replay_end`/`event`；暴露 `createSession/openSession/switchSession/closeTab/forkSession/sendTask`。
+- **fork 最终回传方案**：M9.0 `dispatch_command` 未实现 `command_result` 回传新 `session_id`，故 `forkSession` 走 `command('fork', id)` → `listSessions(projectRoot)` 取最新 → `attach(最新 id)`（轮询方案）。后续 daemon 若补 `command_result` 可直接开 tab。
+- **daemon 就绪竞态修复（M9.0/M9.1 联动）**：`agent/daemon/server.py` 原在 `asyncio.run(_serve(...))` **之前**打印 `ws=...` 就绪日志，导致 `DaemonManager.waitForReady`（解析日志）在端口尚未可连接时误判就绪。已把就绪日志移入 `_serve` 的 `async with create_ws_server(...)` 块**内**，确保只在服务真正监听后出现。`tests/integration/test_daemon.py` 仍全绿。
+- **真机冒烟（`scripts/smoke-sessions.mjs`）**：Node 22+ 全局 `WebSocket`；`session.new` 必须在 `ws.onopen` 内发（否则 `Sent before connected`）。daemon 按 `project_root` 构建 Model，缺 `llm.api_key` 会在 `session.new` 报 `handler_error`——冒烟为每个临时项目写 `.agent/settings.yaml` 占位 key（不真正调用模型）。验证多项目隔离 = `A=2 / B=1`，即 `registry.new(project_root,...)` + `list_info(project_root)` 隔离正确。仅本地验证（非 CI 必跑）。
+- **环境/验收**：`npm run lint` + `npm run build`（`tsc --noEmit`）全绿；`npm run test` 24 passed（M9.2 协议 14 + 本步 `sessionMachine.test` 8 + `replay.test` 2）。`pytest` daemon 集成 13 passed。
+
 
 
 

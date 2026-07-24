@@ -27,7 +27,8 @@ export interface DaemonClientOptions {
   /** 缺省 project_root；各 API 也可显式覆盖（M9.0 多项目感知）。 */
   projectRoot?: string
   /** 重连退避上限（默认 5000ms）。 */
-  reconnectMaxDelayMs?: number
+  /** 重连退避上限（默认 5000ms）。 */
+  reconnectMaxMs?: number
   /** 握手/重连超时（默认 10000ms），超时未 open 触发一次重连。 */
   connectTimeoutMs?: number
 }

@@ -327,6 +327,13 @@ def _start_health_server(host: str, port: int) -> HTTPServer:
 
 async def _serve(settings: Settings, registry: SessionRegistry, stop_event: asyncio.Event) -> None:
     async with create_ws_server(registry, settings.daemon.host, settings.daemon.port):
+        # 此处已进入 async with：WebSocket 服务真正开始监听后再宣告就绪，
+        # 避免 M9.1 DaemonManager.waitForReady 在端口尚未可连接时误判就绪。
+        _safe_echo()(
+            f"[daemon] 已启动（多项目感知）：ws=ws://{settings.daemon.host}:{settings.daemon.port} "
+            f"health=http://{settings.daemon.host}:{settings.daemon.health_port}/health",
+            err=True,
+        )
         await stop_event.wait()
 
 
@@ -406,12 +413,6 @@ def start_daemon(settings: Settings) -> None:
     registry._token = settings.daemon.token  # 供 hello 鉴权（可选）
     httpd = _start_health_server(settings.daemon.host, settings.daemon.health_port)
     stop = asyncio.Event()
-    typer_echo = _safe_echo()
-    typer_echo(
-        f"[daemon] 已启动（多项目感知）：ws=ws://{settings.daemon.host}:{settings.daemon.port} "
-        f"health=http://{settings.daemon.host}:{settings.daemon.health_port}/health",
-        err=True,
-    )
     try:
         asyncio.run(_serve(settings, registry, stop))
     except KeyboardInterrupt:

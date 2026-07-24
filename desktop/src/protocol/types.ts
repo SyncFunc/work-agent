@@ -64,8 +64,8 @@ export interface Decision {
 
 export interface ToolResult {
   ok: boolean
-  output?: string
-  error?: string
+  output?: string | null
+  error?: string | null
 }
 
 export interface Question {
@@ -77,7 +77,7 @@ export interface Question {
 export interface PlanUpdate {
   step_id: string
   status: string
-  note?: string
+  note?: string | null
 }
 
 export type EventTypeStr =
@@ -114,12 +114,20 @@ export interface AgentEvent {
   plan_update?: PlanUpdate | null
 }
 
-/** 会话列表项（对齐 daemon registry.list_info 的响应）。 */
+/** 会话列表项（对齐 daemon registry.list_info 的响应：键为 `id`）。 */
 export interface SessionInfo {
-  session_id: string
+  id: string
   name?: string | null
   project_root?: string
-  created_at?: number
-  updated_at?: number
+  attached?: boolean
+  running?: boolean
+  /** 内存会话为最后活跃时间戳；持久化会话为 SessionStore 的 updated_at。 */
+  last_activity?: number | null
   persisted?: boolean
+}
+
+/** session.list 的响应 payload（session_list 消息）。 */
+export interface SessionListResponse {
+  project_root: string
+  sessions: SessionInfo[]
 }

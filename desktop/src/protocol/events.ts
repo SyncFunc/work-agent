@@ -25,10 +25,6 @@ const EVENT_TYPES: readonly EventTypeStr[] = [
   'user',
 ]
 
-function asString(v: unknown, fallback = ''): string {
-  return typeof v === 'string' ? v : fallback
-}
-
 function asOptString(v: unknown): string | null | undefined {
   if (v === null || v === undefined) return v as null
   return typeof v === 'string' ? v : String(v)
