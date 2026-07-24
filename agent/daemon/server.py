@@ -153,6 +153,16 @@ async def _route(
         _resolve(conn, registry, payload.get("id"), bool(payload.get("approved", False)))
     elif mtype == MsgType.COMMAND.value:
         await _command(conn, registry, payload.get("name", ""), payload.get("args"))
+    elif mtype == MsgType.TRACE_LIST.value:
+        await _trace_list(
+            conn, registry, payload.get("project_root") or os.getcwd(),
+            payload.get("session_id"), _mid,
+        )
+    elif mtype == MsgType.TRACE_GET.value:
+        await _trace_get(
+            conn, registry, payload.get("project_root") or os.getcwd(),
+            payload.get("trace_id"), _mid,
+        )
     else:
         await conn.send(MsgType.ERROR, {"code": "unknown_type", "message": mtype or ""})
 
@@ -290,6 +300,78 @@ async def _command(
 
 
 # --------------------------------------------------------------------------- #
+# M9.7 可观测面板：trace 查询（按 project_root 隔离读取 TraceStore）
+# --------------------------------------------------------------------------- #
+def _span_to_dict(s: Any) -> dict[str, Any]:
+    """把一个 Span 序列化为可 JSON 化的节点（含父子关系与日志）。"""
+    return {
+        "span_id": s.id,
+        "name": s.name,
+        "kind": s.kind,
+        "parent_id": s.parent_id,
+        "started_at": s.started_at,
+        "ended_at": s.ended_at,
+        "status": "open" if s.ended_at is None else "ok",
+        "meta": s.meta,
+        "logs": [
+            {"ts": lg.ts, "key": lg.key, "value": lg.value, "level": lg.level}
+            for lg in s.logs
+        ],
+    }
+
+
+async def _trace_list(
+    conn: Connection,
+    registry: SessionRegistry,
+    project_root: str,
+    session_id: str | None,
+    mid: str | None,
+) -> None:
+    factory = getattr(registry, "_trace_store_factory", None)
+    if factory is None:
+        await conn.send(MsgType.TRACE_LIST_RESP, {"project_root": project_root, "traces": []}, id=mid)
+        return
+    try:
+        traces = factory(project_root).list_traces(session_id)
+    except Exception as e:  # 存储不可用：退化为空列表，不阻断查询
+        await conn.send(
+            MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid
+        )
+        return
+    await conn.send(
+        MsgType.TRACE_LIST_RESP, {"project_root": project_root, "traces": traces}, id=mid
+    )
+
+
+async def _trace_get(
+    conn: Connection,
+    registry: SessionRegistry,
+    project_root: str,
+    trace_id: str | None,
+    mid: str | None,
+) -> None:
+    if not trace_id:
+        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        return
+    factory = getattr(registry, "_trace_store_factory", None)
+    if factory is None:
+        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        return
+    try:
+        tracer = factory(project_root).load_trace(trace_id)
+    except Exception as e:
+        await conn.send(
+            MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid
+        )
+        return
+    if tracer is None:
+        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        return
+    spans = [_span_to_dict(s) for s in tracer.spans]
+    await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": spans}, id=mid)
+
+
+# --------------------------------------------------------------------------- #
 # 启停
 # --------------------------------------------------------------------------- #
 def create_ws_server(registry: SessionRegistry, host: str, port: int):
@@ -366,6 +448,19 @@ def start_daemon(settings: Settings) -> None:
         store_cache[project_root] = store
         return store
 
+    # 按 project_root 惰性解析并缓存 TraceStore（与 store_for 对称；M9.7 可观测面板查询用）。
+    trace_store_cache: dict[str, TraceStore] = {}
+
+    def trace_store_for(project_root: str) -> TraceStore:
+        cached = trace_store_cache.get(project_root)
+        if cached is not None:
+            return cached
+        s = load_settings(project_root=project_root)
+        trace_db = _anchor_path(s.obs.db_path, project_root)
+        store = TraceStore(trace_db)
+        trace_store_cache[project_root] = store
+        return store
+
     def _build_session(project_root: str, session_id: str, store: SessionStore) -> Session:
         s = load_settings(project_root=project_root)
         tracer = Tracer() if s.obs.enabled else None
@@ -409,6 +504,7 @@ def start_daemon(settings: Settings) -> None:
         transport_factory=_default_transport_factory,
         restore_factory=restore_factory,
         store_factory=store_for,
+        trace_store_factory=trace_store_for,
     )
     registry._token = settings.daemon.token  # 供 hello 鉴权（可选）
     httpd = _start_health_server(settings.daemon.host, settings.daemon.health_port)

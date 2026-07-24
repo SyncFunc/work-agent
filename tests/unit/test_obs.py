@@ -234,3 +234,35 @@ def test_span_exception_safety():
             pass
     assert after.parent_id == root.id
     assert failing.parent_id == root.id
+
+
+def test_trace_store_list_traces(tmp_path: Path):
+    """list_traces 返回含 trace 的会话摘要（按 last_ts 降序）。"""
+    store = TraceStore(tmp_path / "test.db")
+
+    t1 = Tracer(session_id="sess-a")
+    with t1.span("run1"):
+        pass
+    store.save_trace(t1)
+
+    t2 = Tracer(session_id="sess-b")
+    with t2.span("run2"):
+        pass
+    store.save_trace(t2)
+
+    all_traces = store.list_traces()
+    assert len(all_traces) == 2
+    sids = {t["session_id"] for t in all_traces}
+    assert "sess-a" in sids and "sess-b" in sids
+    for tr in all_traces:
+        assert tr["span_count"] == 1
+        assert tr["first_ts"] is not None
+        assert tr["last_ts"] is not None
+
+    # 按 session_id 过滤
+    filtered = store.list_traces("sess-a")
+    assert len(filtered) == 1
+    assert filtered[0]["session_id"] == "sess-a"
+
+    # 过滤不存在的 session 返回空
+    assert store.list_traces("nope") == []

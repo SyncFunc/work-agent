@@ -17,6 +17,8 @@ import { useCommands } from '../features/command/useCommands'
 import { parseSlash } from '../features/command/parseSlash'
 import { NoticeHost } from '../features/notices/NoticeHost'
 import { useNotices } from '../features/notices/useNotices'
+import { ObsPanel } from '../features/obs/ObsPanel'
+import { loadSettings } from '../features/settings/settingsApi'
 
 export default function App(): React.ReactElement {
   const [config, setConfig] = useState<DaemonConfig | null>(null)
@@ -26,6 +28,8 @@ export default function App(): React.ReactElement {
   const [draft, setDraft] = useState<string>('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  const [obsOpen, setObsOpen] = useState(false)
+  const [contextWindow, setContextWindow] = useState<number | undefined>(undefined)
 
   // 应用启动时套用持久化主题。
   useEffect(() => {
@@ -53,6 +57,22 @@ export default function App(): React.ReactElement {
   useEffect(() => {
     if (config) setProjectRoot(loadProjectRoot(''))
   }, [config])
+
+  // 拉取项目 settings 的上下文窗口大小，供状态栏占比展示。
+  useEffect(() => {
+    if (!projectRoot) return
+    let cancelled = false
+    loadSettings(projectRoot)
+      .then((s) => {
+        if (!cancelled) setContextWindow(s.context?.context_window)
+      })
+      .catch(() => {
+        if (!cancelled) setContextWindow(undefined)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [projectRoot])
 
   // 全局快捷键：Ctrl/Cmd+K 打开命令面板。
   useEffect(() => {
@@ -93,7 +113,10 @@ export default function App(): React.ReactElement {
       <aside style={{ width: 260, borderRight: '1px solid #eee', display: 'flex', flexDirection: 'column' }}>
         <h1 style={{ fontSize: 16, margin: 0, padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>Work Agent</span>
-          <button type="button" onClick={() => setSettingsOpen(true)} title="设置" style={{ fontSize: 14 }}>⚙</button>
+          <span style={{ display: 'flex', gap: 8 }}>
+            <button type="button" onClick={() => setObsOpen((v) => !v)} title="可观测面板" style={{ fontSize: 14 }}>📊</button>
+            <button type="button" onClick={() => setSettingsOpen(true)} title="设置" style={{ fontSize: 14 }}>⚙</button>
+          </span>
         </h1>
         <ProjectSwitcher projectRoot={projectRoot} onChange={setProjectRoot} />
         <SessionList
@@ -150,6 +173,15 @@ export default function App(): React.ReactElement {
           </button>
         </footer>
       </main>
+      {obsOpen && (
+        <ObsPanel
+          client={client}
+          projectRoot={projectRoot}
+          sessionId={active ? active.id : null}
+          contextWindow={contextWindow}
+          onClose={() => setObsOpen(false)}
+        />
+      )}
       {settingsOpen && <SettingsPanel projectRoot={projectRoot} onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && (
         <CommandPalette

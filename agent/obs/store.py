@@ -146,6 +146,36 @@ class TraceStore:
                 for r in rows
             ]
 
+    def list_traces(self, session_id: str | None = None) -> list[dict[str, Any]]:
+        """返回含 trace（span）的会话列表（供 M9.7 daemon ``trace.list``）。
+
+        - ``session_id`` 为 None：返回全部项目的 trace（按 last_ts 降序）；
+        - 指定 ``session_id``：仅返回该会话的 trace 摘要（命中 0/1 条）。
+        """
+        with self._conn() as conn:
+            if session_id:
+                rows = conn.execute(
+                    """SELECT session_id, COUNT(*) as span_count,
+                              MIN(started_at) as first_ts, MAX(started_at) as last_ts
+                       FROM spans WHERE session_id = ? GROUP BY session_id""",
+                    (session_id,),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    """SELECT session_id, COUNT(*) as span_count,
+                              MIN(started_at) as first_ts, MAX(started_at) as last_ts
+                       FROM spans GROUP BY session_id ORDER BY last_ts DESC"""
+                ).fetchall()
+            return [
+                {
+                    "session_id": r["session_id"],
+                    "span_count": r["span_count"],
+                    "first_ts": r["first_ts"],
+                    "last_ts": r["last_ts"],
+                }
+                for r in rows
+            ]
+
 
 def _serialize_value(v: Any) -> str:
     if isinstance(v, str):

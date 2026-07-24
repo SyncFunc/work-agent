@@ -23,6 +23,8 @@ from agent.daemon.bridge import BridgeTransport
 from agent.daemon.protocol import MsgType, make_message, parse_message
 from agent.daemon.registry import SessionRegistry
 from agent.daemon.server import create_ws_server
+from agent.obs.store import TraceStore
+from agent.obs.tracer import Tracer
 
 
 class FakeSession:
@@ -410,3 +412,118 @@ async def test_multi_project_session_isolation(multi_project_server):
     # 协议层列表也按项目隔离
     assert {s["id"] for s in srv["registry"].list_info(srv["pr_a"])} == {sid_a}
     assert {s["id"] for s in srv["registry"].list_info(srv["pr_b"])} == {sid_b}
+
+
+# --------------------------------------------------------------------------- #
+# M9.7 可观测面板：trace 查询协议
+# --------------------------------------------------------------------------- #
+@pytest.fixture
+async def trace_server():
+    """带真实 per-project TraceStore 的 daemon（drives 用 FakeSession）。"""
+
+    def trace_store_factory(pr: str) -> TraceStore:
+        return TraceStore(os.path.join(pr, ".agent", "traces.db"))
+
+    registry = SessionRegistry(
+        session_factory=lambda pr, sid: FakeSession(sid),
+        transport_factory=lambda h: BridgeTransport(h),
+        trace_store_factory=trace_store_factory,
+    )
+    srv = await create_ws_server(registry, "127.0.0.1", 0)
+    port = srv.sockets[0].getsockname()[1]
+    yield {"registry": registry, "trace_store_factory": trace_store_factory, "port": port, "pr": _tmp_project()}
+    srv.close()
+    await srv.wait_closed()
+
+
+async def test_trace_list_and_get(trace_server):
+    """trace.list 列出会话摘要；trace.get 返回 span 树（含父子 parent_id）。"""
+    srv = trace_server
+    ts = srv["trace_store_factory"](srv["pr"])
+    tracer = Tracer(session_id="trace-sess-1")
+    with tracer.span("agent.run", kind="agent") as parent:
+        parent.log("task", "demo")
+        with tracer.span("model.act", kind="model", parent=parent):
+            pass
+    ts.save_trace(tracer)
+
+    async with websockets.connect(f"ws://127.0.0.1:{srv['port']}") as ws:
+        await _handshake(ws)
+        # trace.list（带 id 配对）
+        rid = "req-1"
+        await ws.send(make_message(MsgType.TRACE_LIST, {"project_root": srv["pr"]}, id=rid))
+        resp = await _recv_type(ws, MsgType.TRACE_LIST_RESP)
+        assert resp["id"] == rid
+        assert resp["payload"]["project_root"] == srv["pr"]
+        traces = resp["payload"]["traces"]
+        assert len(traces) == 1
+        assert traces[0]["session_id"] == "trace-sess-1"
+        assert traces[0]["span_count"] == 2
+
+        # trace.get 单条
+        rid2 = "req-2"
+        await ws.send(
+            make_message(
+                MsgType.TRACE_GET,
+                {"project_root": srv["pr"], "trace_id": "trace-sess-1"},
+                id=rid2,
+            )
+        )
+        tree = await _recv_type(ws, MsgType.TRACE_TREE)
+        assert tree["id"] == rid2
+        spans = tree["payload"]["spans"]
+        assert len(spans) == 2
+        root = next(s for s in spans if s["parent_id"] is None)
+        assert root["name"] == "agent.run"
+        assert root["status"] == "ok"
+        assert root["logs"][0]["key"] == "task"
+        child = next(s for s in spans if s["parent_id"] is not None)
+        assert child["parent_id"] == root["span_id"]
+
+
+async def test_trace_filter_and_empty(trace_server):
+    """trace.list 按 session_id 过滤；trace.get 命中空返回空 spans（不报错）。"""
+    srv = trace_server
+    ts = srv["trace_store_factory"](srv["pr"])
+    for name in ("sess-x", "sess-y"):
+        t = Tracer(session_id=name)
+        with t.span(f"run-{name}"):
+            pass
+        ts.save_trace(t)
+
+    async with websockets.connect(f"ws://127.0.0.1:{srv['port']}") as ws:
+        await _handshake(ws)
+        await ws.send(
+            make_message(MsgType.TRACE_LIST, {"project_root": srv["pr"], "session_id": "sess-x"})
+        )
+        resp = await _recv_type(ws, MsgType.TRACE_LIST_RESP)
+        assert len(resp["payload"]["traces"]) == 1
+        assert resp["payload"]["traces"][0]["session_id"] == "sess-x"
+
+        await ws.send(
+            make_message(MsgType.TRACE_GET, {"project_root": srv["pr"], "trace_id": "nope"})
+        )
+        tree = await _recv_type(ws, MsgType.TRACE_TREE)
+        assert tree["payload"]["spans"] == []
+
+
+async def test_trace_isolation_across_projects(trace_server):
+    """不同 project_root 的 trace 互不串扰：pr_b 看不到 pr_a 的 trace。"""
+    srv = trace_server
+    ts_a = srv["trace_store_factory"](srv["pr"])
+    t = Tracer(session_id="only-in-a")
+    with t.span("run"):
+        pass
+    ts_a.save_trace(t)
+
+    pr_b = _tmp_project()
+    async with websockets.connect(f"ws://127.0.0.1:{srv['port']}") as ws:
+        await _handshake(ws)
+        await ws.send(make_message(MsgType.TRACE_LIST, {"project_root": srv["pr"]}))
+        a_traces = (await _recv_type(ws, MsgType.TRACE_LIST_RESP))["payload"]["traces"]
+        assert any(t["session_id"] == "only-in-a" for t in a_traces)
+
+        await ws.send(make_message(MsgType.TRACE_LIST, {"project_root": pr_b}))
+        b_traces = (await _recv_type(ws, MsgType.TRACE_LIST_RESP))["payload"]["traces"]
+        assert all(t["session_id"] != "only-in-a" for t in b_traces)
+        assert b_traces == []

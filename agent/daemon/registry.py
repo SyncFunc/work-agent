@@ -93,6 +93,7 @@ class SessionRegistry:
         transport_factory: Callable[[SessionHandle], BridgeTransport] | None = None,
         restore_factory: Callable[[str, str], SessionLike | None] | None = None,
         store_factory: Callable[[str], object] | None = None,
+        trace_store_factory: Callable[[str], object] | None = None,
     ) -> None:
         self._sessions: dict[str, SessionHandle] = {}
         # 工厂签名（M9.0）：一律带入 project_root，按项目解析 settings / SessionStore。
@@ -103,6 +104,8 @@ class SessionRegistry:
         self._restore_factory = restore_factory  # (project_root, session_id) -> Session | None
         # M9.0：按 project_root 惰性解析并返回 SessionStore（用于列表/冷启动）。可选。
         self._store_factory = store_factory  # (project_root) -> SessionStore
+        # M9.7：按 project_root 惰性解析并返回 TraceStore（供 trace.list/trace.get 查询）。
+        self._trace_store_factory = trace_store_factory  # (project_root) -> TraceStore
         self._token: str = ""  # hello 鉴权令牌（可选；由 start_daemon 注入）
 
     def new(

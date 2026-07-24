@@ -48,7 +48,7 @@ def test_msgtype_contract_node_script_passes() -> None:
 def test_python_msgtype_nonempty_and_sorted_stable() -> None:
     """Python 端 MsgType 枚举自身合理（回归护栏）。"""
     values = [m.value for m in MsgType]
-    assert len(values) == 28
+    assert len(values) == 32
     assert 'hello' in values
     assert 'event' in values
     assert 'error' in values

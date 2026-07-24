@@ -11,11 +11,17 @@
 方向约定（同字符串可双向，方向由发送方隐含）：
 - Client → Server：``hello`` / ``session.new`` / ``session.attach`` / ``session.switch`` /
   ``session.detach`` / ``session.list`` / ``task.send`` / ``answer`` / ``confirm_plan`` /
-  ``approve`` / ``command``
+  ``approve`` / ``command`` / ``trace.list`` / ``trace.get``
 - Server → Client：``welcome`` / ``session.created`` / ``attached`` / ``detached`` /
   ``session_list`` / ``event`` / ``replay_start`` / ``replay_end`` / ``ask`` /
   ``show_questions`` / ``show_plan`` / ``show_skills`` / ``show_agents`` / ``notify`` /
-  ``usage`` / ``close`` / ``error``
+  ``usage`` / ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
+
+M9.7 可观测面板：新增 trace 查询
+- ``trace.list``（C→S）：``{project_root, session_id?}`` → 按项目根列出含 trace 的会话（带 ``id`` 以便响应配对）。
+- ``trace.get``（C→S）：``{project_root, trace_id}``（trace_id == session_id）→ 取单条 trace 的 span 树。
+- ``trace_list``（S→C）：``{project_root, traces[], id?}``，每项为 ``{session_id, span_count, first_ts, last_ts}``。
+- ``trace_tree``（S→C）：``{session_id, spans[], id?}``，span 含 ``parent_id`` 供客户端重建父子树。
 
 事件 ``event`` 直接承载 ``Event.to_dict()``，是天然序列化边界（见 M7.2 知识沉淀）。
 
@@ -59,6 +65,8 @@ class MsgType(StrEnum):
     CONFIRM_PLAN = "confirm_plan"  # 客户端回传：{id, confirmed}
     APPROVE = "approve"  # 客户端回传：{id, approved}
     COMMAND = "command"
+    TRACE_LIST = "trace.list"
+    TRACE_GET = "trace.get"
     # ---- Server -> Client ----
     WELCOME = "welcome"
     SESSION_CREATED = "session.created"
@@ -77,6 +85,8 @@ class MsgType(StrEnum):
     USAGE = "usage"
     CLOSE = "close"
     ERROR = "error"
+    TRACE_LIST_RESP = "trace_list"
+    TRACE_TREE = "trace_tree"
 
 
 @runtime_checkable

@@ -8,6 +8,7 @@ export interface SettingsShape {
   ui?: { theme?: string }
   sandbox?: { profile?: string }
   approval?: { mode?: string }
+  context?: { context_window?: number }
 }
 
 export async function loadSettings(projectRoot: string): Promise<SettingsShape> {

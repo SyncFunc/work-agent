@@ -636,6 +636,17 @@ flowchart TD
 - **theme 映射**：前端自有 `light`/`dark` 持久化到 `localStorage`（即时生效 `document.body.dataset.theme`）+ 同步写 `ui.theme`；`theme.css` 响应 `body[data-theme="dark"]`。因 App 多用内联样式，主题仅全局元素生效（证明机制）。
 - **验收**：`npm run lint`/`build` 全绿；`npm run test` **43 passed**（新增 `settings.test.ts` 4 + `parseSlash.test.ts` 4 + `useCommands.test.ts` 2）。
 
+## M9.7 沉淀（可观测面板）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.7-可观测面板.md`。`features/obs/` 实现状态栏 + Trace 树 + 日志 + 后台子 Agent 面板；daemon 新增 `trace.list`/`trace.get` 协议查询（按 `project_root` 隔离读 `TraceStore`）。
+
+- **daemon 协议扩展（C→S `trace.list`/`trace.get`，S→C `trace_list`/`trace_tree`）**：`agent/daemon/protocol.py` 的 `MsgType` 新增 4 值（现共 32，契约测试 `check-msgtype.mjs` 仍绿）。`trace.list{project_root, session_id?}` → `trace_list{project_root, traces[]}`（`traces` 每项 `{session_id, span_count, first_ts, last_ts}`，`session_id` 过滤命中 0/1 条）；`trace.get{project_root, trace_id}`（trace_id==session_id）→ `trace_tree{session_id, spans[]}`。`_route` 经 `registry._trace_store_factory(pr)` 取 `TraceStore`（与 M9.0 `store_for` 对称：`start_daemon` 内 `trace_store_for(pr)` 惰性缓存，`_anchor_path(s.obs.db_path, pr)` 锚定）。请求/响应用 envelope `id` 配对（`_route` 把 `_mid` 透传给 `_trace_list`/`_trace_get` 并 `conn.send(..., id=mid)`）。
+- **span 序列化**：`server._span_to_dict(s)` 产出 `{span_id,name,kind,parent_id,started_at,ended_at,status('open'|'ok'),meta,logs[{ts,key,value,level}]}`，客户端按 `parent_id` 重建父子树（`features/obs/traceTree.ts` 的纯函数 `buildTree` + `flattenTree`，已单测）。
+- **TraceStore 新增 `list_traces(session_id=None)`**：按 `GROUP BY session_id` 聚合 span 数/时间；`session_id` 给定则过滤（供 daemon 协议与测试）。
+- **桌面端 `DaemonClient` 请求/响应配对**：`listTraces(projectRoot, sessionId?)`/`getTrace(projectRoot, traceId)` 经私有 `requestResponse(respType, payload)`——用 `crypto.randomUUID()` 生成 `id`，注册一次性 `onMessage(respType)` 按 `env.id` 解 Promise；连接断开经 `onClose` reject（避免悬挂）。`ALL_MSG_TYPES` 已含 `trace.list`/`trace.get`/`trace_list`/`trace_tree`。
+- **面板组成（`features/obs/`）**：`ObsPanel`（右侧 340px 栏，含 `StatusBar` + Trace/日志/后台 三标签页 + 关闭按钮）接 `App.tsx`（顶栏 📊 切换 `obsOpen`）。`useObs` hook 订阅 `usage`/`notify`/`show_plan`/`confirm_plan`/`decision` 事件 → 汇聚 token 用量 + 模式(plan/exec 启发式) + 滚动日志。`StatusBar` 展示 PLAN/EXEC 徽章、prompt/completion/total tokens、`总/total ÷ context_window` 占比条（窗口大小经 `settingsApi.loadSettings` 取 `context.context_window`）。`LogView` 消费 `notify` 日志（可清空）。`BackgroundAgents` 订阅 `notify` 解析「后台 Subagent [agent] 已启动（task_id: x）」/「已完成」/「/bg」任务行（`bg_xxx: ✅ 已完成|🔄 运行中`）维护运行中/完成列表，并提供「刷新(/bg)」经 `client.command('bg')` 增量更新。`TraceTree` 经 `obsApi.listTraces`/`getTrace` 拉取并 `buildTree` 渲染可折叠树。
+- **验收**：`pytest` 全量通过（新增 `store.list_traces` 单测 + `test_daemon.py` 3 个 trace 路由集成用例：list/get 配对、过滤、跨项目隔离）；`npm run lint`(`tsc --noEmit`)/`build` 全绿；`npm run test` **49 passed**（新增 `traceTree.test.ts` 4）；契约检查 32 项一致。
+
 
 
 

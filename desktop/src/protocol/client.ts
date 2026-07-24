@@ -5,7 +5,13 @@
 // 协议信封与 agent/daemon/protocol.py 一致；重连指数退避上限 5s。
 
 import { parseEvent } from './events'
-import type { AgentEvent, Envelope, MsgType } from './types'
+import type {
+  AgentEvent,
+  Envelope,
+  MsgType,
+  TraceListResponse,
+  TraceTreeResponse,
+} from './types'
 
 /** 浏览器/Node WebSocket 的结构化最小接口（屏蔽 websockets 版本差异，对齐 protocol.WsConnection）。 */
 export interface WSLike {
@@ -313,5 +319,45 @@ export class DaemonClient {
 
   command(name: string, args?: string | null): void {
     this.send('command', { name, args: args ?? null })
+  }
+
+  // --------------------------------------------------------------------------- //
+  // M9.7 可观测面板：trace 查询（请求/响应按 envelope.id 配对）
+  // --------------------------------------------------------------------------- //
+
+  private requestResponse(respType: MsgType, payload: Record<string, unknown>): Promise<Envelope> {
+    return new Promise<Envelope>((resolve, reject) => {
+      const id = crypto.randomUUID()
+      const off = this.onMessage(respType, (env) => {
+        if (env.id === id) {
+          off()
+          resolve(env)
+        }
+      })
+      // 若连接态丢失，及时 reject，避免 Promise 永久悬挂。
+      const offClose = this.onClose(() => {
+        off()
+        offClose()
+        reject(new Error('daemon 连接已断开'))
+      })
+      this.send(respType === 'trace_list' ? 'trace.list' : 'trace.get', payload, { id })
+    })
+  }
+
+  /** 列出当前项目的 trace（按 session 聚合）。sessionId 指定则只查该会话。 */
+  async listTraces(projectRoot?: string, sessionId?: string): Promise<TraceListResponse> {
+    const payload: Record<string, unknown> = { project_root: projectRoot ?? this.projectRoot ?? '' }
+    if (sessionId !== undefined) payload.session_id = sessionId
+    const env = await this.requestResponse('trace_list', payload)
+    return env.payload as TraceListResponse
+  }
+
+  /** 取单条 trace 的 span 树（traceId == session_id）。 */
+  async getTrace(projectRoot: string | undefined, traceId: string): Promise<TraceTreeResponse> {
+    const env = await this.requestResponse('trace_tree', {
+      project_root: projectRoot ?? this.projectRoot ?? '',
+      trace_id: traceId,
+    })
+    return env.payload as TraceTreeResponse
   }
 }
