@@ -566,6 +566,19 @@ flowchart TD
 - **fork 回传（M9.0 留待 M9.3）**：`dispatch_command` 当前未实现 `/fork`/`/resume`（仅 `/plan`/`/exec`/`/context`/`/compact`/`/skills`/`/agents`/`/agent`/`/bg` 等）；M9.0 未加 `command_result` 消息。M9.3 接通 `/fork` 时，可用「fork 后重新 `session.list` 取最新」兜底（或届时扩展 `command_result`）。
 - **测试**：`tests/integration/test_daemon.py` 新增 `test_registry_isolates_projects`（两项目 new 同名会话→list_info 各自隔离 + sqlite 落在各自 `.agent/sessions/`）、`test_list_info_merges_persisted_sessions`（store 合并去重）、`test_multi_project_session_isolation`（同一 daemon 服务两项目，Event 流与 SessionStore 完全隔离）。既有测试工厂签名改为 `(pr, sid)`。全量 `pytest` 430 passed（M9.0 阶段），`ruff check`/`ruff format --check` 全绿。
 
+## M9.1 沉淀（Electron 外壳与 daemon 生命周期）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.1-Electron外壳与daemon生命周期.md`。`desktop/` 下 Electron + Vite + React + TS 工程；主进程 `DaemonManager` 负责 spawn/守护/kill 全局单一 daemon，并经 `contextBridge` 只读注入 ws 配置给渲染进程。
+
+- **工程脚手架**：`desktop/` 用 `electron-vite`（三目标 `main`/`preload`/`renderer`）。`electron-vite.config.ts` 三入口：`src/main/index.ts` / `src/preload/index.ts` / `src/renderer/main.tsx`。脚本 `dev`/`build`/`lint`/`preview`；`desktop/.gitignore` 忽略 `node_modules`/`out`/`dist`。Node 22 / npm 10 可用。
+- **daemon 发现（日志解析）**：daemon 打印 `ws=ws://<host>:<port>` + `health=http://<host>:<health_port>/health`（发自 M9.0 daemon CLI）。核心纯函数 `parseDaemonLog(text)`（`desktop/src/main/daemon.ts` 导出）：正则 `ws=(ws:\/\/[^\s]+).*?health=(https?:\/\/[^\s]+)` 取完整（ws+health）；仅 `ws=...`（`ws=(ws:\/\/[^\s]+)`）时 health 回退 `http://127.0.0.1:18790/health`。**踩坑（已修）**：旧正则 `health=(https?:\/\/[^\s/]+:\d+\/health)` 的 `[^\s/]+` 拒绝 URL 斜杠，导致 `http://127.0.0.1:18790/health` 匹配失败，改 `[^\s]+` 匹配整条 URL。纯函数，M9.2 起可加 TS 测试覆盖正则回归。
+- **token 注入通道（铁律）**：**绝不**走 `loadURL` query（避免 token 进地址栏/进程命令行）。主进程 `ipcMain.handle('daemon:getConfig')` 返回 `DaemonConfig`；`preload` 用 `contextBridge.exposeInMainWorld('daemonConfig', { getWsUrl, getToken, getHealthUrl })` **只读**暴露（不暴露任何命令执行能力）；renderer 经 `window.daemonConfig.getWsUrl()` 取用。`DaemonConfig = { wsUrl, healthUrl, token }` 定义在 `src/shared/daemon-config.ts`，三端共享。
+- **python 探测顺序**（`src/main/python.ts` `locatePython`）：`AGENT_PYTHON` → `python` → `python3`，各以 `spawn(bin,['--version'])` 探测，成功即用；全失败 `dialog.showErrorBox` + `app.quit()`。daemon spawn：`spawn(python, ['-m','agent.cli','daemon'], { stdio:['ignore','pipe','pipe'], env:{...process.env} })`；stdout/stderr 皆 `ingest()` 解析。
+- **生命周期不变量**：`DaemonManager` 单例，`start()` 仅 spawn 一次；`waitForReady()` 每 200ms GET `/health` 直到 200（超时 15s 抛错）；`app.on('before-quit')`→`stop()`→`child.kill('SIGTERM')`；`child.on('exit')` 兜底清 `this.child`；异常退出（`code!==0 && code!==null`）置 `crashed=true` 供 UI 提示。**project_root 切换（M9.3）不重启 daemon**。
+- **与 Vite 集成**：`main`/`preload` 走 electron-vite SSR bundle，`renderer` 走标准 Vite（React）；HMR 仅 renderer，daemon 由主进程管理，二者解耦。
+- **安全**：`contextBridge` 仅暴露只读 ws 配置；renderer 直连 daemon（M9 qB 决策），主进程不做命令代理；token 仅本机回环鉴权。
+- **测试可达性（headless 限制）**：当前无显示器，GUI 启动/进程 kill 真机验收待有显示器环境。已验证 `npm run lint`/`npm run build` 全绿 + daemon `/health` 冒烟（独立 Python 进程 spawn 后返回 200，日志解析命中）。
+
 
 
 
