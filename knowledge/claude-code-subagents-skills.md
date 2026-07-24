@@ -183,17 +183,29 @@ my-skill/
 
 ```python
 class AgentLoop:
-    def __init__(self, model: Model, registry: ToolRegistry, settings: Settings,
-                 tracer: Tracer | None = None, plan_mode: bool | None = None,
-                 plan_path: str | None = None,
-                 sandbox: "Executor | None" = None,
-                 gate: "ApprovalGate | None" = None) -> None: ...
+    def __init__(
+        self,
+        model: Model,
+        registry: ToolRegistry,
+        settings: Settings,
+        tracer: Tracer | None = None,
+        plan_mode: bool | None = None,
+        plan_path: str | None = None,
+        sandbox: "Executor | None" = None,
+        gate: "ApprovalGate | None" = None,
+    ) -> None: ...
 
-    async def run(self, task: str,
-                  messages: list[Message] | None = None, *,
-                  clarify_total: int = 0, plan_mode: bool | None = None,
-                  plan_path: str | None = None,
-                  transport: "AgentTransport | None" = None) -> AgentResult: ...
+    async def run(
+        self,
+        task: str,
+        messages: list[Message] | None = None,
+        *,
+        clarify_total: int = 0,
+        plan_mode: bool | None = None,
+        plan_path: str | None = None,
+        transport: "AgentTransport | None" = None,
+    ) -> AgentResult: ...
+
 
 @dataclass
 class AgentResult:
@@ -202,7 +214,7 @@ class AgentResult:
     iterations: int
     needs_clarification: bool = False
     questions: list[Question] | None = None
-    messages: list[Message] | None = None      # 更新后的对话历史（不含 system）
+    messages: list[Message] | None = None  # 更新后的对话历史（不含 system）
     clarify_total: int = 0
     plan: str | None = None
     plan_path: str | None = None
@@ -223,11 +235,20 @@ class AgentResult:
 
 ```python
 class ContextManager:
-    def __init__(self, context_window=200_000, max_output_tokens=20_000,
-                 compact_buffer=13_000, *, system_fixed_tokens=3_000,
-                 system_dynamic_tokens=0, tools_tokens=15_000,
-                 microcompact_keep_recent=5, microcompact=None,
-                 auto_compact=None, tracer=None): ...
+    def __init__(
+        self,
+        context_window=200_000,
+        max_output_tokens=20_000,
+        compact_buffer=13_000,
+        *,
+        system_fixed_tokens=3_000,
+        system_dynamic_tokens=0,
+        tools_tokens=15_000,
+        microcompact_keep_recent=5,
+        microcompact=None,
+        auto_compact=None,
+        tracer=None,
+    ): ...
     def set_conv(self, conv: list[Message]) -> None: ...
     def get_active_messages(self) -> list[Message]: ...
     def mark_boundary(self) -> None: ...

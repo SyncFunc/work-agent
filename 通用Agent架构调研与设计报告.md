@@ -130,7 +130,7 @@ async def run(self, task: str) -> AgentResult:
             decision = await self.model.act(self.context.compile())
             if decision.tool_calls:
                 for tc in decision.tool_calls:
-                    result = await self.runtime.execute(tc)   # → ApprovalGate → Sandbox
+                    result = await self.runtime.execute(tc)  # → ApprovalGate → Sandbox
                     self.context.append(tool_result(tc, result))
             else:
                 return AgentResult(content=decision.text, span=span.id)
@@ -146,16 +146,25 @@ async def run(self, task: str) -> AgentResult:
 ```python
 # tools/registry.py
 TOOLS: dict[str, ToolSpec] = {}
+
+
 def tool(name, risk="read", allow=None):
-    def deco(fn): TOOLS[name] = ToolSpec(name, fn, risk, allow); return fn
+    def deco(fn):
+        TOOLS[name] = ToolSpec(name, fn, risk, allow)
+        return fn
+
     return deco
+
 
 # runtime/approval.py
 def decide(action, policy) -> Decision:
-    if policy.mode == "auto" and action.risk == "read": return ALLOW
-    if matches(policy.deny, action): return DENY
-    if matches(policy.allow, action): return ALLOW
-    return ASK_USER   # HITL
+    if policy.mode == "auto" and action.risk == "read":
+        return ALLOW
+    if matches(policy.deny, action):
+        return DENY
+    if matches(policy.allow, action):
+        return ALLOW
+    return ASK_USER  # HITL
 ```
 
 #### ③ 上下文管理 / 压缩 / 长短期记忆
@@ -168,10 +177,11 @@ def decide(action, policy) -> Decision:
 class ContextManager:
     def compile(self) -> list[Message]:
         return [self.system(cached=True), *self.rules, *self.summary, *self.history]
+
     def maybe_compact(self):
         if self.tokens() > self.threshold:
             self.summary.append(self.llm.summarize(self.history))
-            self.history = self.history[-self.keep_recent:]
+            self.history = self.history[-self.keep_recent :]
 ```
 
 #### ④ Skill 体系 + 子 Agent 上下文 fork
@@ -183,7 +193,7 @@ class ContextManager:
 # agent/subagent.py
 async def spawn(self, spec: SubagentSpec, task: str) -> SubResult:
     child = AgentLoop(tools=spec.tools, policy=spec.policy, ctx=ContextManager.empty())
-    return await child.run(task)   # 独立上下文，仅回传结果
+    return await child.run(task)  # 独立上下文，仅回传结果
 ```
 
 #### ⑤ 项目隔离 & 会话隔离
@@ -231,6 +241,8 @@ async def call_model(req): ...
 # obs/tracer.py
 class Tracer:
     def span(self, name, kind, parent=None): ...
+
+
 # 父子：child = tracer.span("tool.exec", parent=agent_span)
 ```
 
