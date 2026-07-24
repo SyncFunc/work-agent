@@ -23,9 +23,9 @@ dev = [
     "pytest>=8.0",
     "pytest-asyncio>=0.23",
     "pytest-cov>=5.0",
-    "ruff>=0.5",
+    "ruff==0.16.0",  # 锁版本：未锁定会导致 CI 拉取最新 ruff 后格式化行为漂移（markdown 代码块排版）致 format 门禁失败
     "pytest-xdist>=3.5",
-    "basedpyright>=1.10",
+    "basedpyright==1.39.9",  # 锁版本：类型检查器版本漂移同样可能导致 CI 误报，与本地保持一致
     "textual>=0.80",  # M8 全屏 TUI（headless run_test 测试依赖）
 ]
 # M8 全屏 TUI：仅 TUI 路径需要的依赖，与核心解耦（核心依赖不强制引入）。
