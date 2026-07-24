@@ -5,6 +5,8 @@ import { ProjectSwitcher, loadProjectRoot } from '../features/projects/ProjectSw
 import { SessionTabs } from '../features/sessions/SessionTabs'
 import { SessionList } from '../features/sessions/SessionList'
 import { useSessions } from '../features/sessions/useSessions'
+import { MessageList } from '../features/chat/MessageList'
+import { useChatModel } from '../features/chat/useEventReducer'
 
 export default function App(): React.ReactElement {
   const [config, setConfig] = useState<DaemonConfig | null>(null)
@@ -37,6 +39,7 @@ export default function App(): React.ReactElement {
 
   const sessions = useSessions(client, projectRoot)
   const active = sessions.state.tabs.find((t) => t.id === sessions.state.activeId) ?? null
+  const model = useChatModel(active ? active.events : [])
 
   const submit = (): void => {
     const text = draft.trim()
@@ -77,13 +80,11 @@ export default function App(): React.ReactElement {
           {client && !active && <p style={{ color: '#888' }}>从左侧新建或打开一个会话开始。</p>}
           {active && (
             <div>
-              <p style={{ color: '#888' }}>
-                会话 <code>{active.name}</code> · 已加载 {active.events.length} 条事件
+              <p style={{ color: '#888', fontSize: 13 }}>
+                会话 <code>{active.name}</code> · {active.events.length} 条事件
                 {sessions.state.replaying ? '（回放中…）' : ''}
               </p>
-              <p style={{ color: '#aaa', fontSize: 13 }}>
-                （流式渲染将在 M9.4 实现；当前仅展示事件计数。）
-              </p>
+              <MessageList model={model} />
             </div>
           )}
         </section>

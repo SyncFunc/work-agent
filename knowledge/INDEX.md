@@ -605,6 +605,17 @@ flowchart TD
 - **真机冒烟（`scripts/smoke-sessions.mjs`）**：Node 22+ 全局 `WebSocket`；`session.new` 必须在 `ws.onopen` 内发（否则 `Sent before connected`）。daemon 按 `project_root` 构建 Model，缺 `llm.api_key` 会在 `session.new` 报 `handler_error`——冒烟为每个临时项目写 `.agent/settings.yaml` 占位 key（不真正调用模型）。验证多项目隔离 = `A=2 / B=1`，即 `registry.new(project_root,...)` + `list_info(project_root)` 隔离正确。仅本地验证（非 CI 必跑）。
 - **环境/验收**：`npm run lint` + `npm run build`（`tsc --noEmit`）全绿；`npm run test` 24 passed（M9.2 协议 14 + 本步 `sessionMachine.test` 8 + `replay.test` 2）。`pytest` daemon 集成 13 passed。
 
+## M9.4 沉淀（流式渲染与工具块）
+
+> 来源：`milestones/M9-Electron桌面客户端/M9.4-流式渲染与工具块.md`。`desktop/src/features/chat/` 把 `AgentEvent[]` 归约为视图模型并渲染（流式 Markdown + 可折叠工具卡 + diff 高亮）。
+
+- **事件序列（对齐 `agent/core/loop.py` + `agent/daemon/bridge.py`）**：`model.stream` 先发 `TEXT(content/reasoning)` 增量与 `TOOL_CALL_DELTA`（瞬时，在 `TOOL_USE` **之前**到达），收尾 `DECISION{decision}`；随后 `TOOL_USE` → `TOOL_RESULT`；`FINAL`/`ERROR`/`USER` 各自成事件。`bridge._on_event` **全部事件实时转发**给 attached 客户端，仅非 transient 进回放缓冲（replay 不含 delta）。
+- **reducer 关键规则（`useEventReducer.ts` 的 `buildChatModel`）**：① `TEXT` 增量累积进当前气泡 `content`/`reasoning`；`DECISION`/`FINAL` 仅作**收尾信号**，流式下 `.text` 与已追加 `TEXT` 重复 → 仅当气泡无任何 TEXT 增量时才用 `.text` 兜底（非流式兼容），语义同 `textual_transport.on_event` 的 `finalize_stream`。② 工具块三阶段：`tool_call_delta`(按 `tc_index` 累积 `deltaArgs` 预览) → `tool_use`(补真实 `id`/最终 `args`，按出现序匹配 delta 块) → `tool_result`(填结果)。③ **顺序**：`tool_call_delta`/`tool_use` 到达先 `flushText()`，保证文本块先于工具块。④ React `key` 创建时一次性分配并全程复用（delta→use→result 同一对象引用，原地 mutate 更新渲染）。
+- **replay 一致性**：向 reducer 喂「含 delta」与「仅非 transient」两套事件，工具最终 `args`/`result` 一致、`deltaArgs` 仅实时路径非空 → replay 不重复瞬时事件（daemon 侧 `bridge` 已排除 transient）。
+- **diff 识别（`DiffView.tsx`）**：`isDiffLike` 用 `/^[+-]\s|@@ |diff --git |index |\+\+\+ |--- /` 命中 ≥3 行判 unified diff，逐行着色增绿/删红/上下文灰；非 diff 走 `rehype-highlight` 普通高亮。
+- **Markdown 策略**：`Markdown.tsx`(react-markdown + remark-gfm + rehype-highlight) 整段 content 重渲染（不逐字 diff，借助 React 不闪烁）；`highlight.js/styles/github.css` 主题在组件内 import。新增依赖 `react-markdown`/`remark-gfm`/`rehype-highlight`/`highlight.js`（desktop deps）。
+- **验收**：`npm run lint`/`build` 全绿；`npm run test` **30 passed**（新增 `useEventReducer.test.ts` 6 例：流式累积、双轮次、工具流、replay 一致性、user/error/final、final 不重复）。GUI 真机渲染需显示器（headless 仅验证构建+单测+协议对齐）。
+
 
 
 
