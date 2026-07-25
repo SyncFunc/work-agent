@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildTree, flattenTree } from './traceTree'
+import { buildTree, flattenTree } from './traceModel'
 import type { SpanNode } from '../../protocol/types'
 
 function span(span_id: string, parent_id: string | null): SpanNode {

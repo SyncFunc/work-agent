@@ -59,8 +59,13 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
       dispatch({ type: 'replayEnd', events })
     })
     const offEvent = client.onEvent((ev: AgentEvent) => {
-      if (replay.current.isActive) dispatch({ type: 'replayEvent', event: ev })
-      else dispatch({ type: 'liveEvent', event: ev })
+      if (replay.current.isActive) {
+        // 回放期间只把事件累积进 ReplayBuffer，供 replayEnd 一次性整体回填。
+        // 注意：此处【不】dispatch 任意写 tab.events 的动作——replay 期间若把事件 append 到
+        // 已有的 live 累积上，会与 replayEnd 的整体替换形成「先重复叠加、再替换」的脆弱时序，
+        // 一旦 replayEnd 因竞态未覆盖就残留重复（表现为「上一轮消息在本轮重复 / 越来越多」）。
+        replay.current.push(ev)
+      } else dispatch({ type: 'liveEvent', event: ev })
     })
     return () => {
       offWelcome()

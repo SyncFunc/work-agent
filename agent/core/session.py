@@ -172,6 +172,10 @@ class Session:
         # 前置：要求 Auto Compact 开启，否则不启用（见 4.4.2）。
         # M6 会话恢复：统一 session_id（daemon/CLI 创建时传入，与持久化行一致）
         self.session_id = session_id or uuid.uuid4().hex
+        # M9 subsession：daemon 模式由 registry 注入自身 handle/registry（见 registry.new/restore），
+        # 使后台 subagent 能走独立 subsession 实时转发；CLI 模式保持 None（子 agent 用本地 transport）。
+        self.daemon_handle = None
+        self.daemon_registry = None
         self.session_store = session_store
         if self.session_store is not None:
             self.session_store.create(self.session_id, plan_mode=plan_mode, plan_path=plan_path)
@@ -406,6 +410,10 @@ class Session:
                     parent_sandbox=self.loop.sandbox,
                     parent_gate=self.loop.gate,
                     live=False,
+                    # M9 subsession：daemon 模式透传自身 handle/registry，使子 agent 走独立
+                    # subsession 实时转发；CLI 模式 daemon_handle 为 None，走本地 transport。
+                    parent_handle=self.daemon_handle,
+                    registry=self.daemon_registry,
                 )
                 if result_sink is not None:
                     result_sink(agent_name, task, result.text)

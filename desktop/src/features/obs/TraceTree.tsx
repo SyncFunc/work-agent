@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { DaemonClient } from '../../protocol/client'
 import type { SpanNode, TraceInfo } from '../../protocol/types'
 import { getTrace, listTraces } from './obsApi'
-import { buildTree, type SpanTreeNode } from './traceTree'
+import { buildTree, type SpanTreeNode } from './traceModel'
 
 interface Props {
   client: DaemonClient | null

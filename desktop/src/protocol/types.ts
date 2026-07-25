@@ -102,6 +102,8 @@ export interface AgentEvent {
   seq: number
   type: EventTypeStr
   ts: number
+  /** M9 subsession：归属的子会话 id（顶层会话事件为 undefined/空）。 */
+  subsession_id?: string | null
   transient?: boolean
   decision?: Decision | null
   tool_use?: ToolCall | null

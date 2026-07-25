@@ -18,7 +18,12 @@ class FakeWebSocket implements WSLike {
   constructor(url: string) {
     this.url = url
     FakeWebSocket.last = this
-    queueMicrotask(() => this.onopen?.())
+    // 模拟 WebSocket 在 open 后将 readyState 置为 OPEN(1)；否则 client 的发送守卫
+    //（readyState === 1）会拒绝发送，hello 等消息进 outbox 不落盘，sentEnvelope 越界读 undefined。
+    queueMicrotask(() => {
+      this.readyState = 1
+      this.onopen?.()
+    })
   }
   send(data: string): void {
     this.sent.push(data)

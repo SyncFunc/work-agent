@@ -4,7 +4,7 @@
   "private": true,
   "description": "Work Agent 桌面客户端（Electron + React + TypeScript，连接 agentrunner daemon）",
   "type": "module",
-  "main": "out/main/index.js",
+  "main": "out/main/index.cjs",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",

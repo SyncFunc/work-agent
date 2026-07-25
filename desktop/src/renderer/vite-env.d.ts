@@ -1,12 +1,10 @@
 /// <reference types="vite/client" />
 
-import type { DaemonConfig } from '../shared/daemon-config'
+import type { AgentApi } from '../preload'
 
 declare global {
   interface Window {
-    agentApi: {
-      getDaemonConfig: () => Promise<DaemonConfig | null>
-    }
+    agentApi: AgentApi
   }
 }
 

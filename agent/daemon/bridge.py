@@ -169,3 +169,46 @@ class BridgeTransport(AgentTransport):
             self._send(MsgType.USAGE, {"usage": {"estimated_tokens": est}, "estimated": True})
         else:
             self._send(MsgType.USAGE, {"usage": usage, "estimated": False})
+
+
+class SubsessionBridgeTransport(BridgeTransport):
+    """子会话（subsession）专用 transport：复用父会话的 ``attached_conn`` 做事件多路复用。
+
+    MVP 原则（见里程碑方案 §7 Step D）：不引入多连接路由重构——子 agent 事件经父连接
+    转发，仅 EVENT 消息额外携带 ``subsession_id``，前端按 id 建独立 panel。HITL（ask/approve）
+    也复用父连接（子代理默认非交互，极少触发）。
+
+    - ``_send`` 发往 ``parent_handle.attached_conn``（而非自身 handle 的空连接）。
+    - ``_on_event`` 写入自身 subsession handle 的 ``event_buffer``（供回放），并实时转发
+      给父连接、附带 ``subsession_id``。
+    """
+
+    def __init__(self, parent_handle: SessionHandle, handle: SessionHandle) -> None:
+        super().__init__(handle)
+        self.parent_handle = parent_handle
+
+    def _send(self, mtype: MsgType, payload: dict[str, Any], *, id: str | None = None) -> None:
+        conn = self.parent_handle.attached_conn
+        if conn is None:
+            return
+        self._track(
+            asyncio.ensure_future(
+                conn.send(mtype, payload, id=id, session=self.parent_handle.session_id)
+            )
+        )
+
+    def _on_event(self, ev: Event) -> None:
+        # 仅非 transient 事件进回放缓冲（与父会话一致）。
+        if not ev.transient:
+            self.handle.event_buffer.append(ev)
+        conn = self.parent_handle.attached_conn
+        if conn is not None:
+            self._track(
+                asyncio.ensure_future(
+                    conn.send(
+                        MsgType.EVENT,
+                        {"event": ev.to_dict(), "subsession_id": self.handle.session_id},
+                        session=self.parent_handle.session_id,
+                    )
+                )
+            )

@@ -205,6 +205,9 @@ async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> N
     缓冲仅含非 transient 事件（见 BridgeTransport._on_event），故 tool_call_delta 等瞬时
     事件不会重画，避免参数预览重复渲染。
 
+    M9 subsession：父会话回放后，若为 daemon 会话（``handle.registry`` 非空），额外回放每个
+    子会话（后台 subagent）缓冲，每条 EVENT 带 ``subsession_id``，前端据此重建独立 panel 历史。
+
     修点：每轮 ``loop.run`` 都会新建 ``EventStream``，事件 ``seq`` 从 0 重新递增，导致
     ``event_buffer`` 跨轮累积后内部 ``seq`` 重复。这里在发送时按缓冲顺序**重新编一个会话内
     单调递增的全局 seq**，使回放流严格满足 ``Event``「顺序由 seq 唯一确定」的契约，避免任何
@@ -215,6 +218,19 @@ async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> N
         # event_buffer 内的 seq 已是会话级全局唯一（session.event_stream 跨轮复用、
         # SessionStoreSink 不再改写），直接发送，无需重编（旧补丁已移除）。
         await conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=sid)
+    # M9 subsession：回放子会话缓冲（带 subsession_id），前端按 id 重建独立 panel。
+    reg = handle.registry
+    if reg is not None:
+        for cid in handle.children:
+            sub = reg.get_subsession(cid)
+            if sub is None:
+                continue
+            for ev in list(sub.event_buffer):
+                await conn.send(
+                    MsgType.EVENT,
+                    {"event": ev.to_dict(), "subsession_id": cid},
+                    session=sid,
+                )
     await conn.send(MsgType.REPLAY_END, {}, session=sid)
 
 

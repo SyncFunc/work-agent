@@ -6,7 +6,7 @@ import { DaemonClient } from '../../protocol/client'
 
 export interface Notice {
   id: number
-  kind: 'notify' | 'skills' | 'agents'
+  kind: 'notify' | 'skills' | 'agents' | 'error'
   text: string
 }
 
@@ -36,10 +36,19 @@ export function useNotices(client: DaemonClient | null, ttlMs = 6000): Notice[] 
       const names = specs.map((s) => String(s.name ?? s.id ?? '?')).join('、')
       push({ id: ++seq, kind: 'agents', text: names ? `可用子 Agent：${names}` : '无可用子 Agent' })
     })
+    // daemon 级错误信封（_route 顶层异常都会转成 error 发回，前端原本未监听 → 静默丢失）。
+    // 接入后「新建会话无反应」等异常会变成可见提示，便于定位根因。
+    const offError = client.onMessage('error', (env) => {
+      const code = env.payload['code']
+      const message = env.payload['message']
+      const text = `daemon 错误${code ? `（${code}）` : ''}：${message ?? '未知错误'}`
+      push({ id: ++seq, kind: 'error', text })
+    })
     return () => {
       offNotify()
       offSkills()
       offAgents()
+      offError()
     }
   }, [client, ttlMs])
 

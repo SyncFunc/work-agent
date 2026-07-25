@@ -419,6 +419,7 @@ flowchart TD
 - **Subagent 复用无状态 `AgentLoop`**：只传独立 `messages=[]` 即隔离上下文；可注入不同 `model`/`registry`/`sandbox`/`gate`。
 - **Trace 父子铁律**：子 agent 经 `SubagentSpawner.spawn(..., parent_span=父span)` 调起，`AgentLoop.run` 用 `parent=parent_span` 显式挂到父调用链下（主循环=`session.root_span`，子 agent=父 `agent.run` span）。`Tracer.reset_current_span()` 已删除，`loop.py:118` 旧引用失效，parentage 不再依赖 contextvar 隐式状态。
 - **摘要返回**：父 agent 只拿 `AgentResult.text`，子 agent 内部事件流不进父 `EventStream`。
+- **daemon 子 agent 实时展示契约（M9/重构-EventStream 方案 Step D）**：daemon 模式下 `SubagentSpawner.spawn(..., parent_handle, registry)` 生成独立 `subsession_id = f"{parent_id}/sub_{name}_{depth}_{uuid6}"` 并 `register_subsession`；子 agent 用独立 `EventStream`（独立 seq 空间）+ `SubsessionBridgeTransport`，事件经**父 `attached_conn` 多路复用**发出，`MsgType.EVENT` 的 payload 带 `subsession_id`，前端按 id 分桶渲染、互不串。CLI/非 daemon 模式（`parent_handle=None`）保持 `_SubAgentTransport`/`_SubAgentTuiTransport` 本地渲染，行为不变。回放（`server._replay`）在父 `event_buffer` 后遍历 `handle.children` 逐 subsession 回放并带 `subsession_id`。铁律：子事件**不并进父 `event_buffer`**，父 reducer 不被污染。
 - **深度限制 5**：`spawn` 入口 `if depth >= max_depth: raise RecursionError`；每次 `depth+1`。
 - **工具白名单**：子 `registry` = `base_registry` 子集（`tools` 保留 / `disallowed_tools` 移除）。
 - **内置类型**：`explore`/`plan`（只读，拒 write/edit，跳过会话文件）/`general-purpose`（全工具）。
@@ -590,6 +591,7 @@ flowchart TD
 - **契约测试机制（解析源文件，非生成）**：`desktop/scripts/check-msgtype.mjs` 纯 Node 正则抽取 Python `class MsgType` 块（到 `@runtime_checkable` 止）的 `NAME = "value"` 与 TS `ALL_MSG_TYPES = [...]` 字面量（单/双引号兼容），比对集合；无中间生成文件，两源文件即单一事实来源，漂移即失败。`tests/unit/test_m9_protocol_contract.py` 调 `node` 跑它并断言返回码 0（无 node 则 `skip`）。**踩坑（已修）**：TS 解析初版用双引号正则，而 `ALL_MSG_TYPES` 是单引号 → 匹配空（TS=0）；改 `/["']([^"']+)["']/g` 修复。**Python 端 subprocess 捕获**：`capture_output=True` 配 `encoding='utf-8'`（node 输出 UTF-8 含中文，默认 gbk 解码会 `UnicodeDecodeError`）。
 - **环境**：`desktop` 引入 `vitest`（devDep）+ `vitest.config.ts`（`environment:'node'`，`include: src/**/*.test.ts`）；`package.json` 加 `test`/`test:watch`。`tsconfig` `include: src/**` 使 `*.test.ts` 也受 `tsc --noEmit`（即 `lint`）检查。`npm run lint` 全绿 + `npm run test` 14 passed；`pytest` 全量 432 passed（含 2 契约用例）。
 - **测试可达性（headless）**：重连/订阅用注入假 `WebSocket` + `vi.useFakeTimers`；真实 daemon 握手由 `desktop/scripts/smoke-daemon.mjs`（Node22 全局 `WebSocket`）单独验证——已收到 `welcome {daemon_version:"0.1.0", protocol_version:"1.0"}`。
+- **踩坑（回放流 `seq` 必须会话内全局唯一）**：每轮 `loop.run` 新建 `EventStream`，`seq` 从 0 重新递增，而 daemon `SessionHandle.event_buffer` **跨轮累积** → 回放时缓冲内 `seq` 重复，违反 `Event`「顺序由 `seq` 唯一确定」契约，按 `seq` 去重/排序的下游（含前端历史重建）会丢事件或错乱。修复（`agent/daemon/server.py` 的 `_replay`）：回放发送时按缓冲顺序重编会话内单调递增全局 `seq`（`d["seq"] = i`，`i` 为缓冲内序号）。铁律：回放流是「派生视图」，序号由 daemon 统一编排，严禁信任各轮 `EventStream` 自带 `seq` 在跨轮场景唯一。
 
 ## M9.3 沉淀（项目管理与多会话）
 
@@ -615,6 +617,7 @@ flowchart TD
 - **diff 识别（`DiffView.tsx`）**：`isDiffLike` 用 `/^[+-]\s|@@ |diff --git |index |\+\+\+ |--- /` 命中 ≥3 行判 unified diff，逐行着色增绿/删红/上下文灰；非 diff 走 `rehype-highlight` 普通高亮。
 - **Markdown 策略**：`Markdown.tsx`(react-markdown + remark-gfm + rehype-highlight) 整段 content 重渲染（不逐字 diff，借助 React 不闪烁）；`highlight.js/styles/github.css` 主题在组件内 import。新增依赖 `react-markdown`/`remark-gfm`/`rehype-highlight`/`highlight.js`（desktop deps）。
 - **验收**：`npm run lint`/`build` 全绿；`npm run test` **30 passed**（新增 `useEventReducer.test.ts` 6 例：流式累积、双轮次、工具流、replay 一致性、user/error/final、final 不重复）。GUI 真机渲染需显示器（headless 仅验证构建+单测+协议对齐）。
+- **踩坑（reducer 跨轮兜底重复渲染）**：`lastDecisionText`（收尾用 `decision.text`/`final.text` 兜底）**不可跨轮残留**。原实现只在出现 `text` 时清空、`flushText` 仍在每轮 `decision`/`final` 收尾把上一轮残留/本轮 `decision.text` 兜底成新气泡 → 「final 重复渲染、上一轮消息在本轮重复、随轮次累积增多」。修复：① 新增 `hasStreamedText` 守卫，`text` 事件置位并立即丢弃残留兜底；② `flushText` 仅在本轮**完全无流式 TEXT**（`!hasStreamedText`）时消费兜底；③ 兜底文本消费后立即清空，且 `user` 事件重置 `hasStreamedText`+`lastDecisionText` 掐断跨轮串扰。判据：每个 assistant 轮次有且仅有「一个文本气泡（流式或兜底）」，文本内容与 trace 中 decision 一一对应、无重复。
 
 ## M9.5 沉淀（HITL 模态与审批可视化）
 

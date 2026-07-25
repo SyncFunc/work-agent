@@ -17,7 +17,10 @@ from __future__ import annotations
 # ruff: noqa: E402  (agent.* 导入刻意置于 AgentSummary 定义之后，避免与 agent.core.loop 循环导入)
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from agent.daemon.registry import SessionHandle, SessionRegistry
 
 import yaml
 
@@ -138,11 +141,17 @@ BUILTIN_SPECS: tuple[AgentSpec, ...] = (
 # --------------------------------------------------------------------------- #
 class SubagentSpawner:
     def __init__(
-        self, settings: Settings, *, tracer: Tracer | None = None, max_depth: int = 5
+        self,
+        settings: Settings,
+        *,
+        tracer: Tracer | None = None,
+        max_depth: int = 5,
+        cwd: Path | None = None,
     ) -> None:
         self.settings = settings
         self.tracer = tracer
         self.max_depth = max_depth
+        self.cwd = cwd or Path.cwd()
 
     # ------------------------------------------------------------------ #
     # 发现 / 获取
@@ -255,6 +264,11 @@ class SubagentSpawner:
         parent_sandbox: Any | None = None,
         parent_gate: ApprovalGate | None = None,
         live: bool = True,
+        # M9 subsession：daemon 模式下给定父 handle + registry 时，子 agent 走独立
+        # subsession（事件经父连接多路复用、带 subsession_id，桌面端实时渲染）。
+        # CLI 模式不传，保持现有本地 transport，行为不变（向后兼容）。
+        parent_handle: SessionHandle | None = None,
+        registry: SessionRegistry | None = None,
     ) -> AgentResult:
         """构造独立 AgentLoop（独立 EventStream + fork 可选），跑 run()，返回摘要。"""
         if depth >= self.max_depth:
@@ -269,20 +283,42 @@ class SubagentSpawner:
         # ④ fork：share_history=True 时继承父 conv
         initial = list(parent_messages) if (spec.share_history and parent_messages) else []
 
-        # 父传输为 Textual TUI 时，子 agent 渲染走 _SubAgentTuiTransport（前缀汇入主区）；
-        # 否则沿用旧 _SubAgentTransport（rich 面板集）。两者行为对齐、互不污染。
-        if isinstance(parent_transport, TextualTransport):
-            sub_transport = _SubAgentTuiTransport(
-                parent=parent_transport,
-                name=spec.name,
+        # daemon 模式 + 给定父 handle/registry：走独立 subsession 实时转发（桌面端可见）。
+        if parent_handle is not None and registry is not None:
+            import uuid as _uuid
+
+            from agent.core.events import EventStream
+            from agent.daemon.bridge import SubsessionBridgeTransport
+            from agent.daemon.registry import SessionHandle as _SubHandle
+
+            sub_id = f"{parent_handle.session_id}/sub_{spec.name}_{depth}_{_uuid.uuid4().hex[:6]}"
+            sub_handle = _SubHandle(
+                sub_id,
+                spec.name,
+                None,
+                None,
+                parent_handle.project_root,
+                parent_id=parent_handle.session_id,
             )
+            registry.register_subsession(parent_handle.session_id, sub_handle)
+            sub_stream = EventStream()
+            sub_transport = SubsessionBridgeTransport(parent_handle, sub_handle)
         else:
-            sub_transport = _SubAgentTransport(
-                parent=parent_transport,
-                name=spec.name,
-                panel_height=spec.panel_height,
-                live=live,
-            )
+            # 父传输为 Textual TUI 时，子 agent 渲染走 _SubAgentTuiTransport（前缀汇入主区）；
+            # 否则沿用旧 _SubAgentTransport（rich 面板集）。两者行为对齐、互不污染。
+            if isinstance(parent_transport, TextualTransport):
+                sub_transport = _SubAgentTuiTransport(
+                    parent=parent_transport,
+                    name=spec.name,
+                )
+            else:
+                sub_transport = _SubAgentTransport(
+                    parent=parent_transport,
+                    name=spec.name,
+                    panel_height=spec.panel_height,
+                    live=live,
+                )
+            sub_stream = None  # 默认 loop.run 内部新建独立 stream
 
         # max_turns 限制：克隆 settings 覆盖循环上限
         sub_settings = self.settings
@@ -297,6 +333,7 @@ class SubagentSpawner:
             tracer=self.tracer,
             sandbox=sub_sandbox,
             gate=sub_gate,
+            cwd=self.cwd,
         )
         # 强隔离：记忆子 agent 等场景禁止控制/虚拟工具（只产出文本，不能委派/加载 skill）
         loop._control_tools_enabled = not spec.no_control_tools
@@ -307,6 +344,7 @@ class SubagentSpawner:
                 task,
                 messages=initial,
                 transport=sub_transport,
+                stream=sub_stream,
                 system_prompt=spec.system_prompt or None,
                 parent_span=parent_span,
                 name=spec.name,
@@ -347,9 +385,7 @@ class SubagentSpawner:
         self, spec: AgentSpec, parent_sandbox: Any | None, parent_gate: ApprovalGate | None
     ) -> tuple[Any, ApprovalGate]:
         if spec.permission_mode == "plan":
-            sandbox = build_executor(
-                "local", workspace=Path.cwd(), profile=SandboxProfile.READ_ONLY
-            )
+            sandbox = build_executor("local", workspace=self.cwd, profile=SandboxProfile.READ_ONLY)
             gate = ApprovalGate("never")
             return sandbox, gate
         # 默认：继承父 sandbox/gate；无父则用 settings 默认
@@ -357,7 +393,7 @@ class SubagentSpawner:
             return parent_sandbox, parent_gate  # type: ignore[return-value]
         sandbox = build_executor(
             "local",
-            workspace=Path.cwd(),
+            workspace=self.cwd,
             profile=SandboxProfile(self.settings.sandbox.profile),
         )
         gate = ApprovalGate(self.settings.approval.mode)

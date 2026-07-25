@@ -11,7 +11,7 @@ export function NoticeHost({ notices }: { notices: Notice[] }): React.ReactEleme
         <div
           key={n.id}
           style={{
-            background: '#222',
+            background: n.kind === 'error' ? '#c0392b' : '#222',
             color: '#fff',
             padding: '8px 12px',
             borderRadius: 8,

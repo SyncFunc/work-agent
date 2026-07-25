@@ -63,10 +63,13 @@ class SessionHandle:
         session: SessionLike | None,
         transport: BridgeTransport | None,
         project_root: str = "",
+        *,
+        parent_id: str | None = None,
     ) -> None:
         self.session_id = session_id
         self.name = name or session_id[:8]
         self.project_root = project_root
+        self.parent_id = parent_id  # M9 subsession：父会话 id（顶层会话为 None）
         self.session: SessionLike | None = session
         self.transport: BridgeTransport | None = (
             transport  # AgentTransport 实现（BridgeTransport 等）
@@ -78,6 +81,10 @@ class SessionHandle:
         self.busy = False  # 同步标志：避免并发 task.send 竞态
         self.last_activity = time.time()
         self.lock = asyncio.Lock()  # 每会话锁：保证同一会话一个 step 在飞
+        # M9 subsession：本会话派生的子会话 id 集合（父清理时级联销毁）。
+        self.children: set[str] = set()
+        # M9 subsession：反向持有所属 registry（daemon 模式），供 _replay 反查子会话。
+        self.registry: Any | None = None
 
 
 class SessionRegistry:
@@ -107,6 +114,8 @@ class SessionRegistry:
         # M9.7：按 project_root 惰性解析并返回 TraceStore（供 trace.list/trace.get 查询）。
         self._trace_store_factory = trace_store_factory  # (project_root) -> TraceStore
         self._token: str = ""  # hello 鉴权令牌（可选；由 start_daemon 注入）
+        # M9 subsession：独立子会话索引（不进 _sessions，避免出现在会话列表）。
+        self._subsessions: dict[str, SessionHandle] = {}
 
     def new(
         self,
@@ -124,6 +133,11 @@ class SessionRegistry:
         if tf is not None:
             handle.transport = tf(handle)
         self._sessions[sid] = handle
+        # M9 subsession：让 session 能透传自身 handle/registry 给后台 subagent spawn。
+        handle.registry = self
+        if session is not None:
+            session.daemon_handle = handle
+            session.daemon_registry = self
         return handle
 
     def get(self, session_id: str | None) -> SessionHandle | None:
@@ -145,6 +159,10 @@ class SessionRegistry:
             for ev in list(es.all())[-DEFAULT_BUFFER_SIZE:]:
                 handle.event_buffer.append(ev)
         self._sessions[session_id] = handle
+        # M9 subsession：让 session 能透传自身 handle/registry 给后台 subagent spawn。
+        handle.registry = self
+        session.daemon_handle = handle
+        session.daemon_registry = self
         return handle
 
     def attach(self, conn: ConnLike, project_root: str, session_id: str) -> SessionHandle | None:
@@ -160,6 +178,10 @@ class SessionRegistry:
                 handle = self.restore(session_id, sess, project_root)
         if handle is None:
             return None
+        # 冷启动恢复（restore_factory → restore）得到的句柄 transport 为 None；此处补齐，
+        # 否则历史会话 task.send / command 会报 no_transport，无法继续对话（M9 多项目）。
+        if handle.transport is None and self._transport_factory is not None:
+            handle.transport = self._transport_factory(handle)
         if handle.attached_conn is not None and handle.attached_conn is not conn:
             old = handle.attached_conn
             handle.attached_conn = None
@@ -188,6 +210,35 @@ class SessionRegistry:
         """切换 = 先 detach 当前，再 attach 目标。"""
         self.detach(conn)
         return self.attach(conn, project_root, session_id)
+
+    # ------------------------------------------------------------------ #
+    # M9 subsession：子会话（后台 subagent 实时展示）索引与生命周期
+    # ------------------------------------------------------------------ #
+    def register_subsession(self, parent_id: str, handle: SessionHandle) -> None:
+        """把子会话 handle 登记到父会话下（父清理时级联销毁）。"""
+        parent = self._sessions.get(parent_id)
+        if parent is not None:
+            parent.children.add(handle.session_id)
+        self._subsessions[handle.session_id] = handle
+
+    def get_subsession(self, sid: str) -> SessionHandle | None:
+        """按 id 取子会话 handle（daemon 路由/回放用）。"""
+        return self._subsessions.get(sid)
+
+    def unregister_subsession(self, sid: str) -> None:
+        """注销子会话（调用方负责其事件流生命周期）。"""
+        handle = self._subsessions.pop(sid, None)
+        if handle is not None and handle.parent_id is not None:
+            parent = self._sessions.get(handle.parent_id)
+            if parent is not None:
+                parent.children.discard(sid)
+
+    def cascade_remove(self, parent_id: str) -> None:
+        """移除父会话并级联销毁其所有子会话（防止 subsession handle 泄漏）。"""
+        parent = self._sessions.pop(parent_id, None)
+        if parent is not None:
+            for cid in list(parent.children):
+                self._subsessions.pop(cid, None)
 
     def list_info(self, project_root: str | None = None) -> list[dict]:
         """会话清单（供 ``session_list`` 响应）。

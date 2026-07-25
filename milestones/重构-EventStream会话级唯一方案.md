@@ -234,3 +234,24 @@
 2. `tests/unit/test_model.py::test_settings_llm_defaults`：
    - **根因**：本机 `~/.agent/settings.yaml`（用户级配置）含真实 `api_key`，`Settings` 读取用户级 YAML 是既定特性；测试只隔离了 `AGENT_PROJECT_ROOT`、未隔离 `AGENT_USER_CONFIG_DIR`，导致 `s.llm.api_key != ""` 断言失败（环境脆弱性，非代码 bug）。
    - **修复**：测试同时隔离 `AGENT_USER_CONFIG_DIR` 与 `AGENT_PROJECT_ROOT` 到不存在的临时目录，真正"无配置"验证默认值。
+
+### Step C（已完成，待提交）
+- 全量回归验证（Step B/D 改动面 + pre-existing 修复一并复核）：
+  - Python：`pytest -q` → **446 passed, 0 failed, 5 deselected**（443 基线 + 3 个 Step D 新增 `test_subsession.py`）。
+  - 前端：`npx vitest run` → **10 files / 49 passed**（含此前 4 个失败的 `client.test.ts`，修复见下）。
+  - 类型：`npx tsc --noEmit` 零错误。
+  - 质量门：`ruff check .` 全绿（修复 `subagent.py` 的 `SessionHandle/SessionRegistry` 改用 `TYPE_CHECKING` 导入）、`ruff format --check .` 全绿（顺带格式化 `events.py`、两个 pre-existing 未格式化测试文件）。
+- 预存前端失败 `desktop/src/protocol/client.test.ts`（4 例）：根因 `FakeWebSocket` 构造未置 `readyState=1`，client 的 `readyState === WS_OPEN` 发送守卫拦截全部消息 → `sentEnvelope(0)` 解析 `undefined`。修复：构造时在 `queueMicrotask` 内 `onopen` 前置 `this.readyState = 1`。
+
+### Step D（子 agent 实时展示：独立 subsession，已完成，待提交）
+- 实施要点（MVP：复用父 `attached_conn` 多路复用，不引入多连接路由）：
+  - **协议层** `desktop/src/protocol/`：`types.ts` 的 `AgentEvent` 增 `subsession_id?: string | null`；`client.ts` `dispatch` 在 EVENT 分支注入 `ev.subsession_id = msg.payload['subsession_id']` 再派发。
+  - **daemon 层** `agent/daemon/`：
+    - `registry.py`：`SessionHandle` 增 `parent_id` / `children: set[str]` / `registry`；`SessionRegistry` 增 `_subsessions` + `register_subsession` / `get_subsession` / `unregister_subsession` / `cascade_remove`；`new()`/`restore()` 注入 `handle.registry` 与 `session.daemon_handle`/`session.daemon_registry`。
+    - `bridge.py`：新增 `SubsessionBridgeTransport(BridgeTransport)`，构造持 `parent_handle, handle`；覆写 `_send`（经 `parent_handle.attached_conn` 发，session=父 id）与 `_on_event`（写 `handle.event_buffer` 并实时转发 EVENT 带 `subsession_id`）。
+    - `server.py`：`_replay` 在父 `event_buffer` 回放后，若 `handle.registry` 存在则遍历 `handle.children` 逐 subsession 回放（每条带 `subsession_id`）。
+  - **subagent 层** `agent/subagent.py`：`spawn` 增 `parent_handle` / `registry` 形参；daemon 模式且二者非 `None` 时建 `sub_id = f"{parent_id}/sub_{name}_{depth}_{uuid6}"`、`register_subsession`、`sub_stream = EventStream()`、`sub_transport = SubsessionBridgeTransport(...)`，`loop.run(stream=sub_stream, transport=sub_transport)`；非 daemon 保持 `_SubAgentTransport`/`_SubAgentTuiTransport` 本地渲染（向后兼容）。`spawn` 形参处用 `TYPE_CHECKING` 导入类型，运行时用函数内局部导入 `_SubHandle`。
+  - **前端层** `desktop/src/features/obs/BackgroundAgents.tsx`（整文件改写）：订阅 `client.onEvent`，按 `subsession_id` 分桶，每 subsession 经 `buildChatModel(t.events)` + `MessageList` 实时渲染文本/工具流；保留 notify 状态点（RE_START/RE_DONE/RE_BG_LINE）。导入 `buildChatModel`（`../chat/useEventReducer`）与 `type AgentEvent`（`../../protocol/types`）修正此前 TS2459。
+- 验收单测：`tests/unit/test_subsession.py` 新增 3 例（`test_subsession_transport_forwards_with_subsession_id` / `test_subsession_registry_links_parent_children` / `test_replay_includes_subsession_events`）。
+- 验收（对照 D.5）：`pytest -q` + `vitest run` 全绿；子 agent 事件经父连接实时带 `subsession_id` 到达前端、按 id 分桶互不串；CLI 模式行为不变；`_replay` 恢复 subsession 历史。
+- 注意：`subsession` 此前零实现（agent/ 与 desktop/ 全仓 0 命中），本次为从零落地，未与既有 M9 桌面改造冲突。

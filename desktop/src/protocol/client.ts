@@ -66,6 +66,11 @@ export class DaemonClient {
   private readonly eventHandlers = new Set<EventHandler>()
   private readonly closeHandlers = new Set<CloseHandler>()
 
+  /** 连接尚未 OPEN 时缓存待发消息，onOpen 后统一 flush（避免 CONNECTING 态 send 抛错）。 */
+  private outbox: Array<{ type: MsgType; payload: Record<string, unknown>; opts: { id?: string; session?: string } }> = []
+
+  private static readonly WS_OPEN = 1
+
   constructor(wsUrl: string, opts: DaemonClientOptions = {}) {
     this.wsUrl = wsUrl
     this.token = opts.token ?? ''
@@ -97,6 +102,8 @@ export class DaemonClient {
         if (this.currentSessionId) {
           this.attach(this.currentSessionId, this.currentProjectRoot)
         }
+        // 连接就绪后把缓存的待发消息（hello/attach 之后的业务请求）依次发出。
+        this.flush()
         resolve()
       }
       const onError = (ev: unknown): void => {
@@ -137,6 +144,7 @@ export class DaemonClient {
     this.manualClose = true
     this.clearReconnectTimer()
     this.clearConnectTimer()
+    this.outbox = []
     if (this.ws) {
       try {
         this.ws.close()
@@ -208,18 +216,37 @@ export class DaemonClient {
   // 收发
   // --------------------------------------------------------------------------- //
 
+  /** 发送消息：socket 已 OPEN 时立即发送，否则缓存到 outbox 待 onOpen 后 flush。 */
   private send(
     type: MsgType,
     payload: Record<string, unknown>,
     opts: { id?: string; session?: string } = {},
   ): void {
-    if (!this.ws) {
-      throw new Error('尚未连接 daemon，请先 connect()')
+    if (this.ws && this.ws.readyState === DaemonClient.WS_OPEN) {
+      this.rawSend(type, payload, opts)
+    } else {
+      this.outbox.push({ type, payload, opts })
     }
+  }
+
+  /** 底层发送（调用前需保证 ws 已 OPEN）。 */
+  private rawSend(
+    type: MsgType,
+    payload: Record<string, unknown>,
+    opts: { id?: string; session?: string },
+  ): void {
     const env: Envelope = { type, payload }
     if (opts.id !== undefined) env.id = opts.id
     if (opts.session !== undefined) env.session = opts.session
-    this.ws.send(JSON.stringify(env))
+    this.ws!.send(JSON.stringify(env))
+  }
+
+  /** 连接就绪后把 outbox 中的缓存消息依次发出（FIFO，保持 hello/attach 先于业务请求）。 */
+  private flush(): void {
+    if (!this.ws || this.ws.readyState !== DaemonClient.WS_OPEN) return
+    const pending = this.outbox
+    this.outbox = []
+    for (const m of pending) this.rawSend(m.type, m.payload, m.opts)
   }
 
   private dispatch(raw: string): void {
@@ -237,6 +264,9 @@ export class DaemonClient {
       if (evRaw !== undefined) {
         try {
           const ev = parseEvent(evRaw)
+          // M9 subsession：把事件归属的子会话 id 注入（顶层会话事件无此字段）。
+          const sid = msg.payload['subsession_id']
+          if (typeof sid === 'string') ev.subsession_id = sid
           for (const h of this.eventHandlers) h(ev)
         } catch {
           /* 非法 event 忽略 */
@@ -349,7 +379,7 @@ export class DaemonClient {
     const payload: Record<string, unknown> = { project_root: projectRoot ?? this.projectRoot ?? '' }
     if (sessionId !== undefined) payload.session_id = sessionId
     const env = await this.requestResponse('trace_list', payload)
-    return env.payload as TraceListResponse
+    return env.payload as unknown as TraceListResponse
   }
 
   /** 取单条 trace 的 span 树（traceId == session_id）。 */
@@ -358,6 +388,6 @@ export class DaemonClient {
       project_root: projectRoot ?? this.projectRoot ?? '',
       trace_id: traceId,
     })
-    return env.payload as TraceTreeResponse
+    return env.payload as unknown as TraceTreeResponse
   }
 }

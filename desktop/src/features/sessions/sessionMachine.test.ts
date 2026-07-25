@@ -1,10 +1,6 @@
 import { describe, it, expect } from 'vitest'
-import {
-  initialState,
-  sessionsReducer,
-  type AgentEvent,
-  type SessionsState,
-} from './sessionMachine'
+import { initialState, sessionsReducer, type SessionsState } from './sessionMachine'
+import type { AgentEvent } from '../../protocol/types'
 
 function ev(seq: number, type: AgentEvent['type'] = 'text'): AgentEvent {
   return { seq, type, ts: seq }
@@ -59,7 +55,7 @@ describe('sessionsReducer', () => {
     expect(s.tabs[0].name).toBe('会话X')
   })
 
-  it('replay 期间累积，replayEnd 整体替换 events', () => {
+  it('replay 期间不追加（累积在前端 buffer），replayEnd 整体替换 events', () => {
     let s = sessionsReducer(initialState('/p'), {
       type: 'sessionCreated',
       id: 'x',
@@ -68,10 +64,9 @@ describe('sessionsReducer', () => {
     })
     s = sessionsReducer(s, { type: 'replayStart' })
     expect(s.replaying).toBe(true)
-    // 期间收到几条事件（实时不应追加）
-    s = sessionsReducer(s, { type: 'replayEvent', event: ev(0) })
-    s = sessionsReducer(s, { type: 'replayEvent', event: ev(1) })
-    expect(s.tabs[0].events).toHaveLength(2)
+    // 期间收到事件【不应】追加到 tab.events（累积改由前端 ReplayBuffer 负责），
+    // 否则会与 replayEnd 的整体替换叠加，导致历史重复 / 越来越多。
+    expect(s.tabs[0].events).toEqual([])
     // replay 结束：用历史整体替换
     const history = [ev(0), ev(1), ev(2)]
     s = sessionsReducer(s, { type: 'replayEnd', events: history })

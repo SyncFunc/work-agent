@@ -22,10 +22,7 @@ export function SessionList({ list, activeId, projectRoot, onOpen, onCreate, onF
       </div>
       {list.length === 0 ? (
         <div style={{ padding: 12, color: '#999', fontSize: 13 }}>
-          当前项目（<code>{projectRoot || '—'}</code>）无会话，
-          <button onClick={onCreate} style={{ marginLeft: 6 }}>
-            新建会话
-          </button>
+          当前项目（<code>{projectRoot || '—'}</code>）无会话，点击上方「+ 新建」创建。
         </div>
       ) : (
         <ul style={{ listStyle: 'none', margin: 0, padding: 0 }}>

@@ -252,9 +252,7 @@ class EventStream:
         """
         capped = EventStream(maxlen=maxlen)
         recent = (
-            self._events[-maxlen:]
-            if maxlen and len(self._events) > maxlen
-            else list(self._events)
+            self._events[-maxlen:] if maxlen and len(self._events) > maxlen else list(self._events)
         )
         for ev in recent:
             capped._events.append(ev)

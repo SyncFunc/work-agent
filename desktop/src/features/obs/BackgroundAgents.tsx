@@ -1,13 +1,22 @@
-// BackgroundAgents：展示后台子 agent 状态（运行中/完成）。
-// 数据源：notify 中的后台 Subagent 启动/完成通知 + 手动 /bg 刷新。
+// BackgroundAgents：展示后台子 agent 状态（运行中/完成）+ 实时事件流。
+//
+// M9 subsession：daemon 模式下，后台 subagent 走独立 subsession，其事件经父连接多路复用、
+// 携带 subsession_id 实时到达。本组件按 subsession_id 分桶，复用主会话的 buildChatModel /
+// MessageList 实时渲染子 agent 的文本/工具流（而非仅「已启动/已完成」两点）。
+// CLI 模式无 subsession（子 agent 用本地 transport），仍由 notify 状态点兜底展示。
 
 import { useEffect, useState } from 'react'
 import { DaemonClient } from '../../protocol/client'
+import { buildChatModel } from '../chat/useEventReducer'
+import type { AgentEvent } from '../../protocol/types'
+import { MessageList } from '../chat/MessageList'
 
 interface BgTask {
   id: string
   agent: string
   status: 'running' | 'done'
+  /** M9 subsession：该子会话累积的事件流（实时渲染用）。 */
+  events: AgentEvent[]
 }
 
 interface Props {
@@ -18,77 +27,131 @@ const RE_START = /后台 Subagent \[(.+?)\] 已启动（task_id: (.+?)）/
 const RE_DONE = /后台 Subagent \[(.+?)\] 已完成/
 const RE_BG_LINE = /^\s*(bg_[0-9a-f]+):\s*(✅ 已完成|🔄 运行中)/
 
-function upsert(tasks: BgTask[], t: BgTask): BgTask[] {
-  const idx = tasks.findIndex((x) => x.id === t.id)
-  if (idx < 0) return [...tasks, t]
-  const next = tasks.slice()
-  next[idx] = { ...next[idx], ...t }
-  return next
+/** 从 subsession_id（格式 `<parent>/sub_<agent>_<depth>_<uuid>`）解析 agent 名。 */
+function agentFromSubId(subId: string): string {
+  const m = subId.match(/sub_(.+)_(\d+)_[0-9a-f]+$/)
+  return m ? m[1] : subId
+}
+
+function upsert(tasks: Record<string, BgTask>, t: BgTask): Record<string, BgTask> {
+  return { ...tasks, [t.id]: t }
 }
 
 export function BackgroundAgents({ client }: Props) {
-  const [tasks, setTasks] = useState<BgTask[]>([])
+  const [tasks, setTasks] = useState<Record<string, BgTask>>({})
 
   useEffect(() => {
     if (!client) return
-    const off = client.onMessage('notify', (env) => {
+
+    // M9 subsession：实时累积各子会话事件流。
+    const offEv = client.onEvent((ev) => {
+      const sub = ev.subsession_id
+      if (typeof sub !== 'string' || !sub) return
+      setTasks((prev) => {
+        const existing = prev[sub]
+        const events = existing ? [...existing.events, ev] : [ev]
+        return upsert(prev, {
+          id: sub,
+          agent: agentFromSubId(sub),
+          status: 'running',
+          events,
+        })
+      })
+    })
+
+    // notify 状态点：保留旧行为（CLI 模式占位 / daemon 模式补全完成态）。
+    const offMsg = client.onMessage('notify', (env) => {
       const msg = String((env.payload as { message?: string }).message ?? '')
-      const start = msg.match(RE_START)
-      if (start) {
-        setTasks((prev) => upsert(prev, { id: start[2], agent: start[1], status: 'running' }))
-        return
-      }
       const done = msg.match(RE_DONE)
       if (done) {
-        // 完成通知不含 task_id，按 agent 名把最近仍在运行的任务标记完成（尽力而为）。
-        setTasks((prev) =>
-          prev.map((t) => (t.agent === done[1] && t.status === 'running' ? { ...t, status: 'done' } : t)),
-        )
+        // 完成通知不含 subsession_id，按 agent 名把最近仍在运行的子会话标记完成（尽力）。
+        setTasks((prev) => {
+          const next = { ...prev }
+          for (const k of Object.keys(next)) {
+            const t = next[k]
+            if (t.agent === done[1] && t.status === 'running') next[k] = { ...t, status: 'done' }
+          }
+          return next
+        })
+        return
+      }
+      const start = msg.match(RE_START)
+      if (start) {
+        // 仅当尚无该子会话实时事件时补占位（避免与 subsession 实时流重复）。
+        setTasks((prev) => (prev[start[2]] ? prev : upsert(prev, {
+          id: start[2],
+          agent: start[1],
+          status: 'running',
+          events: [],
+        })))
         return
       }
       const line = msg.match(RE_BG_LINE)
       if (line) {
-        setTasks((prev) =>
-          upsert(prev, { id: line[1], status: line[2].includes('已完成') ? 'done' : 'running' }),
-        )
+        setTasks((prev) => (prev[line[1]] ? prev : upsert(prev, {
+          id: line[1],
+          agent: line[1],
+          status: line[2].includes('已完成') ? 'done' : 'running',
+          events: [],
+        })))
       }
     })
-    return off
+
+    return () => {
+      offEv()
+      offMsg()
+    }
   }, [client])
 
   const refresh = (): void => {
     client?.command('bg')
   }
 
+  const list = Object.values(tasks)
+
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px' }}>
-        <span style={{ fontSize: 12, color: '#666' }}>后台子 Agent ({tasks.length})</span>
+        <span style={{ fontSize: 12, color: '#666' }}>后台子 Agent ({list.length})</span>
         <button type="button" onClick={refresh} style={{ fontSize: 12 }}>
           刷新 (/bg)
         </button>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 8px', fontSize: 12 }}>
-        {tasks.length === 0 ? (
+        {list.length === 0 ? (
           <p style={{ color: '#999' }}>暂无后台任务</p>
         ) : (
-          tasks.map((t) => (
+          list.map((t) => (
             <div
               key={t.id}
               style={{
                 display: 'flex',
-                gap: 6,
-                alignItems: 'center',
-                padding: '3px 0',
+                flexDirection: 'column',
+                gap: 4,
+                padding: '6px 0',
                 borderBottom: '1px solid #f0f0f0',
               }}
             >
-              <span style={{ fontSize: 14 }}>{t.status === 'running' ? '🔄' : '✅'}</span>
-              <span style={{ fontWeight: 600 }}>{t.agent || '(后台)'}</span>
-              <span style={{ color: '#999' }}>{t.id}</span>
-              <span style={{ marginLeft: 'auto', color: t.status === 'running' ? '#1a73e8' : '#1e7e34' }}>
-                {t.status === 'running' ? '运行中' : '已完成'}
-              </span>
+              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
+                <span style={{ fontSize: 14 }}>{t.status === 'running' ? '🔄' : '✅'}</span>
+                <span style={{ fontWeight: 600 }}>{t.agent || '(后台)'}</span>
+                <span style={{ color: '#999' }}>{t.id}</span>
+                <span
+                  style={{
+                    marginLeft: 'auto',
+                    color: t.status === 'running' ? '#1a73e8' : '#1e7e34',
+                  }}
+                >
+                  {t.status === 'running' ? '运行中' : '已完成'}
+                </span>
+              </div>
+              {t.events.length > 0 ? (
+                <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #eee', borderRadius: 4, padding: 4 }}>
+                  <MessageList model={buildChatModel(t.events)} />
+                </div>
+              ) : (
+                <p style={{ color: '#999', margin: 0 }}>（暂无实时流）</p>
+              )}
             </div>
           ))
         )}

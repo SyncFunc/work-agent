@@ -32,7 +32,7 @@ export function useObs(client: DaemonClient | null): UseObs {
   useEffect(() => {
     if (!client) return
     const offUsage = client.onMessage('usage', (env) => {
-      const p = env.payload as UsagePayload
+      const p = env.payload as unknown as UsagePayload
       setUsage(p.usage ?? null)
       setEstimated(Boolean(p.estimated))
     })

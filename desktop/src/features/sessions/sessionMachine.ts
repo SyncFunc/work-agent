@@ -25,7 +25,6 @@ export type SessionsAction =
   | { type: 'sessionCreated'; id: string; name: string | null; projectRoot: string }
   | { type: 'attached'; id: string; projectRoot: string }
   | { type: 'replayStart' }
-  | { type: 'replayEvent'; event: AgentEvent }
   | { type: 'replayEnd'; events: AgentEvent[] }
   | { type: 'liveEvent'; event: AgentEvent }
   | { type: 'closeTab'; id: string }
@@ -62,6 +61,17 @@ function upsertTab(
   return [...tabs, tab]
 }
 
+/** 按 id 更新或追加一条会话列表项（新建会话后即时刷新左侧列表，无需等 daemon 重发 session_list）。 */
+function upsertSessionInfo(list: SessionInfo[], info: SessionInfo): SessionInfo[] {
+  const i = list.findIndex((s) => s.id === info.id)
+  if (i >= 0) {
+    const next = list.slice()
+    next[i] = { ...next[i], ...info }
+    return next
+  }
+  return [...list, info]
+}
+
 export function sessionsReducer(state: SessionsState, action: SessionsAction): SessionsState {
   switch (action.type) {
     case 'setProjectRoot':
@@ -81,6 +91,14 @@ export function sessionsReducer(state: SessionsState, action: SessionsAction): S
     case 'sessionCreated':
       return {
         ...state,
+        // 新建后即时把会话加入左侧列表（daemon 不会自动重发 session_list）。
+        list: upsertSessionInfo(state.list, {
+          id: action.id,
+          name: action.name ?? null,
+          project_root: action.projectRoot,
+          persisted: false,
+          attached: true,
+        }),
         tabs: upsertTab(state.tabs, action.id, action.projectRoot, action.name),
         activeId: action.id,
       }
@@ -92,16 +110,6 @@ export function sessionsReducer(state: SessionsState, action: SessionsAction): S
 
     case 'replayStart':
       return { ...state, replaying: true }
-
-    case 'replayEvent': {
-      if (!state.replaying || state.activeId === null) return state
-      const i = tabIndex(state.tabs, state.activeId)
-      if (i < 0) return state
-      const tab = state.tabs[i]
-      const next = state.tabs.slice()
-      next[i] = { ...tab, events: [...tab.events, action.event] }
-      return { ...state, tabs: next }
-    }
 
     case 'replayEnd': {
       if (state.activeId === null) return { ...state, replaying: false }

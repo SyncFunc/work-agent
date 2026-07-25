@@ -13,6 +13,12 @@ const api = {
     patch: Record<string, unknown>,
   ): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('settings:write', projectRoot, patch),
+  // 主进程菜单「打开项目…」选目录后推送当前项目根（见 main/index.ts 的 project:open）。
+  onProjectOpen: (cb: (root: string) => void): (() => void) => {
+    const handler = (_e: unknown, root: string): void => cb(root)
+    ipcRenderer.on('project:open', handler)
+    return () => ipcRenderer.removeListener('project:open', handler)
+  },
 }
 
 contextBridge.exposeInMainWorld('agentApi', api)

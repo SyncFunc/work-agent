@@ -431,7 +431,12 @@ async def trace_server():
     )
     srv = await create_ws_server(registry, "127.0.0.1", 0)
     port = srv.sockets[0].getsockname()[1]
-    yield {"registry": registry, "trace_store_factory": trace_store_factory, "port": port, "pr": _tmp_project()}
+    yield {
+        "registry": registry,
+        "trace_store_factory": trace_store_factory,
+        "port": port,
+        "pr": _tmp_project(),
+    }
     srv.close()
     await srv.wait_closed()
 

@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react'
 import './theme.css'
 import type { DaemonConfig } from '../shared/daemon-config'
 import { DaemonClient } from '../protocol/client'
-import { ProjectSwitcher, loadProjectRoot } from '../features/projects/ProjectSwitcher'
+import { loadProjectRoot, saveProjectRoot } from '../features/projects/ProjectSwitcher'
 import { SessionTabs } from '../features/sessions/SessionTabs'
 import { SessionList } from '../features/sessions/SessionList'
 import { useSessions } from '../features/sessions/useSessions'
@@ -39,6 +39,15 @@ export default function App(): React.ReactElement {
   // 拉取 daemon 配置并建连（DaemonClient 默认用全局 WebSocket 直连 daemon）。
   useEffect(() => {
     let cancelled = false
+    // 防护：agentApi 由 Electron preload 注入，仅存在于客户端窗口内。
+    // 若用普通浏览器直接打开 localhost:5173，这里会是 undefined，给出可读提示而非白屏。
+    if (!window.agentApi) {
+      setError(
+        '未检测到客户端桥接（agentApi）。请通过 npm run dev 弹出的 Electron 窗口打开，' +
+          '不要在普通浏览器中直接访问 localhost:5173。',
+      )
+      return
+    }
     window.agentApi
       .getDaemonConfig()
       .then((cfg) => {
@@ -73,6 +82,15 @@ export default function App(): React.ReactElement {
       cancelled = true
     }
   }, [projectRoot])
+
+  // 菜单「打开项目…」回调（主进程 dialog 选目录后推送）：持久化并切换项目根。
+  useEffect(() => {
+    const off = window.agentApi.onProjectOpen?.((root: string) => {
+      saveProjectRoot(root)
+      setProjectRoot(root)
+    })
+    return () => off?.()
+  }, [])
 
   // 全局快捷键：Ctrl/Cmd+K 打开命令面板。
   useEffect(() => {
@@ -118,7 +136,12 @@ export default function App(): React.ReactElement {
             <button type="button" onClick={() => setSettingsOpen(true)} title="设置" style={{ fontSize: 14 }}>⚙</button>
           </span>
         </h1>
-        <ProjectSwitcher projectRoot={projectRoot} onChange={setProjectRoot} />
+        <div style={{ padding: '8px 12px', borderBottom: '1px solid #eee' }}>
+          <div style={{ fontSize: 12, color: '#666' }}>当前项目</div>
+          <div style={{ fontSize: 12, wordBreak: 'break-all' }} title={projectRoot}>
+            {projectRoot || '—'}
+          </div>
+        </div>
         <SessionList
           list={sessions.state.list}
           activeId={sessions.state.activeId}
