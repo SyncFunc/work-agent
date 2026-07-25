@@ -21,37 +21,38 @@ async function boot(): Promise<void> {
   ipcMain.handle('settings:write', (_e, projectRoot: string, patch: Record<string, unknown>) =>
     writeSettings(projectRoot, patch),
   )
-  createMenu()
+  // M9.9：顶栏自绘菜单接管，移除原生菜单（避免与自绘菜单重复）。
+  Menu.setApplicationMenu(null)
+  registerWindowHandlers()
   createWindow()
 }
 
-// 自定义应用菜单：去掉 Electron 默认全套（File/Edit/View/Window/Help），仅保留所需项。
-// 「打开项目…」用原生目录选择对话框选目录，经 IPC（project:open）推送给渲染进程。
-function createMenu(): void {
-  const template: Electron.MenuItemConstructorOptions[] = [
-    {
-      label: '文件',
-      submenu: [
-        {
-          label: '打开项目…',
-          click: () => {
-            const win = mainWindow ?? BrowserWindow.getFocusedWindow()
-            if (!win) return
-            void dialog
-              .showOpenDialog(win, { properties: ['openDirectory'], title: '选择项目目录' })
-              .then((res) => {
-                if (!res.canceled && res.filePaths.length > 0) {
-                  win.webContents.send('project:open', res.filePaths[0])
-                }
-              })
-          },
-        },
-        { type: 'separator' },
-        { label: '退出', role: 'quit' },
-      ],
-    },
-  ]
-  Menu.setApplicationMenu(Menu.buildFromTemplate(template))
+// M9.9 窗口控制 + 打开文件夹：供自绘顶栏调用（frameless 窗口必须自带控制按钮）。
+function registerWindowHandlers(): void {
+  const focused = (): BrowserWindow | null =>
+    mainWindow ?? BrowserWindow.getFocusedWindow()
+  ipcMain.handle('window:minimize', () => focused()?.minimize())
+  ipcMain.handle('window:toggleMaximize', () => {
+    const w = focused()
+    if (!w) return
+    if (w.isMaximized()) w.unmaximize()
+    else w.maximize()
+  })
+  ipcMain.handle('window:close', () => focused()?.close())
+  ipcMain.handle('window:reload', () => focused()?.reload())
+  ipcMain.handle('app:quit', () => app.quit())
+  // 打开文件夹（切换工作区）：原生目录选择 → 经 project:open 推送渲染进程。
+  ipcMain.handle('window:openFolder', () => {
+    const win = focused()
+    if (!win) return
+    void dialog
+      .showOpenDialog(win, { properties: ['openDirectory'], title: '选择项目目录' })
+      .then((res) => {
+        if (!res.canceled && res.filePaths.length > 0) {
+          win.webContents.send('project:open', res.filePaths[0])
+        }
+      })
+  })
 }
 
 // preload 产物扩展名随构建格式变化（CJS→.cjs / ESM→.mjs / 旧 ESM→.js），
@@ -70,6 +71,9 @@ function createWindow(): void {
     height: 860,
     minWidth: 900,
     minHeight: 600,
+    // M9.9：frameless 自绘顶栏（去掉系统标题栏与边框）。thickFrame 在 Windows 下保留可拖拽边缘缩放。
+    frame: false,
+    thickFrame: true,
     title: 'Work Agent',
     webPreferences: {
       preload: resolvePreload(),

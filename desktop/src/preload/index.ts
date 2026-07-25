@@ -13,6 +13,25 @@ const api = {
     patch: Record<string, unknown>,
   ): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('settings:write', projectRoot, patch),
+  // M9.9：自绘顶栏窗口控制（frameless 窗口无系统按钮）。
+  minimizeWindow: (): void => {
+    void ipcRenderer.invoke('window:minimize')
+  },
+  toggleMaximizeWindow: (): void => {
+    void ipcRenderer.invoke('window:toggleMaximize')
+  },
+  closeWindow: (): void => {
+    void ipcRenderer.invoke('window:close')
+  },
+  reloadWindow: (): void => {
+    void ipcRenderer.invoke('window:reload')
+  },
+  quitApp: (): void => {
+    void ipcRenderer.invoke('app:quit')
+  },
+  openFolder: (): void => {
+    void ipcRenderer.invoke('window:openFolder')
+  },
   // 主进程菜单「打开项目…」选目录后推送当前项目根（见 main/index.ts 的 project:open）。
   onProjectOpen: (cb: (root: string) => void): (() => void) => {
     const handler = (_e: unknown, root: string): void => cb(root)

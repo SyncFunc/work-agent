@@ -1,11 +1,19 @@
-/* 整体布局：侧栏 / 主区 / 可观测面板，可伸缩可折叠，窄窗下 obs 转抽屉。 */
+/* 整体布局：顶栏 + 主体（侧栏 / 主区 / 可观测面板），可伸缩可折叠，窄窗下 obs 转抽屉。 */
 
 .wa-app {
   display: flex;
+  flex-direction: column;
   height: 100vh;
   overflow: hidden;
   background: var(--wa-bg);
   color: var(--wa-text);
+}
+
+/* 顶栏之下的主体行（侧栏 + 主区 + 可观测面板）。 */
+.wa-app__body {
+  display: flex;
+  flex: 1;
+  min-height: 0;
 }
 
 /* —— 侧栏 —— */

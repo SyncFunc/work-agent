@@ -30,3 +30,6 @@ export type { TooltipProps } from './Tooltip'
 
 export { Toast, ToastStack } from './Toast'
 export type { ToastProps, ToastStackProps, ToastData, ToastKind } from './Toast'
+
+export { TitleBar } from './TitleBar'
+export type { TitleBarProps } from './TitleBar'

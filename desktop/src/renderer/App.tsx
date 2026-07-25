@@ -18,9 +18,11 @@ import { useCommands } from '../features/command/useCommands'
 import { parseSlash } from '../features/command/parseSlash'
 import { useNotices } from '../features/notices/useNotices'
 import { ObsPanel } from '../features/obs/ObsPanel'
-import { Button, IconButton, ToastStack } from '../components'
+import { Button, IconButton, ToastStack, TitleBar } from '../components'
 import type { ToastData, ToastKind } from '../components'
 import { BarChart2, Bot, PanelLeft, Settings } from 'lucide-react'
+
+const APP_NAME = 'Work Agent'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
 
@@ -205,8 +207,24 @@ export default function App(): React.ReactElement {
 
   const inputDisabled = !active || hitlPending
 
+  // M9.9 顶栏菜单动作（真实功能）。
+  const clearCurrent = (): void => {
+    if (client && active) client.command('clear', null)
+    else pushToast('info', '当前没有打开的会话')
+  }
+  const helpPlaceholder = (): void => pushToast('info', '帮助即将上线（占位）')
+
   return (
     <div className="wa-app">
+      {/* M9.9 自绘顶栏：Logo + 应用名 + 真实功能菜单 + 窗口控制 */}
+      <TitleBar
+        appName={APP_NAME}
+        clearDisabled={!active}
+        onClear={clearCurrent}
+        onHelp={helpPlaceholder}
+      />
+
+      <div className="wa-app__body">
       {/* 侧栏：可折叠 + 可拖拽伸缩 */}
       {sidebarCollapsed ? (
         <aside className="wa-sidebar wa-sidebar--collapsed">
@@ -345,6 +363,7 @@ export default function App(): React.ReactElement {
         onApprove={hitl.resolveApprove}
       />
       <ToastStack toasts={[...noticeToasts, ...savedToasts]} onDismiss={dismissToast} />
+      </div>
     </div>
   )
 }
