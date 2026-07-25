@@ -127,13 +127,24 @@ def test_settings_llm_defaults():
     import os
     from pathlib import Path
 
-    old = os.environ.get("AGENT_PROJECT_ROOT")
-    os.environ["AGENT_PROJECT_ROOT"] = str(Path.cwd() / "nonexistent")
-    s = Settings()
-    if old is None:
-        del os.environ["AGENT_PROJECT_ROOT"]
-    else:
-        os.environ["AGENT_PROJECT_ROOT"] = old
+    # 隔离用户级与项目级配置目录：避免本机 ~/.agent/settings.yaml 的 api_key
+    # 或项目级 .agent/settings.yaml 污染「无配置」默认值断言（测试环境脆弱性）。
+    old_user = os.environ.get("AGENT_USER_CONFIG_DIR")
+    old_proj = os.environ.get("AGENT_PROJECT_ROOT")
+    isolated = str(Path.cwd() / "nonexistent_settings_root")
+    os.environ["AGENT_USER_CONFIG_DIR"] = isolated
+    os.environ["AGENT_PROJECT_ROOT"] = isolated
+    try:
+        s = Settings()
+    finally:
+        if old_user is None:
+            os.environ.pop("AGENT_USER_CONFIG_DIR", None)
+        else:
+            os.environ["AGENT_USER_CONFIG_DIR"] = old_user
+        if old_proj is None:
+            os.environ.pop("AGENT_PROJECT_ROOT", None)
+        else:
+            os.environ["AGENT_PROJECT_ROOT"] = old_proj
     assert s.llm.model == "deepseek-v4-flash"
     assert s.llm.base_url == "https://api.deepseek.com"
     assert s.llm.api_key == ""

@@ -8,6 +8,7 @@ M5.4 增强：后台 Subagent 支持——``spawn_background()`` 启动异步任
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -89,14 +90,22 @@ class Session:
 
         self.settings = settings
         self.project_root = project_root
-        # M9.0 多项目：会话工作目录 = project_root（daemon 单进程多会话，不能用全局 cwd）。
-        cwd = Path(project_root) if project_root else Path.cwd()
+        # M9.0 多项目：会话工作目录优先用显式 project_root 参数（daemon 单进程多会话，
+        # 每个会话独立项目根，不能用全局 cwd）。未传时回退 AGENT_PROJECT_ROOT 环境变量
+        # （测试/容器场景，与 scaffold_project/project_config_path 约定一致），最后回退 cwd。
+        if project_root:
+            cwd = Path(project_root)
+        else:
+            env_root = os.environ.get("AGENT_PROJECT_ROOT")
+            cwd = Path(env_root) if env_root else Path.cwd()
         self.cwd = cwd
         self.tracer = tracer
         self.trace_store: TraceStore | None = trace_store
         # M9 重构：session 持有唯一跨轮 EventStream（状态单一事实来源）。新建会话即创建空 stream，
         # resume 时由 from_store 覆盖为从 DB 重建的完整 stream；loop.run 复用之，seq 全局唯一。
-        self.event_stream: EventStream = EventStream()
+        # Step B：套用运行期内存上限（防 OOM）；持久化仍全量落盘 sqlite，历史不丢。
+        _ml = settings.context.event_stream_maxlen
+        self.event_stream: EventStream = EventStream(maxlen=_ml if _ml and _ml > 0 else None)
         # 会话级根 span：整条 session 的 trace 树锚点（所有 run 都挂在其下）。
         # tracer 为 None 时不创建（无观测路径）；否则直接 new Span 并挂到 tracer，
         # 生命周期跨多轮，不用 _span 上下文管理器（避免 per-step 关闭）。
@@ -249,10 +258,12 @@ class Session:
             session_store=store,
             project_root=project_root,
         )
-        sess.event_stream = stream
-        # 重建的消息直接用于下一轮 step；若末轮中断，rebuild_messages 已丢弃悬空
-        # assistant 并注入续跑提示，保证 messages 合法、可续跑。
+        # 重建消息必须用完整流（保证 messages 合法、可续跑，含中断检测）。
         sess.messages = rebuild_messages(stream)
+        # Step B：运行期内存上限（防 OOM）。保留最近 maxlen 条（真实 seq 续接），
+        # 完整历史仍在 sqlite（SessionStoreSink 全量落盘）。daemon 冷启动播种取最近窗口即可。
+        _ml = settings.context.event_stream_maxlen
+        sess.event_stream = stream.tail(_ml) if _ml and _ml > 0 else stream
         return sess
 
     async def step(

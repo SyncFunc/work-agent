@@ -209,3 +209,28 @@
 
 - 完成后写入：`milestones/M9-Electron桌面客户端/M9.4 或 M9.2 知识沉淀` 小节（EventStream 会话级唯一契约 + subagent 独立 stream 铁律）。
 - 追加：`knowledge/INDEX.md` 对应小节（「EventStream 是 session 唯一真相，loop.run 复用而非每轮新建」+ 子 agent 永不直接写父 session event_stream）。
+
+---
+
+## 10. 实施记录
+
+### Step A（已完成，已提交并推送）
+- commit `249460e`。核心：`loop.run` 复用外部 `stream`；`session` 持有唯一跨轮 `event_stream`；`SessionStoreSink` / `_replay` 删除 seq 改写补丁（见 §5 / §8 验收项）。
+
+### Step B（已完成，待提交）
+- 实施要点：
+  - `events.py`：`EventStream.__init__` 增加 `maxlen`（运行期内存上限）+ **独立单调 `_seq` 计数器**（与列表长度解耦，截断不影响全局 seq 唯一性，避免 Step A 消灭的 seq 重复 bug 复发）；新增 `EventStream.tail(maxlen)`（保留最近 K 条真实 seq、续写从最大 seq+1 起）。`append` 改用 `_seq` 而非 `len(_events)`；`from_json` 重建时 `_seq = max(seq)+1`。
+  - `settings.py`：`ContextConfig.event_stream_maxlen`（默认 4000；`<=0` 表示不限制，兼容旧行为）。
+  - `session.py`：新会话 `event_stream = EventStream(maxlen)`；`from_store` 用**完整流** `rebuild_messages` 后，运行期 `event_stream` 封顶为 `stream.tail(maxlen)`（完整历史仍在 sqlite，持久化不受影响）。
+- 验收单测：`tests/unit/test_event_stream_session_level.py` 追加 `test_stream_maxlen_trims_but_keeps_global_seq` / `test_stream_tail_preserves_true_seq_and_continues`。
+- 全量 `pytest -q`：**443 passed, 0 failed**（Step B 无新增回归）。
+
+### 附：修复工作树 pre-existing 的 3 个测试失败（与 EventStream 重构无关，随 Step B 一并修复）
+> 这 3 个失败在 Step A/B 之前就存在于工作树（M9 多项目改造引入），并非本次重构引入。根为明确后一并修复，使全量测试转绿。
+
+1. `tests/unit/test_cli.py::test_chat_skills_lists_and_skill_load` 与 `test_chat_skill_load_appends_message`：
+   - **根因**：M9 多项目改造把 `Session.__init__` 的 `cwd` 解析从 `Path(os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd())` 改成纯 `project_root` 参数驱动（未传时回退 `Path.cwd()`），**无意丢失了 `AGENT_PROJECT_ROOT` 环境变量的兜底**。测试用 `monkeypatch.setenv("AGENT_PROJECT_ROOT", tmp_path)` 但 `Session(..., settings)` 未传 `project_root` → `SkillLoader` 扫真实 cwd 而非 tmp_path → `get("demo")` 返回 `None`。
+   - **修复**：`Session.__init__` 在 `project_root` 未传时回退 `AGENT_PROJECT_ROOT` 环境变量（再回退 `cwd`）。daemon 路径始终显式传 `project_root`（`server.py:491/496`），参数优先，不受影响。
+2. `tests/unit/test_model.py::test_settings_llm_defaults`：
+   - **根因**：本机 `~/.agent/settings.yaml`（用户级配置）含真实 `api_key`，`Settings` 读取用户级 YAML 是既定特性；测试只隔离了 `AGENT_PROJECT_ROOT`、未隔离 `AGENT_USER_CONFIG_DIR`，导致 `s.llm.api_key != ""` 断言失败（环境脆弱性，非代码 bug）。
+   - **修复**：测试同时隔离 `AGENT_USER_CONFIG_DIR` 与 `AGENT_PROJECT_ROOT` 到不存在的临时目录，真正"无配置"验证默认值。

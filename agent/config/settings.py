@@ -134,6 +134,10 @@ class ContextConfig(BaseModel):
     session_memory_tool_calls_between: int = 3  # 两次更新最少 tool call 次数
     agents_md_path: str = "AGENTS.md"
     agents_md_enabled: bool = True
+    # M9 重构 Step B：会话 EventStream 运行期内存上限（防 OOM）。
+    # 仅限制内存驻留的 _events 窗口；持久化（sqlite）仍全量落盘，历史不丢。
+    # <=0 表示不限制（退化为无上限，兼容旧行为）。
+    event_stream_maxlen: int = 4000
 
 
 class SkillsConfig(BaseModel):

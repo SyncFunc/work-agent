@@ -1,4 +1,4 @@
-"""Step A 验收：EventStream 提升为 session 级唯一真相。
+"""Step A + Step B 验收：EventStream 提升为 session 级唯一真相，且运行期内存封顶。
 
 验证：
 - loop.run 复用外部 stream 时 seq 会话级全局单调递增（不再每轮从 0 起）。
@@ -6,6 +6,8 @@
 - resume 后重建的 event_stream 新事件 seq 接续（不多重 0 起）。
 - SessionStoreSink 不再改写 seq（落盘 seq == 内存 seq）。
 - daemon _replay 不再重编 seq，直接发送事件自带全局 seq。
+- Step B：EventStream(maxlen) 截断列表后 seq 仍单调全局唯一（不回退/复用）。
+- Step B：stream.tail(maxlen) 保留最近 K 条真实 seq，续写从最大 seq+1 起。
 """
 
 from __future__ import annotations
@@ -138,3 +140,34 @@ def test_replay_preserves_global_seq():
     ev_seqs = [p["event"]["seq"] for (t, p) in conn.sent if t == MsgType.EVENT]
     # 保持全局 seq（0,1,5,6），若被旧逻辑重编则为 0,1,2,3
     assert ev_seqs == [0, 1, 5, 6]
+
+
+def test_stream_maxlen_trims_but_keeps_global_seq():
+    """Step B：maxlen 截断后 seq 仍单调全局唯一，不因列表缩短而复用 seq。"""
+    stream = EventStream(maxlen=3)
+    for i in range(10):
+        stream.append(Event(type=EventType.TEXT, text=f"t{i}"))
+    evs = stream.all()
+    # 仅保留最近 3 条
+    assert len(evs) == 3
+    # seq 仍为全局唯一、严格递增（7,8,9），而非 0,1,2（旧 len 语义会回退）
+    assert [e.seq for e in evs] == [7, 8, 9]
+    # 继续追加，seq 续接、不重复
+    stream.append(Event(type=EventType.TEXT, text="t10"))
+    assert stream.all()[-1].seq == 10
+    assert len({e.seq for e in stream.all()}) == len(stream.all())
+
+
+def test_stream_tail_preserves_true_seq_and_continues():
+    """Step B：tail(maxlen) 保留最近 K 条真实 seq，续写从最大 seq+1 起。"""
+    full = EventStream()
+    for i in range(7):
+        full.append(Event(type=EventType.TEXT, text=f"t{i}"))  # seq 0..6
+    capped = full.tail(3)
+    assert len(capped.all()) == 3
+    assert [e.seq for e in capped.all()] == [4, 5, 6]  # 真实历史 seq 保留
+    capped.append(Event(type=EventType.TEXT, text="new"))
+    assert capped.all()[-1].seq == 7  # 续接最大 seq+1
+    # maxlen=3 触发截断：seq 4 被挤出，窗口变为 [5,6,7]；seq 仍全局唯一、无重复。
+    assert [e.seq for e in capped.all()] == [5, 6, 7]
+    assert len({e.seq for e in capped.all()}) == len(capped.all())
