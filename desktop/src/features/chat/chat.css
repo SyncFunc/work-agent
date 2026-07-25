@@ -306,10 +306,20 @@
   opacity: 0.55;
 }
 
-/* —— Diff 着色（基础，E 阶段增强行号/并排）—— */
+/* —— Diff 着色（行号 / 复制 / 并排）—— */
+.wa-diff-view {
+  position: relative;
+}
+.wa-diff-view__bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--wa-s1);
+  margin-bottom: var(--wa-s1);
+}
 .wa-diff {
   margin: 0;
-  padding: var(--wa-s2);
+  padding: var(--wa-s1) var(--wa-s2);
   overflow-x: auto;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   font-size: var(--wa-f-md);
@@ -317,6 +327,33 @@
   border: 1px solid var(--wa-border);
   border-radius: var(--wa-r-sm);
   line-height: 1.5;
+}
+.wa-diff-row {
+  display: flex;
+}
+.wa-diff--split .wa-diff-row {
+  border-bottom: 1px solid var(--wa-border);
+}
+.wa-diff__num {
+  flex: none;
+  user-select: none;
+  text-align: right;
+  padding-right: var(--wa-s2);
+  min-width: 3ch;
+  color: var(--wa-text-faint);
+}
+.wa-diff-line {
+  flex: 1;
+  white-space: pre;
+  min-width: 0;
+}
+.wa-diff--split .wa-diff-cell {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+.wa-diff--split .wa-diff-cell + .wa-diff-cell {
+  border-left: 1px solid var(--wa-border);
 }
 .wa-diff-add {
   color: var(--wa-success);

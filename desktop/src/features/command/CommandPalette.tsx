@@ -2,17 +2,17 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { CommandDef } from './useCommands'
-import { Button, Modal } from '../../components'
+import { Modal } from '../../components'
 import {
   Activity,
   Bot,
   CheckCheck,
   ClipboardList,
-  Compress,
   GitFork,
   HelpCircle,
   History,
   Layers,
+  Minimize2,
   PlayCircle,
   Repeat,
   Search,
@@ -23,7 +23,7 @@ import {
 
 const ICONS: Record<string, React.ReactNode> = {
   context: <Activity size={15} />,
-  compact: <Compress size={15} />,
+  compact: <Minimize2 size={15} />,
   plan: <ClipboardList size={15} />,
   skills: <Sparkles size={15} />,
   agents: <Bot size={15} />,
