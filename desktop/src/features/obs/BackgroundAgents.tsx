@@ -7,9 +7,9 @@
 
 import { useEffect, useState } from 'react'
 import { DaemonClient } from '../../protocol/client'
-import { buildChatModel } from '../chat/useEventReducer'
+import { agentFromSubId, buildChatModel } from '../chat/useEventReducer'
 import type { AgentEvent } from '../../protocol/types'
-import { MessageList } from '../chat/MessageList'
+import { SubagentCard } from '../chat/SubagentCard'
 
 interface BgTask {
   id: string
@@ -26,12 +26,6 @@ interface Props {
 const RE_START = /后台 Subagent \[(.+?)\] 已启动（task_id: (.+?)）/
 const RE_DONE = /后台 Subagent \[(.+?)\] 已完成/
 const RE_BG_LINE = /^\s*(bg_[0-9a-f]+):\s*(✅ 已完成|🔄 运行中)/
-
-/** 从 subsession_id（格式 `<parent>/sub_<agent>_<depth>_<uuid>`）解析 agent 名。 */
-function agentFromSubId(subId: string): string {
-  const m = subId.match(/sub_(.+)_(\d+)_[0-9a-f]+$/)
-  return m ? m[1] : subId
-}
 
 function upsert(tasks: Record<string, BgTask>, t: BgTask): Record<string, BgTask> {
   return { ...tasks, [t.id]: t }
@@ -121,39 +115,33 @@ export function BackgroundAgents({ client }: Props) {
         {list.length === 0 ? (
           <p style={{ color: '#999' }}>暂无后台任务</p>
         ) : (
-          list.map((t) => (
-            <div
-              key={t.id}
-              style={{
-                display: 'flex',
-                flexDirection: 'column',
-                gap: 4,
-                padding: '6px 0',
-                borderBottom: '1px solid #f0f0f0',
-              }}
-            >
-              <div style={{ display: 'flex', gap: 6, alignItems: 'center' }}>
-                <span style={{ fontSize: 14 }}>{t.status === 'running' ? '🔄' : '✅'}</span>
-                <span style={{ fontWeight: 600 }}>{t.agent || '(后台)'}</span>
-                <span style={{ color: '#999' }}>{t.id}</span>
-                <span
-                  style={{
-                    marginLeft: 'auto',
-                    color: t.status === 'running' ? '#1a73e8' : '#1e7e34',
-                  }}
-                >
-                  {t.status === 'running' ? '运行中' : '已完成'}
-                </span>
+          list.map((t) => {
+            // 同一任务的事件共享同一 subsession_id → buildChatModel 归约为单个 SubagentBlock。
+            const model = buildChatModel(t.events)
+            const sub = model.blocks[0]
+            const subBlock = sub && sub.type === 'subagent' ? sub : null
+            return (
+              <div key={t.id}>
+                {subBlock ? (
+                  <SubagentCard block={subBlock} status={t.status} />
+                ) : (
+                  <div
+                    style={{
+                      padding: '6px 8px',
+                      border: '1px solid #e0e0e0',
+                      borderRadius: 6,
+                      background: '#fafafa',
+                      fontSize: 13,
+                      color: '#888',
+                    }}
+                  >
+                    <span style={{ fontFamily: 'monospace' }}>subagent:{t.agent || '(后台)'}</span>{' '}
+                    · {t.status === 'running' ? '运行中' : '已完成'}（暂无实时流）
+                  </div>
+                )}
               </div>
-              {t.events.length > 0 ? (
-                <div style={{ maxHeight: 220, overflowY: 'auto', border: '1px solid #eee', borderRadius: 4, padding: 4 }}>
-                  <MessageList model={buildChatModel(t.events)} />
-                </div>
-              ) : (
-                <p style={{ color: '#999', margin: 0 }}>（暂无实时流）</p>
-              )}
-            </div>
-          ))
+            )
+          })
         )}
       </div>
     </div>

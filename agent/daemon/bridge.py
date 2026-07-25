@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from agent.core.events import EventStream
     from agent.core.loop import AgentResult
     from agent.core.plan import PlanStep
-    from agent.daemon.registry import SessionHandle
+    from agent.daemon.registry import ConnLike, SessionHandle
 
 
 def _action_to_dict(a: Action) -> dict[str, Any]:
@@ -187,8 +187,29 @@ class SubsessionBridgeTransport(BridgeTransport):
         super().__init__(handle)
         self.parent_handle = parent_handle
 
+    def _resolve_conn(self) -> ConnLike | None:
+        """解析实际发送连接：沿父链向上找最近一个已 attach 的会话句柄。
+
+        子会话自身从不被客户端 attach（attached_conn 恒为 None），其事件须复用父会话
+        当前连接。嵌套 subsession 时沿 parent_id 逐层上溯，取到真实连接（兼容父会话
+        中途 detach/switch 后连接变更）。
+        """
+        h: SessionHandle | None = self.parent_handle
+        seen: set[str] = set()
+        while h is not None:
+            if h.attached_conn is not None:
+                return h.attached_conn
+            if h.parent_id and h.registry is not None and h.session_id not in seen:
+                seen.add(h.session_id)
+                h = h.registry._subsessions.get(h.parent_id) or h.registry._sessions.get(
+                    h.parent_id
+                )
+            else:
+                break
+        return None
+
     def _send(self, mtype: MsgType, payload: dict[str, Any], *, id: str | None = None) -> None:
-        conn = self.parent_handle.attached_conn
+        conn = self._resolve_conn()
         if conn is None:
             return
         self._track(
@@ -201,7 +222,7 @@ class SubsessionBridgeTransport(BridgeTransport):
         # 仅非 transient 事件进回放缓冲（与父会话一致）。
         if not ev.transient:
             self.handle.event_buffer.append(ev)
-        conn = self.parent_handle.attached_conn
+        conn = self._resolve_conn()
         if conn is not None:
             self._track(
                 asyncio.ensure_future(

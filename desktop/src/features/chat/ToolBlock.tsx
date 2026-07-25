@@ -6,8 +6,15 @@ import { DiffView, isDiffLike } from './DiffView'
 
 const OUTPUT_LIMIT = 2000
 
-export function ToolBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
-  const [expanded, setExpanded] = useState(true)
+export function ToolBlock({
+  block,
+  defaultCollapsed = false,
+}: {
+  block: ToolBlockModel
+  /** 默认折叠（子 agent 块内默认折叠，避免刷屏；主会话默认展开）。 */
+  defaultCollapsed?: boolean
+}): React.ReactElement {
+  const [expanded, setExpanded] = useState(!defaultCollapsed)
   const [showAll, setShowAll] = useState(false)
 
   const hasFinalArgs = block.args !== null

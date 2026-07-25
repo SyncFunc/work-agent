@@ -63,6 +63,17 @@ export interface PlanBlock {
   note?: string | null
 }
 
+/** 子 agent（subsession）独立块：在主聊天区以卡片呈现，内部是它自己的事件归约视图。 */
+export interface SubagentBlock {
+  key: string
+  type: 'subagent'
+  /** 子会话 id（subsession_id），用于前端分桶与历史重建。 */
+  subsessionId: string
+  /** 从 subsession_id 解析出的 agent 名（用于顶栏 `subagent:<name>`）。 */
+  name: string
+  blocks: ChatBlock[]
+}
+
 export type ChatBlock =
   | TextBlock
   | ToolBlock
@@ -70,17 +81,28 @@ export type ChatBlock =
   | ErrorBlock
   | ClarifyBlock
   | PlanBlock
+  | SubagentBlock
 
 export interface ChatModel {
   blocks: ChatBlock[]
+}
+
+/** 从 subsession_id（格式 `<parent>/sub_<agent>_<depth>_<uuid>`）解析 agent 名。 */
+export function agentFromSubId(subId: string): string {
+  const m = subId.match(/sub_(.+)_(\d+)_[0-9a-f]+$/)
+  return m ? m[1] : subId
 }
 
 function newTextBlock(): TextBlock {
   return { key: '', type: 'text', role: 'assistant', content: '', reasoning: '', final: false }
 }
 
-/** 把事件序列归约为可渲染的视图模型（纯函数）。 */
-export function buildChatModel(events: AgentEvent[]): ChatModel {
+/** 把一段「同一来源（父会话 或 同一 subsession）」的事件归约为可渲染的块列表（纯函数）。
+
+``prefix`` 用于保证跨分段块 key 全局唯一（不同分段各用不同前缀，避免 React key 碰撞）。
+详见 ``buildChatModel`` 的分段逻辑。
+*/
+function reduceEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
   const blocks: ChatBlock[] = []
   // 全局块序号：每个块分配唯一 key，杜绝跨轮 seq 碰撞导致的 React 复用错乱。
   let n = 0
@@ -92,7 +114,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   const toolById = new Map<string, ToolBlock>()
   let toolUseSeen = 0
   // 本轮是否出现过流式 TEXT（内容唯一来源）。
-  // 用于约束 decision.text 仅在本轮「完全无流式文本」时才兜底填入，避免与流式 TEXT 累积成两个
+  // 用于约束 decision.text 仅在本轮「完全无流式 TEXT」时才兜底填入，避免与流式 TEXT 累积成两个
   // 相同内容的气泡（重复渲染）。
   let hasStreamedText = false
   // decision.text 仅作兜底：仅当本轮无流式 TEXT 时消费一次，且消费后立即清空，
@@ -102,7 +124,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   const flushText = (): void => {
     // 1) 优先落已累积的流式气泡（内容唯一来源）。
     if (cur && (cur.content || cur.reasoning)) {
-      cur.key = `t${n++}`
+      cur.key = `${prefix}t${n++}`
       blocks.push(cur)
       cur = null
     } else if (!hasStreamedText && lastDecisionText) {
@@ -110,7 +132,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
       //    消费后立即清空，杜绝跨轮残留重复。
       cur = newTextBlock()
       cur.content = lastDecisionText
-      cur.key = `t${n++}`
+      cur.key = `${prefix}t${n++}`
       blocks.push(cur)
       cur = null
     }
@@ -122,7 +144,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
     let tb = toolOrder[index]
     if (!tb) {
       tb = {
-        key: `tool-${n++}`,
+        key: `${prefix}tool-${n++}`,
         type: 'tool',
         toolCallId: null,
         name: 'tool',
@@ -184,7 +206,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
       }
       case 'error': {
         flushText()
-        blocks.push({ key: `b${n++}`, type: 'error', text: ev.error ?? '' })
+        blocks.push({ key: `${prefix}b${n++}`, type: 'error', text: ev.error ?? '' })
         break
       }
       case 'user': {
@@ -197,7 +219,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         toolUseSeen = 0
         hasStreamedText = false
         lastDecisionText = null
-        blocks.push({ key: `b${n++}`, type: 'user', text: ev.text ?? '' })
+        blocks.push({ key: `${prefix}b${n++}`, type: 'user', text: ev.text ?? '' })
         break
       }
       case 'tool_call_delta': {
@@ -231,7 +253,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
           tb.running = false
         } else {
           blocks.push({
-            key: `tool-${n++}`,
+            key: `${prefix}tool-${n++}`,
             type: 'tool',
             toolCallId: id,
             name: 'tool',
@@ -245,14 +267,14 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
       }
       case 'clarify': {
         flushText()
-        blocks.push({ key: `b${n++}`, type: 'clarify', questions: ev.questions ?? [] })
+        blocks.push({ key: `${prefix}b${n++}`, type: 'clarify', questions: ev.questions ?? [] })
         break
       }
       case 'plan':
       case 'plan_progress': {
         flushText()
         blocks.push({
-          key: `b${n++}`,
+          key: `${prefix}b${n++}`,
           type: 'plan',
           planPath: ev.plan_path ?? null,
           stepId: ev.plan_update?.step_id,
@@ -267,7 +289,42 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   }
   // 收尾残留文本气泡（事件流在文本中途结束的情况）。
   flushText()
-  return { blocks }
+  return blocks
+}
+
+/** 把事件序列归约为可渲染的视图模型（纯函数）。
+
+按 ``subsession_id`` 分段：连续同源（同一 subsession 或父会话）的事件归约为一组块；
+父会话事件直接展开为顶层块，子会话事件则包裹成独立的 ``SubagentBlock``（主聊天区独立卡片）。
+这样工具调用拉起的子 agent、后台子 agent 都以独立块呈现，且与父会话事件保持时间顺序。
+*/
+export function buildChatModel(events: AgentEvent[]): ChatModel {
+  const top: ChatBlock[] = []
+  let seg = 0
+  let i = 0
+  while (i < events.length) {
+    const sub = events[i].subsession_id ?? null
+    const segEvents: AgentEvent[] = []
+    let j = i
+    while (j < events.length && (events[j].subsession_id ?? null) === sub) {
+      segEvents.push(events[j])
+      j++
+    }
+    if (sub == null) {
+      top.push(...reduceEvents(segEvents, `p${seg}-`))
+    } else {
+      top.push({
+        key: `sub-${sub}`,
+        type: 'subagent',
+        subsessionId: sub,
+        name: agentFromSubId(sub),
+        blocks: reduceEvents(segEvents, `s${seg}-`),
+      })
+    }
+    seg++
+    i = j
+  }
+  return { blocks: top }
 }
 
 /** React 包装：memo 化归约（events 引用不变则不重算）。 */

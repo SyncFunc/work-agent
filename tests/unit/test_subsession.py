@@ -15,10 +15,14 @@ import asyncio
 
 import pytest
 
+from agent.config.settings import Settings
 from agent.core.events import Event, EventStream, EventType
+from agent.core.model import Decision, FakeModel
 from agent.daemon.bridge import SubsessionBridgeTransport
 from agent.daemon.protocol import MsgType
 from agent.daemon.registry import SessionHandle, SessionRegistry
+from agent.runtime.registry import ToolRegistry
+from agent.subagent import BUILTIN_GENERAL, SubagentSpawner
 
 
 class FakeConn:
@@ -97,3 +101,39 @@ async def test_replay_includes_subsession_events():
     subs = [m for m in events if m["payload"].get("subsession_id") == "p1/sub_x_0_abc"]
     assert subs, "应回放子会话事件"
     assert subs[-1]["payload"]["event"]["text"] == "child"
+
+
+@pytest.mark.asyncio
+async def test_spawn_in_daemon_mode_forwards_subsession_events():
+    """回归：daemon 模式 spawn（给定 parent_handle + registry）走独立 subsession，事件经父
+    连接多路复用带 subsession_id；不再退回本地 transport（修复前 loop 层的 control-tool 派生
+    命令未透传 parent_handle/registry，导致无 subsession_id、前端不渲染子 agent 输出）。"""
+    reg = SessionRegistry()
+    parent = SessionHandle("p1", "p", None, None, "")
+    conn = FakeConn()
+    parent.attached_conn = conn
+    reg._sessions["p1"] = parent  # 真实流程父会话必已注册进 registry
+
+    spawner = SubagentSpawner(Settings())
+    model = FakeModel([Decision(text="subagent final")])
+    result = await spawner.spawn(
+        BUILTIN_GENERAL,
+        "do subtask",
+        base_registry=ToolRegistry(),
+        base_model=model,
+        parent_handle=parent,
+        registry=reg,
+    )
+    assert result.text == "subagent final"
+
+    # _on_event 经 ensure_future 调度发送，给当前 loop 机会执行已调度的任务。
+    for _ in range(30):
+        await asyncio.sleep(0)
+
+    events = [m for m in conn.sent if m["type"] == MsgType.EVENT]
+    assert events, "daemon 模式应经父连接转发子会话事件"
+    assert all(m["payload"].get("subsession_id", "").startswith("p1/sub_") for m in events), (
+        "事件须带 subsession_id（前缀为父 id）"
+    )
+    # 子会话已登记到父 children 下
+    assert len(parent.children) == 1

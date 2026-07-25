@@ -554,6 +554,11 @@ class AgentLoop:
         if spec is None:
             return ToolResult(ok=False, error=f"unknown agent: {agent_name}")
         parent_span = self._agent_span
+        # M9 subsession：daemon 模式经 transport.handle 透传父会话 handle/registry，使子 agent
+        # 走独立 subsession 实时转发（事件带 subsession_id）；CLI 模式 transport 无 handle 属性
+        # → parent_handle 为 None → 走本地 transport，行为不变（向后兼容）。
+        parent_handle = getattr(self._transport, "handle", None)
+        registry = parent_handle.registry if parent_handle is not None else None
         try:
             result = await self.subagent_spawner.spawn(
                 spec,
@@ -565,6 +570,8 @@ class AgentLoop:
                 parent_transport=self._transport,
                 parent_sandbox=self.sandbox,
                 parent_gate=self.gate,
+                parent_handle=parent_handle,
+                registry=registry,
             )
         except RecursionError as e:
             return ToolResult(ok=False, error=str(e))

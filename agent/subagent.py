@@ -303,6 +303,25 @@ class SubagentSpawner:
             registry.register_subsession(parent_handle.session_id, sub_handle)
             sub_stream = EventStream()
             sub_transport = SubsessionBridgeTransport(parent_handle, sub_handle)
+            # M9 subsession 持久化：把子会话事件带 parent_session_id 落盘，供重进后回放
+            # 历史（修复「子 agent 历史丢失 / 后台列表完成即消失」）。仓库按项目隔离，
+            # 经 registry._store_factory 取得；无 store（测试/CLI 兼容）时跳过。
+            store_factory = getattr(registry, "_store_factory", None)
+            if store_factory is not None:
+                try:
+                    from agent.context.session_store import SessionStoreSink
+
+                    _store = store_factory(parent_handle.project_root)
+                    sub_stream.subscribe(
+                        SessionStoreSink(
+                            _store,
+                            sub_id,
+                            parent_session_id=parent_handle.session_id,
+                        )
+                    )
+                except Exception:
+                    # 持久化失败不应阻断子 agent 执行
+                    pass
         else:
             # 父传输为 Textual TUI 时，子 agent 渲染走 _SubAgentTuiTransport（前缀汇入主区）；
             # 否则沿用旧 _SubAgentTransport（rich 面板集）。两者行为对齐、互不污染。

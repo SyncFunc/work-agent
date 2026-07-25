@@ -36,6 +36,9 @@ class SessionStore:
 
     def _init_schema(self) -> None:
         with self._conn() as conn:
+            # 注意：索引 idx_events_parent 依赖 parent_session_id 列，必须先确保该列存在
+            # （旧库迁移）再建索引，否则在「已存在旧 events 表」上 CREATE INDEX 会先于 ALTER
+            # 执行而报 no such column。故该索引放在 ALTER 之后单独建。
             conn.executescript(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -57,11 +60,24 @@ class SessionStore:
                     json       TEXT NOT NULL,
                     transient  INTEGER NOT NULL DEFAULT 0,
                     ts         REAL NOT NULL,
+                    parent_session_id TEXT,
                     PRIMARY KEY (session_id, seq)
                 );
                 CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id);
                 """
             )
+            # M9 subsession：旧库无 parent_session_id 列时做在线迁移（不破坏既有数据）。
+            try:
+                conn.execute("ALTER TABLE events ADD COLUMN parent_session_id TEXT")
+            except sqlite3.OperationalError:
+                pass  # 列已存在
+            # 迁移/新建后该列必然存在，再建父会话索引。
+            try:
+                conn.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_events_parent ON events(parent_session_id)"
+                )
+            except sqlite3.OperationalError:
+                pass
 
     def create(
         self,
@@ -98,15 +114,21 @@ class SessionStore:
             )
             conn.execute("UPDATE sessions SET updated_at=? WHERE session_id=?", (now, session_id))
 
-    def append_event(self, session_id: str, ev: Event) -> None:
-        """持久化单条事件（瞬时不落盘）。"""
+    def append_event(
+        self, session_id: str, ev: Event, parent_session_id: str | None = None
+    ) -> None:
+        """持久化单条事件（瞬时不落盘）。
+
+        M9 subsession：``parent_session_id`` 非空时标记为「子会话事件」，供按父会话查询
+        （``iter_events_with_subsession``）重建主聊天里的独立子 agent 块历史。
+        """
         if ev.transient:
             return
         with self._conn() as conn:
             conn.execute(
                 """INSERT OR REPLACE INTO events
-                   (session_id, seq, type, json, transient, ts)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
+                   (session_id, seq, type, json, transient, ts, parent_session_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     ev.seq,
@@ -114,6 +136,7 @@ class SessionStore:
                     json.dumps(ev.to_dict(), ensure_ascii=False),
                     1 if ev.transient else 0,
                     ev.ts,
+                    parent_session_id,
                 ),
             )
 
@@ -154,6 +177,27 @@ class SessionStore:
     def get_parent(self, session_id: str) -> str | None:
         s = self.get_session(session_id)
         return s["parent_session_id"] if s else None
+
+    def iter_events_with_subsession(self, session_id: str) -> list[tuple[Event, str | None]]:
+        """按 ``session_id`` 取父会话事件 + 其全部子会话事件，按时间序返回 ``(Event, subsession_id)``。
+
+        - 父会话事件：``subsession_id = None``；
+        - 子会话事件：``subsession_id`` = 子会话自身的 ``session_id``（即前端分组用的 id）。
+
+        供 daemon 回放重建主聊天历史（含独立子 agent 块），并修复「重进后历史变少」：
+        不再受内存 ``event_buffer``（maxlen）限制，改为读取 sqlite 全量。
+        """
+        with self._conn() as conn:
+            rows = conn.execute(
+                """
+                SELECT json, parent_session_id AS sub_id, ts, seq FROM events WHERE session_id=?
+                UNION ALL
+                SELECT json, session_id AS sub_id, ts, seq FROM events WHERE parent_session_id=?
+                ORDER BY ts, seq
+                """,
+                (session_id, session_id),
+            ).fetchall()
+        return [(Event.from_dict(json.loads(r["json"])), r["sub_id"]) for r in rows]
 
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._conn() as conn:
@@ -196,15 +240,20 @@ class SessionStoreSink:
     关键：落盘时用「会话级全局 seq」覆盖事件自带的 per-run seq（每个新 run 的
     ``EventStream`` 从 0 重新开始），否则续跑/恢复时新事件 seq 会与既有前缀碰撞
     被 ``INSERT OR REPLACE`` 覆盖，破坏事件流完整性。
+
+    M9 subsession：``parent_session_id`` 非空时把事件标为子会话事件（带父 id 落盘）。
     """
 
-    def __init__(self, store: SessionStore, session_id: str) -> None:
+    def __init__(
+        self, store: SessionStore, session_id: str, parent_session_id: str | None = None
+    ) -> None:
         self._store = store
         self._session_id = session_id
+        self._parent_session_id = parent_session_id
 
     def __call__(self, ev: Event) -> None:
         if ev.transient:
             return
         # EventStream 现由调用方保证「会话级全局 seq」（跨轮复用同一 stream，
         # append 即 len 递增），故直接落盘 ev.seq，无需改写（旧补丁已移除）。
-        self._store.append_event(self._session_id, ev)
+        self._store.append_event(self._session_id, ev, self._parent_session_id)

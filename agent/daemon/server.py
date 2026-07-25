@@ -200,37 +200,54 @@ async def _switch(
 
 
 async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> None:
-    """M7.4：先发 replay_start，再批量补发最近 K 条**持久化**事件，最后 replay_end。
+    """M7.4：先发 replay_start，再批量补发**持久化**事件，最后 replay_end。
 
     缓冲仅含非 transient 事件（见 BridgeTransport._on_event），故 tool_call_delta 等瞬时
     事件不会重画，避免参数预览重复渲染。
 
-    M9 subsession：父会话回放后，若为 daemon 会话（``handle.registry`` 非空），额外回放每个
-    子会话（后台 subagent）缓冲，每条 EVENT 带 ``subsession_id``，前端据此重建独立 panel 历史。
+    M9 subsession：回放经 ``SessionStore.iter_events_with_subsession`` 取**全量**父会话事件 +
+    其全部子会话事件（每条带 ``subsession_id``），前端据此在**主聊天区**重建独立子 agent 块历史。
 
-    修点：每轮 ``loop.run`` 都会新建 ``EventStream``，事件 ``seq`` 从 0 重新递增，导致
-    ``event_buffer`` 跨轮累积后内部 ``seq`` 重复。这里在发送时按缓冲顺序**重新编一个会话内
-    单调递增的全局 seq**，使回放流严格满足 ``Event``「顺序由 seq 唯一确定」的契约，避免任何
-    按 seq 去重/排序的下游（或前端历史重建）因序号碰撞而丢事件或错乱。
+    修复「重进后历史变少」：旧实现只用内存 ``event_buffer``（``maxlen=200``）回放父会话 + 子会话
+    缓冲，长会话会被截断、子会话事件从未落盘（重启即丢）。现改为读 sqlite 全量，且子会话事件已带
+    ``parent_session_id`` 持久化，重启后仍能按父会话恢复完整历史。
     """
     await conn.send(MsgType.REPLAY_START, {}, session=sid)
-    for ev in list(handle.event_buffer):
-        # event_buffer 内的 seq 已是会话级全局唯一（session.event_stream 跨轮复用、
-        # SessionStoreSink 不再改写），直接发送，无需重编（旧补丁已移除）。
-        await conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=sid)
-    # M9 subsession：回放子会话缓冲（带 subsession_id），前端按 id 重建独立 panel。
+    # 优先用 sqlite 全量回放（含子会话）；无 store 时回退内存缓冲（CLI / 兼容）。
+    store = None
     reg = handle.registry
     if reg is not None:
-        for cid in handle.children:
-            sub = reg.get_subsession(cid)
-            if sub is None:
-                continue
-            for ev in list(sub.event_buffer):
+        factory = getattr(reg, "_store_factory", None)
+        if factory is not None:
+            try:
+                store = factory(handle.project_root)
+            except Exception:
+                store = None
+    if store is not None:
+        for ev, sub in store.iter_events_with_subsession(sid):
+            if sub is not None:
                 await conn.send(
                     MsgType.EVENT,
-                    {"event": ev.to_dict(), "subsession_id": cid},
+                    {"event": ev.to_dict(), "subsession_id": sub},
                     session=sid,
                 )
+            else:
+                await conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=sid)
+    else:
+        # 回退：内存缓冲（无持久化场景）。
+        for ev in list(handle.event_buffer):
+            await conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=sid)
+        if reg is not None:
+            for cid in list(handle.children):
+                sub = reg.get_subsession(cid)
+                if sub is None:
+                    continue
+                for ev in list(sub.event_buffer):
+                    await conn.send(
+                        MsgType.EVENT,
+                        {"event": ev.to_dict(), "subsession_id": cid},
+                        session=sid,
+                    )
     await conn.send(MsgType.REPLAY_END, {}, session=sid)
 
 

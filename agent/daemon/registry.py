@@ -219,6 +219,8 @@ class SessionRegistry:
         parent = self._sessions.get(parent_id)
         if parent is not None:
             parent.children.add(handle.session_id)
+        # 子会话反向持 registry，供 _replay 反查与 conn 链解析（嵌套 subsession 也需）。
+        handle.registry = self
         self._subsessions[handle.session_id] = handle
 
     def get_subsession(self, sid: str) -> SessionHandle | None:
