@@ -16,6 +16,17 @@
   min-height: 0;
 }
 
+/* 可观测作为主视图（左侧导航「可观测」）时铺满主区。 */
+.wa-main__obs {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+}
+.wa-main__obs .wa-obs {
+  flex: 1;
+  width: 100%;
+}
+
 /* —— 侧栏 —— */
 .wa-sidebar {
   display: flex;

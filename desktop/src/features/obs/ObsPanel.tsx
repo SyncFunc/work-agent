@@ -39,7 +39,7 @@ export function ObsPanel({ client, projectRoot, sessionId, contextWindow, onClos
 
   return (
     <>
-      {!drawer && <div className="wa-resizer" onMouseDown={onResizeStart} />}
+      {!drawer && onResizeStart && <div className="wa-resizer" onMouseDown={onResizeStart} />}
       <aside className={`wa-obs ${drawer ? 'wa-obs--drawer' : ''}`} style={drawer ? undefined : { width }}>
         <StatusBar
           projectRoot={projectRoot}
