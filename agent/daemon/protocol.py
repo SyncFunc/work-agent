@@ -65,6 +65,8 @@ class MsgType(StrEnum):
     CONFIRM_PLAN = "confirm_plan"  # 客户端回传：{id, confirmed}
     APPROVE = "approve"  # 客户端回传：{id, approved}
     COMMAND = "command"
+    TASK_CANCEL = "task.cancel"  # 客户端：取消当前正在生成的任务（真实中断 LLM 流）
+    SESSION_DELETE = "session.delete"  # 客户端：彻底删除会话（含事件/记忆/trace）
     TRACE_LIST = "trace.list"
     TRACE_GET = "trace.get"
     # ---- Server -> Client ----
@@ -87,6 +89,9 @@ class MsgType(StrEnum):
     ERROR = "error"
     TRACE_LIST_RESP = "trace_list"
     TRACE_TREE = "trace_tree"
+    TASK_CANCELLED = "task.cancelled"  # 服务端：已停止生成
+    SESSION_INFO = "session.info"  # 服务端：推送 plan_mode / model 等会话状态
+    SESSION_DELETE_RESP = "session.delete_resp"  # 服务端：删除结果 {ok, session_id?, message?}
 
 
 @runtime_checkable
