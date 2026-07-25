@@ -1,5 +1,7 @@
 import React from 'react'
 import type { SessionTab } from './sessionMachine'
+import { IconButton } from '../../components'
+import { X } from 'lucide-react'
 
 interface Props {
   tabs: SessionTab[]
@@ -34,16 +36,15 @@ export function SessionTabs({ tabs, activeId, onSwitch, onClose }: Props): React
             }}
           >
             <span>{t.name}</span>
-            <span
-              onClick={(e) => {
-                e.stopPropagation()
-                onClose(t.id)
-              }}
-              style={{ color: '#999', fontWeight: 700 }}
-              title="关闭（detach）"
-            >
-              ×
-            </span>
+              <IconButton
+                icon={<X size={14} />}
+                label="关闭（detach）"
+                size="sm"
+                onClick={(e) => {
+                  e.stopPropagation()
+                  onClose(t.id)
+                }}
+              />
           </div>
         )
       })}

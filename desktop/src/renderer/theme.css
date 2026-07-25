@@ -1,24 +1,113 @@
-/* 主题：浅色为默认；body[data-theme="dark"] 切换暗色。
-   注：App 大量使用内联样式，此处仅对少量全局元素做主题化，证明切换机制生效。 */
+/* 主题入口：仅负责引入 token 与设置 body 基础样式。
+   所有组件颜色均来自 tokens.css 的变量，故暗色模式天然闭环。 */
+
+@import './tokens.css';
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
 
 body {
   margin: 0;
-  background: #ffffff;
-  color: #1a1a1a;
+  background: var(--wa-bg);
+  color: var(--wa-text);
+  font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'PingFang SC', 'Microsoft YaHei', sans-serif;
+  font-size: var(--wa-f-lg);
+  line-height: 1.5;
+  -webkit-font-smoothing: antialiased;
 }
-body[data-theme='dark'] {
-  background: #1e1e1e;
-  color: #e6e6e6;
+
+/* 全局可见焦点轮廓（键盘可达性） */
+:focus-visible {
+  outline: 2px solid var(--wa-primary);
+  outline-offset: 1px;
 }
-body[data-theme='dark'] aside,
-body[data-theme='dark'] .wa-modal-box {
-  background: #2a2a2a;
-  color: #e6e6e6;
+
+/* 滚动条美化（WebKit） */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
 }
-body[data-theme='dark'] input,
-body[data-theme='dark'] textarea,
-body[data-theme='dark'] select {
-  background: #333;
-  color: #eee;
-  border: 1px solid #555;
+::-webkit-scrollbar-thumb {
+  background: var(--wa-border-strong);
+  border-radius: var(--wa-r-pill);
+  border: 2px solid var(--wa-bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--wa-text-faint);
+}
+
+/* 代码高亮：亮色由 Markdown.tsx 引入 github.css；暗色用 GitHub Dark token，
+   背景接 token 变量，随 data-theme 自动切换（无需 JS）。 */
+body[data-theme='dark'] .hljs {
+  color: #c9d1d9;
+  background: var(--wa-code-bg);
+}
+body[data-theme='dark'] .hljs-doctag,
+body[data-theme='dark'] .hljs-keyword,
+body[data-theme='dark'] .hljs-meta .hljs-keyword,
+body[data-theme='dark'] .hljs-template-tag,
+body[data-theme='dark'] .hljs-template-variable,
+body[data-theme='dark'] .hljs-type,
+body[data-theme='dark'] .hljs-variable.language_ {
+  color: #ff7b72;
+}
+body[data-theme='dark'] .hljs-title,
+body[data-theme='dark'] .hljs-title.class_,
+body[data-theme='dark'] .hljs-title.class_.inherited__,
+body[data-theme='dark'] .hljs-title.function_ {
+  color: #d2a8ff;
+}
+body[data-theme='dark'] .hljs-attr,
+body[data-theme='dark'] .hljs-attribute,
+body[data-theme='dark'] .hljs-literal,
+body[data-theme='dark'] .hljs-meta,
+body[data-theme='dark'] .hljs-number,
+body[data-theme='dark'] .hljs-operator,
+body[data-theme='dark'] .hljs-variable,
+body[data-theme='dark'] .hljs-selector-attr,
+body[data-theme='dark'] .hljs-selector-class,
+body[data-theme='dark'] .hljs-selector-id {
+  color: #79c0ff;
+}
+body[data-theme='dark'] .hljs-regexp,
+body[data-theme='dark'] .hljs-string,
+body[data-theme='dark'] .hljs-meta .hljs-string {
+  color: #a5d6ff;
+}
+body[data-theme='dark'] .hljs-built_in,
+body[data-theme='dark'] .hljs-symbol {
+  color: #ffa657;
+}
+body[data-theme='dark'] .hljs-comment,
+body[data-theme='dark'] .hljs-code,
+body[data-theme='dark'] .hljs-formula {
+  color: #8b949e;
+}
+body[data-theme='dark'] .hljs-name,
+body[data-theme='dark'] .hljs-quote,
+body[data-theme='dark'] .hljs-selector-tag,
+body[data-theme='dark'] .hljs-selector-pseudo {
+  color: #7ee787;
+}
+body[data-theme='dark'] .hljs-section {
+  color: #1f6feb;
+  font-weight: bold;
+}
+body[data-theme='dark'] .hljs-bullet {
+  color: #f2cc60;
+}
+body[data-theme='dark'] .hljs-addition {
+  color: #aff5b4;
+  background-color: #033a16;
+}
+body[data-theme='dark'] .hljs-deletion {
+  color: #ffdcd7;
+  background-color: #67060c;
 }

@@ -7,6 +7,8 @@ import { LogView } from './LogView'
 import { StatusBar } from './StatusBar'
 import { TraceTree } from './TraceTree'
 import { useObs } from './useObs'
+import { IconButton } from '../../components'
+import { X } from 'lucide-react'
 
 interface Props {
   client: DaemonClient | null
@@ -66,9 +68,7 @@ export function ObsPanel({ client, projectRoot, sessionId, contextWindow, onClos
             {t.label}
           </button>
         ))}
-        <button type="button" onClick={onClose} title="关闭可观测面板" style={{ fontSize: 14, padding: '0 8px' }}>
-          ✕
-        </button>
+        <IconButton icon={<X size={16} />} label="关闭可观测面板" onClick={onClose} />
       </div>
       <div style={{ flex: 1, overflow: 'hidden', minHeight: 0 }}>
         {tab === 'trace' && <TraceTree client={client} projectRoot={projectRoot} sessionId={sessionId} />}

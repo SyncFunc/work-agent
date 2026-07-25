@@ -19,6 +19,8 @@ import { NoticeHost } from '../features/notices/NoticeHost'
 import { useNotices } from '../features/notices/useNotices'
 import { ObsPanel } from '../features/obs/ObsPanel'
 import { loadSettings } from '../features/settings/settingsApi'
+import { IconButton } from '../components'
+import { BarChart2, Settings } from 'lucide-react'
 
 export default function App(): React.ReactElement {
   const [config, setConfig] = useState<DaemonConfig | null>(null)
@@ -131,9 +133,9 @@ export default function App(): React.ReactElement {
       <aside style={{ width: 260, borderRight: '1px solid #eee', display: 'flex', flexDirection: 'column' }}>
         <h1 style={{ fontSize: 16, margin: 0, padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <span>Work Agent</span>
-          <span style={{ display: 'flex', gap: 8 }}>
-            <button type="button" onClick={() => setObsOpen((v) => !v)} title="可观测面板" style={{ fontSize: 14 }}>📊</button>
-            <button type="button" onClick={() => setSettingsOpen(true)} title="设置" style={{ fontSize: 14 }}>⚙</button>
+          <span style={{ display: 'flex', gap: 4 }}>
+            <IconButton icon={<BarChart2 size={18} />} label="可观测面板" onClick={() => setObsOpen((v) => !v)} />
+            <IconButton icon={<Settings size={18} />} label="设置" onClick={() => setSettingsOpen(true)} />
           </span>
         </h1>
         <div style={{ padding: '8px 12px', borderBottom: '1px solid #eee' }}>
