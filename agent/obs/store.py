@@ -96,7 +96,6 @@ class TraceStore:
             conn.execute("DELETE FROM logs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM spans WHERE session_id = ?", (session_id,))
 
-
     def load_trace(self, session_id: str) -> Tracer | None:
         """按 session_id 重建 Tracer（含全部 span + logs）。不存在返回 None。"""
         with self._conn() as conn:

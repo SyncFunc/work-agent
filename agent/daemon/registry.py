@@ -81,7 +81,9 @@ class SessionHandle:
         self.attached_conn: ConnLike | None = None
         self.running = False
         self.busy = False  # 同步标志：避免并发 task.send 竞态
-        self.running_task: asyncio.Task | None = None  # M9.9：当前在飞的 step 任务（供 task.cancel 取消）
+        self.running_task: asyncio.Task | None = (
+            None  # M9.9：当前在飞的 step 任务（供 task.cancel 取消）
+        )
         self.cancel_requested = False  # M9.9：是否已请求取消
         self.last_activity = time.time()
         self.lock = asyncio.Lock()  # 每会话锁：保证同一会话一个 step 在飞

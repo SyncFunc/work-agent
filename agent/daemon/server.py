@@ -358,9 +358,7 @@ async def _send_session_info(conn: Connection, handle: SessionHandle, sid: str |
         model = session.settings.llm.model
     except Exception:
         model = ""
-    await conn.send(
-        MsgType.SESSION_INFO, {"plan_mode": plan_mode, "model": model}, session=sid
-    )
+    await conn.send(MsgType.SESSION_INFO, {"plan_mode": plan_mode, "model": model}, session=sid)
 
 
 async def _session_delete(
@@ -368,9 +366,7 @@ async def _session_delete(
 ) -> None:
     """M9.9 彻底删除会话（含事件 / Session Memory / trace + 内存句柄级联）。"""
     if not sid:
-        await conn.send(
-            MsgType.SESSION_DELETE_RESP, {"ok": False, "message": "missing session_id"}
-        )
+        await conn.send(MsgType.SESSION_DELETE_RESP, {"ok": False, "message": "missing session_id"})
         return
     handle = registry.get(sid)
     proj = project_root or (handle.project_root if handle is not None else os.getcwd())
@@ -398,9 +394,7 @@ async def _session_delete(
         elif trace_store is not None:
             trace_store.delete_session(sid)
     except Exception as e:
-        await conn.send(
-            MsgType.SESSION_DELETE_RESP, {"ok": False, "message": str(e)}, session=sid
-        )
+        await conn.send(MsgType.SESSION_DELETE_RESP, {"ok": False, "message": str(e)}, session=sid)
         return
 
     # 内存句柄清理（含级联子会话）
