@@ -11,6 +11,10 @@
 //   因此**绝不能用 ev.seq / tc_index 做 React 的块 key 或跨块定位依据**——否则跨轮 seq 碰撞会让
 //   React 复用错误 DOM、工具块跨轮错乱。这里一律用遍历时的全局递增计数器 n 生成唯一 key，
 //   并在每轮 USER 事件（标记新一轮）重置工具定位状态。
+//
+// 子会话（subsession）段处理：父会话归约状态（尤其 toolById）**跨 subsession 段持续**，
+// 确保 spawn_subagent 的 TOOL_USE（子 agent 之前）与 TOOL_RESULT（子 agent 之后）能正确配对，
+// 结果回填到发起调用的那一块，而不是另起一个孤立「运行中」块。
 
 import { useMemo } from 'react'
 import type { AgentEvent, Question, ToolResult } from '../../protocol/types'
@@ -22,6 +26,9 @@ export interface TextBlock {
   content: string
   reasoning: string
   final: boolean
+  /** 是否仍在流式生成（仅归约后「最后一个未冲刷的」文本气泡为 true；已被工具/决策/终态
+   * 冲刷出的中间思考段一律为 false，从而不再带光标、默认折叠）。 */
+  streaming: boolean
 }
 
 export interface ToolBlock {
@@ -52,6 +59,8 @@ export interface ClarifyBlock {
   key: string
   type: 'clarify'
   questions: Question[]
+  /** 用户的澄清回答（紧跟 clarify 的 user 事件回填，与澄清块一起渲染）。 */
+  answer?: string
 }
 
 export interface PlanBlock {
@@ -93,50 +102,55 @@ export function agentFromSubId(subId: string): string {
   return m ? m[1] : subId
 }
 
-function newTextBlock(): TextBlock {
-  return { key: '', type: 'text', role: 'assistant', content: '', reasoning: '', final: false }
+/** 由子 agent 内部块推导其运行状态（主聊天区卡片用，无需后台面板传 status）。 */
+export function deriveSubagentStatus(blocks: ChatBlock[]): 'running' | 'done' {
+  // 任一文本块仍在流式 → 运行中
+  if (blocks.some((b) => b.type === 'text' && b.streaming)) return 'running'
+  // 任一文本块已终态（final）→ 已完成
+  if (blocks.some((b) => b.type === 'text' && b.final)) return 'done'
+  const last = blocks[blocks.length - 1]
+  if (!last) return 'running'
+  if (last.type === 'error') return 'done'
+  if (last.type === 'tool') return last.running ? 'running' : 'done'
+  return 'running'
 }
 
-/** 把一段「同一来源（父会话 或 同一 subsession）」的事件归约为可渲染的块列表（纯函数）。
+function newTextBlock(): TextBlock {
+  return { key: '', type: 'text', role: 'assistant', content: '', reasoning: '', final: false, streaming: false }
+}
 
-``prefix`` 用于保证跨分段块 key 全局唯一（不同分段各用不同前缀，避免 React key 碰撞）。
-详见 ``buildChatModel`` 的分段逻辑。
-*/
-function reduceEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
+/** 控制类工具：被循环拦截在 _exec_tools 之前（ask_clarification / present_plan），
+ * 只会收到模型流式 `tool_call_delta`、永远不会收到 `tool_use`/`tool_result`，
+ * 因此其 ToolBlock 必须被显式丢弃，否则会永久停留在「运行中」且暴露原始 deltaArgs。 */
+const INTERCEPTED_CONTROL_TOOLS = new Set(['ask_clarification', 'present_plan'])
+
+/** 把一段「同一 subsession」的事件归约为可渲染的块列表（纯函数、独立状态）。
+ *
+ * 用于子 agent 段（subsession_id 非空）。父会话段用 ``buildChatModel`` 内的共享状态归约，
+ * 以保证 tool_use/tool_result 跨子 agent 段仍能配对。
+ */
+function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
   const blocks: ChatBlock[] = []
-  // 全局块序号：每个块分配唯一 key，杜绝跨轮 seq 碰撞导致的 React 复用错乱。
   let n = 0
-  // 当前正在累积的 assistant 文本气泡（流式结束或遇非文本事件时 flush）。
   let cur: TextBlock | null = null
-  // 工具块按创建顺序（delta 与 TOOL_USE 共享同一序），用于 tc_index / 顺序匹配。
   const toolOrder: ToolBlock[] = []
-  // 已定稿（TOOL_USE 携带真实 id）的工具块，按 id 快速定位结果回调。
   const toolById = new Map<string, ToolBlock>()
   let toolUseSeen = 0
-  // 本轮是否出现过流式 TEXT（内容唯一来源）。
-  // 用于约束 decision.text 仅在本轮「完全无流式 TEXT」时才兜底填入，避免与流式 TEXT 累积成两个
-  // 相同内容的气泡（重复渲染）。
   let hasStreamedText = false
-  // decision.text 仅作兜底：仅当本轮无流式 TEXT 时消费一次，且消费后立即清空，
-  // 防止跨轮残留造成「上一轮文本在本轮重复 / 越来越多」。
   let lastDecisionText: string | null = null
 
   const flushText = (): void => {
-    // 1) 优先落已累积的流式气泡（内容唯一来源）。
     if (cur && (cur.content || cur.reasoning)) {
       cur.key = `${prefix}t${n++}`
       blocks.push(cur)
       cur = null
     } else if (!hasStreamedText && lastDecisionText) {
-      // 2) 仅当本轮完全没有流式 TEXT 时，才用 decision.text 兜底补一个气泡（非流式兼容）。
-      //    消费后立即清空，杜绝跨轮残留重复。
       cur = newTextBlock()
       cur.content = lastDecisionText
       cur.key = `${prefix}t${n++}`
       blocks.push(cur)
       cur = null
     }
-    // 无论走哪条分支都清空兜底文本，避免其在后续轮次被误消费。
     lastDecisionText = null
   }
 
@@ -163,7 +177,7 @@ function reduceEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
     switch (ev.type) {
       case 'text': {
         hasStreamedText = true
-        lastDecisionText = null // 流式文本是内容唯一来源，丢弃任何残留兜底
+        lastDecisionText = null
         if (!cur) cur = newTextBlock()
         const text = ev.text ?? ''
         if (ev.kind === 'reasoning') cur.reasoning += text
@@ -171,27 +185,16 @@ function reduceEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         break
       }
       case 'decision': {
-        // 流式 TEXT 才是内容唯一来源；decision.text 仅记录为兜底。
-        if (ev.decision?.text) {
-          lastDecisionText = ev.decision.text
-        }
-        // 每轮决策收尾：把已累积的流式文本气泡定稿为独立块，下一轮 text 开启新气泡
-        // （否则多轮回复会挤进同一气泡，且可能与后续 FINAL 叠加造成重复渲染）。
+        if (ev.decision?.text) lastDecisionText = ev.decision.text
         flushText()
         break
       }
       case 'final': {
         const ft = ev.text ?? ''
         if (cur) {
-          // 仍在累积的气泡：直接收尾（流式文本已在此气泡，无需额外气泡）。
           cur.final = true
           flushText()
         } else {
-          // 文本已在之前的工具/思考气泡中被 flushText 提前收成气泡（例如流式文本后跟工具调用，
-          // tool_call_delta 触发 flush），此时不能再拿 final.text 另起一个相同内容的气泡，
-          // 否则文本内容重复渲染、而思考（reasoning，在同一条气泡里）只出现一次。
-          // 改为把最后一个已落块的文本气泡标记为 final；仅当完全没有任何文本气泡时，
-          // 才用 final.text / 兜底 decision.text 补一个（非流式兼容）。
           const lastText = [...blocks].reverse().find((b) => b.type === 'text')
           if (lastText) {
             lastText.final = true
@@ -211,9 +214,6 @@ function reduceEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
       }
       case 'user': {
         flushText()
-        // 每轮用户输入标记新一轮开始：重置工具定位状态，避免跨轮 tc_index / tool_use 序号
-        // 复用导致工具块错乱（第二轮 delta 误写到第一轮工具块）；同时清空文本兜底残留，
-        // 防止上一轮 decision.text 在本轮兜底时重复出现。
         toolOrder.length = 0
         toolById.clear()
         toolUseSeen = 0
@@ -223,7 +223,6 @@ function reduceEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         break
       }
       case 'tool_call_delta': {
-        // 流式参数预览前先把已累积的文本气泡落位，保证顺序正确（文本在前、工具在后）。
         flushText()
         const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
         const tb = ensureToolAt(idx)
@@ -287,43 +286,252 @@ function reduceEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         break
     }
   }
-  // 收尾残留文本气泡（事件流在文本中途结束的情况）。
-  flushText()
+  // 段末：若仍有未冲刷的当前文本气泡（最后事件为 text 且无 final/决策/工具收尾），
+  // 说明该子 agent 仍在流式生成 → 标记 streaming 供光标渲染；已冲刷的中间块保持 false。
+  // 此处即完成冲刷，不要再于此前单独 flushText()，否则 streaming 标记会丢失。
+  if (cur) {
+    cur.streaming = true
+    flushText()
+  }
   return blocks
 }
 
 /** 把事件序列归约为可渲染的视图模型（纯函数）。
 
-按 ``subsession_id`` 分段：连续同源（同一 subsession 或父会话）的事件归约为一组块；
-父会话事件直接展开为顶层块，子会话事件则包裹成独立的 ``SubagentBlock``（主聊天区独立卡片）。
-这样工具调用拉起的子 agent、后台子 agent 都以独立块呈现，且与父会话事件保持时间顺序。
+父会话事件做**单次顺序归约**（状态跨 subsession 段持续），子会话事件包裹成独立的
+``SubagentBlock``（主聊天区独立卡片）。这样工具调用拉起的子 agent 以独立块呈现，
+且 spawn_subagent 的 TOOL_USE/TOOL_RESULT 能跨子 agent 段配对，结果回填到发起块。
 */
 export function buildChatModel(events: AgentEvent[]): ChatModel {
   const top: ChatBlock[] = []
-  let seg = 0
+  // 父会话归约状态（跨 subsession 段持续，仅定位类状态在段边界重置，toolById 始终保留）。
+  let n = 0
+  let cur: TextBlock | null = null as TextBlock | null
+  const toolOrder: ToolBlock[] = []
+  const toolById = new Map<string, ToolBlock>()
+  let toolUseSeen = 0
+  let hasStreamedText = false
+  let lastDecisionText: string | null = null
+  let subSeq = 0
+
+  const flushText = (): void => {
+    if (cur && (cur.content || cur.reasoning)) {
+      cur.key = `${n++}`
+      top.push(cur)
+      cur = null
+    } else if (!hasStreamedText && lastDecisionText) {
+      cur = newTextBlock()
+      cur.content = lastDecisionText
+      cur.key = `${n++}`
+      top.push(cur)
+      cur = null
+    }
+    lastDecisionText = null
+  }
+
+  const ensureToolAt = (index: number): ToolBlock => {
+    let tb = toolOrder[index]
+    if (!tb) {
+      tb = {
+        key: `${n++}`,
+        type: 'tool',
+        toolCallId: null,
+        name: 'tool',
+        args: null,
+        deltaArgs: '',
+        result: null,
+        running: true,
+      }
+      toolOrder[index] = tb
+      top.push(tb)
+    }
+    return tb
+  }
+
+  /** 丢弃因被循环拦截而「悬空」的控制工具块（running 且从未收到 tool_use/tool_result）。 */
+  const dropInterceptedControl = (name: string): void => {
+    for (let k = top.length - 1; k >= 0; k--) {
+      const b = top[k]
+      if (
+        b.type === 'tool' &&
+        b.running &&
+        b.result === null &&
+        b.toolCallId === null &&
+        b.name === name
+      ) {
+        top.splice(k, 1)
+      }
+    }
+  }
+
+  const processParent = (ev: AgentEvent): void => {
+    switch (ev.type) {
+      case 'text': {
+        hasStreamedText = true
+        lastDecisionText = null
+        if (!cur) cur = newTextBlock()
+        const text = ev.text ?? ''
+        if (ev.kind === 'reasoning') cur.reasoning += text
+        else cur.content += text
+        break
+      }
+      case 'decision': {
+        if (ev.decision?.text) lastDecisionText = ev.decision.text
+        flushText()
+        break
+      }
+      case 'final': {
+        const ft = ev.text ?? ''
+        if (cur) {
+          cur.final = true
+          flushText()
+        } else {
+          const lastText = [...top].reverse().find((b) => b.type === 'text')
+          if (lastText) {
+            lastText.final = true
+          } else if (ft || lastDecisionText) {
+            cur = newTextBlock()
+            cur.content = ft || lastDecisionText || ''
+            cur.final = true
+            flushText()
+          }
+        }
+        break
+      }
+      case 'error': {
+        flushText()
+        top.push({ key: `${n++}`, type: 'error', text: ev.error ?? '' })
+        break
+      }
+      case 'user': {
+        flushText()
+        // 每轮用户输入标记新一轮开始：重置工具定位状态，避免跨轮 tc_index / tool_use 序号
+        // 复用导致工具块错乱（第二轮 delta 误写到第一轮工具块）；同时清空文本兜底残留，
+        // 防止上一轮 decision.text 在本轮兜底时重复出现。
+        toolOrder.length = 0
+        toolById.clear()
+        toolUseSeen = 0
+        hasStreamedText = false
+        lastDecisionText = null
+        // 澄清回答：紧跟 clarify 的 user 事件直接回填到澄清块，与澄清一起渲染。
+        const lastBlk = top[top.length - 1]
+        if (lastBlk && lastBlk.type === 'clarify' && lastBlk.answer === undefined) {
+          lastBlk.answer = ev.text ?? ''
+        } else {
+          top.push({ key: `${n++}`, type: 'user', text: ev.text ?? '' })
+        }
+        break
+      }
+      case 'tool_call_delta': {
+        flushText()
+        const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
+        const tb = ensureToolAt(idx)
+        if (ev.tc_args) tb.deltaArgs += ev.tc_args
+        if (ev.tc_name) tb.name = ev.tc_name
+        break
+      }
+      case 'tool_use': {
+        flushText()
+        const tc = ev.tool_use
+        if (!tc) break
+        const tb = ensureToolAt(toolUseSeen)
+        toolUseSeen += 1
+        tb.toolCallId = tc.id
+        tb.name = tc.name
+        tb.args = tc.arguments
+        tb.running = true
+        toolById.set(tc.id, tb)
+        break
+      }
+      case 'tool_result': {
+        flushText()
+        const id = ev.tool_call_id ?? null
+        const tb = id ? toolById.get(id) : undefined
+        if (tb) {
+          // 配对成功：结果回填到发起调用的那一块（如 spawn_subagent），并标记完成。
+          tb.result = ev.tool_result ?? null
+          tb.running = false
+        } else {
+          top.push({
+            key: `${n++}`,
+            type: 'tool',
+            toolCallId: id,
+            name: 'tool',
+            args: null,
+            deltaArgs: '',
+            result: ev.tool_result ?? null,
+            running: false,
+          })
+        }
+        break
+      }
+      case 'clarify': {
+        flushText()
+        // 丢弃因被澄清闸门拦截而悬空的 ask_clarification 工具块（否则永久「运行中」）。
+        dropInterceptedControl('ask_clarification')
+        top.push({ key: `${n++}`, type: 'clarify', questions: ev.questions ?? [] })
+        break
+      }
+      case 'plan':
+      case 'plan_progress': {
+        flushText()
+        dropInterceptedControl('present_plan')
+        top.push({
+          key: `${n++}`,
+          type: 'plan',
+          planPath: ev.plan_path ?? null,
+          stepId: ev.plan_update?.step_id,
+          status: ev.plan_update?.status,
+          note: ev.plan_update?.note,
+        })
+        break
+      }
+      default:
+        break
+    }
+  }
+
   let i = 0
   while (i < events.length) {
     const sub = events[i].subsession_id ?? null
-    const segEvents: AgentEvent[] = []
-    let j = i
-    while (j < events.length && (events[j].subsession_id ?? null) === sub) {
-      segEvents.push(events[j])
-      j++
-    }
     if (sub == null) {
-      top.push(...reduceEvents(segEvents, `p${seg}-`))
+      // 父会话事件：顺序归约，状态持续。
+      processParent(events[i])
+      i++
     } else {
+      // 子会话段：先收尾父会话挂起的文本气泡，使子 agent 前后的父文本分桶清晰。
+      flushText()
+      const segEvents: AgentEvent[] = []
+      let j = i
+      while (j < events.length && (events[j].subsession_id ?? null) === sub) {
+        segEvents.push(events[j])
+        j++
+      }
       top.push({
         key: `sub-${sub}`,
         type: 'subagent',
         subsessionId: sub,
         name: agentFromSubId(sub),
-        blocks: reduceEvents(segEvents, `s${seg}-`),
+        blocks: reduceSubEvents(segEvents, `s${subSeq++}-`),
       })
+      // 段结束：仅重置「定位」状态（保留 toolById 以配对跨段结果），避免段后 delta
+      // 误写到段前的工具块（如 spawn_subagent 的 TOOL_USE 在段前）。
+      toolOrder.length = 0
+      toolUseSeen = 0
+      hasStreamedText = false
+      lastDecisionText = null
+      i = j
     }
-    seg++
-    i = j
   }
+  // 末轮：若仍有未冲刷的当前文本气泡（最后事件为 text 且未收尾），说明父会话仍在流式生成，
+  // 标记 streaming 供光标渲染；被工具/决策/终态冲刷出的中间思考段保持 false（折叠、无光标）。
+  // 注意：此处即完成冲刷，不要再于此前单独 flushText()，否则 streaming 标记会丢失。
+  if (cur) {
+    cur.streaming = true
+    flushText()
+  }
+  // 末轮兜底：丢弃任何仍悬空的控制工具块（如澄清轮次超出上限未发 clarify 事件等边界情形）。
+  for (const name of INTERCEPTED_CONTROL_TOOLS) dropInterceptedControl(name)
   return { blocks: top }
 }
 

@@ -1,7 +1,7 @@
 // 单条文本/用户/错误/澄清/计划块渲染。reasoning 与 content 分栏，思考过程可折叠。
 // 接入设计 token：头像、图标、警示块、streaming 光标全部读 tokens.css 变量。
 
-import React, { useState } from 'react'
+import React, { useLayoutEffect, useRef, useState } from 'react'
 import type { ChatBlock } from './useEventReducer'
 import { Markdown } from './Markdown'
 import { Avatar } from '../../components'
@@ -12,7 +12,34 @@ export function MessageItem({ block }: { block: ChatBlock }): React.ReactElement
     case 'text': {
       const [showReason, setShowReason] = useState(false)
       const hasReason = block.reasoning.trim().length > 0
-      const streaming = block.content.trim().length === 0
+      const contentEmpty = block.content.trim().length === 0
+      // 仅「当前正在流式生成」的气泡（block.streaming 由归约器在段末标记）需要光标；
+      // 被工具/决策冲刷出的中间思考段 streaming=false → 折叠、不带光标，
+      // 从而「上一轮思考段」不再被展开、光标只出现在当前轮。
+      const streaming = block.streaming
+      const showReasoning = streaming || showReason
+      // 正文流式阶段：把光标作为持久 DOM 节点钉在「最后一段 markdown 的末尾行」内，
+      // 使其像文本编辑器光标一样闪烁在行中（而非落在整块之下的独立行）。
+      // 复用同一节点（只 move、不重建），避免每次增量重渲时 blink 动画被重置。
+      const mdWrapRef = useRef<HTMLDivElement>(null)
+      const caretRef = useRef<HTMLSpanElement | null>(null)
+      useLayoutEffect(() => {
+        const root = mdWrapRef.current
+        if (!root) return
+        if (streaming && !contentEmpty) {
+          if (!caretRef.current) {
+            const c = document.createElement('span')
+            c.className = 'wa-cursor'
+            c.setAttribute('aria-label', '生成中')
+            caretRef.current = c
+          }
+          const md = root.querySelector('.wa-md') as HTMLElement | null
+          const last = md?.lastElementChild as HTMLElement | null
+          if (last && caretRef.current.parentElement !== last) last.appendChild(caretRef.current)
+        } else if (caretRef.current && caretRef.current.parentElement) {
+          caretRef.current.parentElement.removeChild(caretRef.current)
+        }
+      }, [block.content, streaming, contentEmpty])
       return (
         <div className="wa-msg">
           <span className="wa-msg__avatar">
@@ -22,7 +49,7 @@ export function MessageItem({ block }: { block: ChatBlock }): React.ReactElement
             <div className="wa-msg__head">
               <span className="wa-msg__role">助手</span>
             </div>
-            {hasReason && (
+            {hasReason && !streaming && (
               <button
                 type="button"
                 className={`wa-reason-toggle ${showReason ? 'wa-reason-toggle--open' : ''}`}
@@ -32,11 +59,25 @@ export function MessageItem({ block }: { block: ChatBlock }): React.ReactElement
                 {showReason ? '收起思考过程' : '查看思考过程'}
               </button>
             )}
-            {showReason && hasReason && <div className="wa-reasoning">{block.reasoning}</div>}
-            {streaming ? (
-              <span className="wa-cursor" aria-label="生成中" />
+            {streaming && contentEmpty ? (
+              // 纯思考阶段（尚无正文）：自动展开思考，光标跟随思考末尾
+              hasReason ? (
+                <div className="wa-reasoning">
+                  {block.reasoning}
+                  <span className="wa-cursor" aria-label="生成中" />
+                </div>
+              ) : (
+                <span className="wa-cursor" aria-label="生成中" />
+              )
             ) : (
-              <Markdown text={block.content} />
+              <>
+                {showReasoning && hasReason && <div className="wa-reasoning">{block.reasoning}</div>}
+                {!contentEmpty && (
+                  <div ref={mdWrapRef}>
+                    <Markdown text={block.content} />
+                  </div>
+                )}
+              </>
             )}
           </div>
         </div>
@@ -84,6 +125,12 @@ export function MessageItem({ block }: { block: ChatBlock }): React.ReactElement
                   </li>
                 ))}
               </ul>
+              {block.answer !== undefined ? (
+                <div className="wa-clarify__answer">
+                  <strong>您的回答：</strong>
+                  {block.answer}
+                </div>
+              ) : null}
             </div>
           </div>
         </div>

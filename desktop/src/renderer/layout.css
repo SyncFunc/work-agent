@@ -363,3 +363,31 @@
   font-size: var(--wa-f-sm);
   color: var(--wa-text-muted);
 }
+.wa-bg__item {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
+  padding: var(--wa-s2);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg-subtle);
+}
+.wa-bg__item > svg {
+  flex: none;
+  color: var(--wa-text-muted);
+}
+.wa-bg__name {
+  font-size: var(--wa-f-md);
+  font-weight: 600;
+  color: var(--wa-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-bg__id {
+  margin-left: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-xs);
+  color: var(--wa-text-faint);
+  cursor: default;
+}

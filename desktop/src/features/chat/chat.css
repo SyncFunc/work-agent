@@ -160,7 +160,15 @@
   padding-left: var(--wa-s4);
 }
 
-/* streaming 光标 */
+.wa-clarify__answer {
+  margin-top: var(--wa-s2);
+  padding-top: var(--wa-s2);
+  border-top: 1px solid currentColor;
+  opacity: 0.92;
+  white-space: pre-wrap;
+}
+
+/* streaming 光标：保留原块状样式，钉在正文末行之内（行内闪烁，而非落在整块之下的独立行）。 */
 .wa-cursor {
   display: inline-block;
   width: 7px;

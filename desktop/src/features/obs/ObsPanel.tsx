@@ -56,7 +56,7 @@ export function ObsPanel({ client, projectRoot, sessionId, contextWindow, onClos
         <div className="wa-obs__body">
           {tab === 'trace' && <TraceTree client={client} projectRoot={projectRoot} sessionId={sessionId} />}
           {tab === 'log' && <LogView logs={obs.logs} onClear={obs.clearLogs} />}
-          {tab === 'bg' && <BackgroundAgents client={client} />}
+          {tab === 'bg' && <BackgroundAgents client={client} sessionId={sessionId} />}
         </div>
       </aside>
     </>

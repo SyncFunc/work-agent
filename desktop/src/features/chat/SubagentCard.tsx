@@ -3,6 +3,7 @@
 
 import React, { useState } from 'react'
 import type { SubagentBlock } from './useEventReducer'
+import { deriveSubagentStatus } from './useEventReducer'
 import { MessageList } from './MessageList'
 import { Badge, IconButton } from '../../components'
 import { Bot, CheckCircle2, ChevronDown, ChevronRight, Loader } from 'lucide-react'
@@ -12,17 +13,20 @@ export function SubagentCard({
   status,
 }: {
   block: SubagentBlock
-  /** 可选状态徽标（后台面板传入 running/done；主聊天区历史不传）。 */
+  /** 可选状态徽标（后台面板传入 running/done；主聊天区由内部块推导）。 */
   status?: 'running' | 'done'
 }): React.ReactElement {
   const [collapsed, setCollapsed] = useState(false)
 
+  // 主聊天区无外部 status 时，由子 agent 内部块推导运行状态（存在 final/error 终态即视为完成）。
+  const resolvedStatus = status ?? deriveSubagentStatus(block.blocks)
+
   const statusPill =
-    status === 'running' ? (
+    resolvedStatus === 'running' ? (
       <Badge tone="primary" icon={<Loader size={12} />}>
         运行中
       </Badge>
-    ) : status === 'done' ? (
+    ) : resolvedStatus === 'done' ? (
       <Badge tone="success" icon={<CheckCircle2 size={12} />}>
         已完成
       </Badge>
