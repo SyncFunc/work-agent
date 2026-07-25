@@ -1,5 +1,6 @@
 import { contextBridge, ipcRenderer } from 'electron'
 import type { DaemonConfig } from '../shared/daemon-config'
+import type { SkillInfo } from '../main/skills'
 
 // 仅暴露只读的 daemon 连接配置给渲染进程（contextBridge），
 // token 不出现在地址栏。设置读写经 IPC 落到主进程 fs，渲染进程无 node 直接访问。
@@ -13,6 +14,20 @@ const api = {
     patch: Record<string, unknown>,
   ): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('settings:write', projectRoot, patch),
+  // M9.9：用户级 / 项目级作用域设置读写。
+  readSettingsScoped: (
+    projectRoot: string,
+  ): Promise<{ user: Record<string, unknown>; project: Record<string, unknown> }> =>
+    ipcRenderer.invoke('settings:readScopes', projectRoot),
+  writeSettingsScoped: (
+    projectRoot: string,
+    patch: Record<string, unknown>,
+    scope: 'user' | 'project',
+  ): Promise<Record<string, unknown>> =>
+    ipcRenderer.invoke('settings:writeScope', projectRoot, patch, scope),
+  // M9.9：命令候选框可用技能列表。
+  listSkills: (projectRoot: string): Promise<SkillInfo[]> =>
+    ipcRenderer.invoke('skills:list', projectRoot),
   // M9.9：自绘顶栏窗口控制（frameless 窗口无系统按钮）。
   minimizeWindow: (): void => {
     void ipcRenderer.invoke('window:minimize')

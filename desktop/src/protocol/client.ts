@@ -351,6 +351,16 @@ export class DaemonClient {
     this.send('command', { name, args: args ?? null })
   }
 
+  /** M9.9 真实中断：取消当前连接会话正在生成的任务（中断 LLM 流）。 */
+  cancelTask(): void {
+    this.send('task.cancel', {})
+  }
+
+  /** M9.9 彻底删除会话（含事件/记忆/trace），后端级联清理。 */
+  deleteSession(id: string): void {
+    this.send('session.delete', { id })
+  }
+
   // --------------------------------------------------------------------------- //
   // M9.7 可观测面板：trace 查询（请求/响应按 envelope.id 配对）
   // --------------------------------------------------------------------------- //

@@ -7,6 +7,12 @@ export type { ButtonProps, ButtonVariant, ButtonSize } from './Button'
 export { IconButton } from './IconButton'
 export type { IconButtonProps, IconButtonVariant, IconButtonSize } from './IconButton'
 
+export { Textarea } from './Textarea'
+export type { TextareaProps } from './Textarea'
+
+export { Seg } from './Seg'
+export type { SegProps } from './Seg'
+
 export { Spinner } from './Spinner'
 export type { SpinnerProps } from './Spinner'
 

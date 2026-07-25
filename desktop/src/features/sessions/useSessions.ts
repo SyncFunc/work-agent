@@ -14,6 +14,7 @@ export interface UseSessions {
   switchSession: (id: string) => void
   closeTab: (id: string) => void
   forkSession: (id: string) => void
+  deleteSession: (id: string) => void
   sendTask: (text: string, opts?: { yes?: boolean; plan?: boolean }) => void
 }
 
@@ -67,6 +68,11 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
         replay.current.push(ev)
       } else dispatch({ type: 'liveEvent', event: ev })
     })
+    // M9.9 步骤6：删除失败则刷新列表以恢复（成功由 App 侧弹 toast）。
+    const offDeletedResp = client.onMessage('session.delete_resp', (env) => {
+      const ok = Boolean(env.payload['ok'])
+      if (!ok) client.listSessions(projectRoot)
+    })
     return () => {
       offWelcome()
       offList()
@@ -75,6 +81,7 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
       offReplayStart()
       offReplayEnd()
       offEvent()
+      offDeletedResp()
     }
   }, [client, projectRoot])
 
@@ -131,5 +138,14 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
     [client, projectRoot],
   )
 
-  return { state, createSession, openSession, switchSession, closeTab, forkSession, sendTask }
+  // M9.9 步骤6：乐观从 UI 移除 + 发后端彻底删除（级联清理）。
+  const deleteSession = useCallback(
+    (id: string) => {
+      dispatch({ type: 'sessionDeleted', id })
+      client?.deleteSession(id)
+    },
+    [client],
+  )
+
+  return { state, createSession, openSession, switchSession, closeTab, forkSession, deleteSession, sendTask }
 }

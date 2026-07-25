@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Minus, Square, X } from 'lucide-react'
 import './TitleBar.css'
 
-interface TitleBarProps {
+export interface TitleBarProps {
   appName: string
   clearDisabled: boolean
   onClear: () => void

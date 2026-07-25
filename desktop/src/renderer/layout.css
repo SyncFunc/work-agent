@@ -176,35 +176,6 @@
 .wa-session-tab__name {
   font-size: var(--wa-f-md);
 }
-.wa-composer {
-  border-top: 1px solid var(--wa-border);
-  background: var(--wa-bg-subtle);
-  padding: var(--wa-s2) var(--wa-s3);
-  display: flex;
-  gap: var(--wa-s2);
-  align-items: flex-end;
-}
-.wa-composer__input {
-  flex: 1;
-  resize: none;
-  border: 1px solid var(--wa-border);
-  border-radius: var(--wa-r-md);
-  background: var(--wa-bg);
-  color: var(--wa-text);
-  padding: var(--wa-s2) var(--wa-s3);
-  font: inherit;
-  font-size: var(--wa-f-lg);
-  line-height: 1.5;
-  max-height: 180px;
-  min-height: 42px;
-}
-.wa-composer__input:focus {
-  border-color: var(--wa-primary);
-}
-.wa-composer__input:disabled {
-  opacity: 0.6;
-  cursor: not-allowed;
-}
 
 /* —— 可观测面板 —— */
 .wa-obs {

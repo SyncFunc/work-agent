@@ -1,8 +1,9 @@
-import { app, BrowserWindow, Menu, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, Menu, dialog, ipcMain, globalShortcut } from 'electron'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { DaemonManager } from './daemon'
-import { readSettings, writeSettings } from './settings'
+import { readSettings, readSettingsScoped, writeSettings, writeSettingsScoped } from './settings'
+import { listSkills } from './skills'
 
 // 全局单一 daemon：整个应用生命周期仅 spawn 一次。
 const daemon = new DaemonManager()
@@ -21,10 +22,38 @@ async function boot(): Promise<void> {
   ipcMain.handle('settings:write', (_e, projectRoot: string, patch: Record<string, unknown>) =>
     writeSettings(projectRoot, patch),
   )
+  // M9.9：用户级 / 项目级作用域设置读写。
+  ipcMain.handle('settings:readScopes', (_e, projectRoot: string) => readSettingsScoped(projectRoot))
+  ipcMain.handle(
+    'settings:writeScope',
+    (_e, projectRoot: string, patch: Record<string, unknown>, scope: 'user' | 'project') =>
+      writeSettingsScoped(projectRoot, patch, scope),
+  )
+  // M9.9：命令候选框可用的技能列表。
+  ipcMain.handle('skills:list', (_e, projectRoot: string) => listSkills(projectRoot))
   // M9.9：顶栏自绘菜单接管，移除原生菜单（避免与自绘菜单重复）。
   Menu.setApplicationMenu(null)
   registerWindowHandlers()
+  registerDevToolsShortcut()
   createWindow()
+}
+
+// M9.9：移除原生菜单后，默认的 Ctrl+Shift+I / F12 也会失效，这里手动注册，
+// 仅当主窗口存在/聚焦时才打开 DevTools（detach 模式不遮挡界面）。
+function registerDevToolsShortcut(): void {
+  const open = (): void => {
+    const w = mainWindow ?? BrowserWindow.getFocusedWindow()
+    if (w) w.webContents.openDevTools({ mode: 'detach' })
+  }
+  for (const acc of ['CommandOrControl+Shift+I', 'F12']) {
+    try {
+      if (!globalShortcut.register(acc, open)) {
+        console.warn(`[devtools] 快捷键注册失败: ${acc}`)
+      }
+    } catch (err) {
+      console.warn(`[devtools] 快捷键注册异常: ${acc}`, err)
+    }
+  }
 }
 
 // M9.9 窗口控制 + 打开文件夹：供自绘顶栏调用（frameless 窗口必须自带控制按钮）。
@@ -106,5 +135,6 @@ app.on('window-all-closed', () => {
 })
 
 app.on('before-quit', () => {
+  globalShortcut.unregisterAll()
   daemon.stop()
 })

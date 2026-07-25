@@ -289,6 +289,9 @@
 .wa-chat-scroll {
   position: relative;
   flex: 1;
+  /* M9.9：flex 子项默认 min-height:auto 会拒绝收缩，导致内容撑破容器、
+     聊天越过输入区被遮挡。显式 0 才能让内部正常滚动。 */
+  min-height: 0;
   overflow-y: auto;
   padding: var(--wa-s3) var(--wa-s4);
 }

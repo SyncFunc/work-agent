@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useCallback, useEffect, useRef, useState } from 'react'
 import './theme.css'
 import './layout.css'
 import type { DaemonConfig } from '../shared/daemon-config'
@@ -7,6 +7,8 @@ import { loadProjectRoot, saveProjectRoot } from '../features/projects/ProjectSw
 import { SessionTabs } from '../features/sessions/SessionTabs'
 import { useSessions } from '../features/sessions/useSessions'
 import { MessageList } from '../features/chat/MessageList'
+import { Composer } from '../features/chat/Composer'
+import type { TurnMeta, UsageSummary } from '../features/chat/MessageItem'
 import { useChatModel } from '../features/chat/useEventReducer'
 import { HitlModalHost } from '../features/hitl/HitlModalHost'
 import { useHitl } from '../features/hitl/useHitl'
@@ -14,13 +16,15 @@ import { SettingsPanel } from '../features/settings/SettingsPanel'
 import { applyTheme, loadSettings, loadTheme } from '../features/settings/settingsApi'
 import { CommandPalette } from '../features/command/CommandPalette'
 import { useCommands } from '../features/command/useCommands'
+import { useSkills } from '../features/command/useSkills'
 import { parseSlash } from '../features/command/parseSlash'
 import { useNotices } from '../features/notices/useNotices'
 import { ObsPanel } from '../features/obs/ObsPanel'
+import { useObs } from '../features/obs/useObs'
 import { Sidebar } from '../features/sidebar/Sidebar'
 import type { LeftNav } from '../features/sidebar/Sidebar'
 import { SkillsPanel, AgentsPanel } from '../features/sidebar/SpecPanels'
-import { Button, ToastStack, TitleBar } from '../components'
+import { ToastStack, TitleBar } from '../components'
 import type { ToastData, ToastKind } from '../components'
 
 const APP_NAME = 'Work Agent'
@@ -46,6 +50,43 @@ export default function App(): React.ReactElement {
   const [contextWindow, setContextWindow] = useState<number | undefined>(undefined)
   const [sidebarW, setSidebarW] = useState(() => loadNum('workagent.sidebarW', 260))
   const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('workagent.sidebarCollapsed') === '1')
+  // M9.9 步骤4：会话级 plan_mode / model（来自 SESSION_INFO），与生成中状态（running）。
+  const [sessionInfo, setSessionInfo] = useState<{ planMode: boolean; model: string }>({ planMode: false, model: '' })
+  const [running, setRunning] = useState(false)
+  // M9.9 步骤7：单轮 Token 明细 / 耗时，挂到会话最后一条助手文本块。
+  const [turnMeta, setTurnMeta] = useState<TurnMeta | null>(null)
+  const turnStartRef = useRef<number>(0)
+  const turnUsageRef = useRef<UsageSummary>(emptyUsage())
+  const estimatedRef = useRef<boolean>(false)
+  const runningRef = useRef<boolean>(false)
+  useEffect(() => {
+    runningRef.current = running
+  }, [running])
+  const finishTurn = useCallback(() => {
+    setRunning(false)
+    setTurnMeta({ duration: (Date.now() - turnStartRef.current) / 1000, usage: { ...turnUsageRef.current } })
+  }, [])
+
+  function emptyUsage(): UsageSummary {
+    return {
+      prompt_tokens: 0,
+      completion_tokens: 0,
+      reasoning_tokens: 0,
+      cache_hit_tokens: 0,
+      cache_miss_tokens: 0,
+      cache_write_tokens: 0,
+      total_tokens: 0,
+    }
+  }
+  function addUsage(acc: UsageSummary, u: Partial<UsageSummary>): void {
+    acc.prompt_tokens += u.prompt_tokens ?? 0
+    acc.completion_tokens += u.completion_tokens ?? 0
+    acc.reasoning_tokens += u.reasoning_tokens ?? 0
+    acc.cache_hit_tokens += u.cache_hit_tokens ?? 0
+    acc.cache_miss_tokens += u.cache_miss_tokens ?? 0
+    acc.cache_write_tokens += u.cache_write_tokens ?? 0
+    acc.total_tokens += u.total_tokens ?? 0
+  }
 
   // 应用启动时套用持久化主题。
   useEffect(() => {
@@ -78,7 +119,10 @@ export default function App(): React.ReactElement {
   }, [])
 
   useEffect(() => {
-    if (config) setProjectRoot(loadProjectRoot(''))
+    if (!config) return
+    // 项目根完全由用户「打开文件夹」决定（持久化在 localStorage），不做任何 env / 默认根兜底。
+    const root = loadProjectRoot('')
+    setProjectRoot(root)
   }, [config])
 
   useEffect(() => {
@@ -159,7 +203,14 @@ export default function App(): React.ReactElement {
   const hitl = useHitl(client)
   const hitlPending = hitl.pending
   const commands = useCommands(client)
+  const skills = useSkills(projectRoot)
   const notices = useNotices(client)
+  const obs = useObs(client)
+
+  // M9.9 步骤7：切换会话时清掉上一轮的 Token/耗时 信息。
+  useEffect(() => {
+    setTurnMeta(null)
+  }, [active?.id])
 
   // 统一 toast 堆叠：通知（来自 daemon）与瞬时提示（如保存成功）共用一个右下角堆叠，避免重叠。
   const [savedToasts, setSavedToasts] = useState<ToastData[]>([])
@@ -168,6 +219,17 @@ export default function App(): React.ReactElement {
     const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
     setSavedToasts((prev) => [...prev.slice(-3), { id, kind, text }])
   }
+
+  // M9.9 步骤6：会话删除结果反馈（成功提示；失败由 useSessions 重新拉取列表）。
+  useEffect(() => {
+    if (!client) return
+    const off = client.onMessage('session.delete_resp', (env) => {
+      const ok = Boolean(env.payload['ok'])
+      const err = (env.payload['error'] as string | undefined) ?? '未知错误'
+      pushToast(ok ? 'success' : 'error', ok ? '会话已彻底删除' : `删除失败：${err}`)
+    })
+    return off
+  }, [client, pushToast])
   const NOTICE_KIND: Record<string, ToastKind> = {
     notify: 'info',
     skills: 'info',
@@ -180,19 +242,100 @@ export default function App(): React.ReactElement {
     text: n.text,
   }))
 
+  // M9.9 步骤4：订阅会话状态与生成生命周期，驱动 Composer 的 plan_mode / 停止按钮。
+  useEffect(() => {
+    if (!client) return
+    const offInfo = client.onMessage('session.info', (env) => {
+      const p = env.payload as { plan_mode?: boolean; model?: string }
+      setSessionInfo({ planMode: Boolean(p.plan_mode), model: String(p.model ?? '') })
+    })
+    const offCancelled = client.onMessage('task.cancelled', () => finishTurn())
+    const offAttached = client.onMessage('attached', () => finishTurn())
+    const offEvent = client.onEvent((ev) => {
+      if (ev.type === 'decision') finishTurn()
+    })
+    // M9.9 步骤7：累计单轮完整用量明细，并实时刷新耗时。
+    const offUsage = client.onMessage('usage', (env) => {
+      if (!runningRef.current) return
+      const payload = env.payload as { usage?: Partial<UsageSummary>; estimated?: boolean }
+      const u = payload.usage ?? {}
+      addUsage(turnUsageRef.current, u)
+      if (payload.estimated) estimatedRef.current = true
+      setTurnMeta({
+        duration: (Date.now() - turnStartRef.current) / 1000,
+        usage: { ...turnUsageRef.current },
+      })
+    })
+    return () => {
+      offInfo()
+      offCancelled()
+      offAttached()
+      offEvent()
+      offUsage()
+    }
+  }, [client])
+
   const submit = (): void => {
     const text = draft.trim()
     if (!text) return
     const slash = parseSlash(text)
     if (slash && client) {
+      const cmdName = slash.name.toLowerCase()
+      const known = commands.commands.some((c) => c.name.toLowerCase() === cmdName)
+      // 识别「斜杠名即技能名」（/skillname prompt）与规范形式（/skill name prompt）：
+      // 先加载技能，再把 prompt 作为任务发给 agent 触发回复。
+      let skillName: string | undefined
+      let prompt = slash.args
+      if (known && cmdName === 'skill') {
+        const sp = slash.args.indexOf(' ')
+        skillName = (sp < 0 ? slash.args : slash.args.slice(0, sp)).trim() || undefined
+        prompt = sp < 0 ? '' : slash.args.slice(sp + 1).trim()
+      } else if (!known) {
+        const s = skills.find((x) => x.name.toLowerCase() === cmdName)
+        if (s) {
+          skillName = s.name
+          prompt = slash.args
+        }
+      }
+      if (skillName) {
+        client.command('skill', skillName)
+        if (prompt) {
+          turnStartRef.current = Date.now()
+          turnUsageRef.current = emptyUsage()
+          estimatedRef.current = false
+          setTurnMeta(null)
+          sessions.sendTask(prompt)
+          setRunning(true)
+        } else {
+          pushToast('info', `已加载技能：${skillName}`)
+        }
+        setDraft('')
+        return
+      }
       client.command(slash.name, slash.args ? slash.args : null)
     } else {
+      turnStartRef.current = Date.now()
+      turnUsageRef.current = emptyUsage()
+      estimatedRef.current = false
+      setTurnMeta(null)
       sessions.sendTask(text)
+      setRunning(true)
     }
     setDraft('')
   }
 
-  const inputDisabled = !active || hitlPending
+  // M9.9 步骤4：停止生成（真实中断 LLM 流）。
+  const handleStop = (): void => {
+    client?.cancelTask()
+  }
+
+  // M9.9 步骤4：计划 / 执行模式分段切换（乐观更新 + 发命令 + 提示）。
+  const handleTogglePlan = (): void => {
+    const next = !sessionInfo.planMode
+    setSessionInfo((s) => ({ ...s, planMode: next }))
+    commands.run(next ? 'plan' : 'exec')
+    pushToast('info', next ? '已切换到计划模式（仅规划，不执行）' : '已切换到执行模式')
+  }
 
   // M9.9 顶栏菜单动作（真实功能）。
   const clearCurrent = (): void => {
@@ -226,6 +369,7 @@ export default function App(): React.ReactElement {
         onOpen={sessions.openSession}
         onCreate={() => sessions.createSession()}
         onFork={sessions.forkSession}
+        onDelete={sessions.deleteSession}
         onSettings={() => setSettingsOpen(true)}
         onCollapse={() =>
           setSidebarCollapsed((v) => {
@@ -260,35 +404,28 @@ export default function App(): React.ReactElement {
                     会话 <code>{active.name}</code> · {active.events.length} 条事件
                     {sessions.state.replaying ? '（回放中…）' : ''}
                   </p>
-                  <MessageList model={model} autoScroll />
+                  <MessageList model={model} autoScroll turnMeta={turnMeta} />
                 </div>
               )}
             </section>
-            <footer className="wa-composer">
-              <textarea
-                className="wa-composer__input"
-                value={draft}
-                rows={1}
-                onChange={(e) => setDraft(e.target.value)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' && !e.shiftKey) {
-                    e.preventDefault()
-                    submit()
-                  }
-                }}
-                placeholder={
-                  active
-                    ? hitlPending
-                      ? '等待人工确认…'
-                      : '输入任务，或 / 开头执行命令（Ctrl/Cmd+K 命令面板）'
-                    : '请先打开会话'
-                }
-                disabled={inputDisabled}
+            {active && (
+              <Composer
+                draft={draft}
+                onDraftChange={setDraft}
+                onSubmit={submit}
+                onStop={handleStop}
+                running={running}
+                planMode={sessionInfo.planMode}
+                onTogglePlan={handleTogglePlan}
+                model={sessionInfo.model}
+                contextTokens={obs.usage?.prompt_tokens}
+                contextWindow={contextWindow}
+                onShowSkills={() => setLeftNav('skills')}
+                commands={commands.commands}
+                skills={skills}
+                disabled={hitlPending}
               />
-              <Button variant="primary" onClick={submit} disabled={inputDisabled}>
-                {parseSlash(draft) ? '执行' : '发送'}
-              </Button>
-            </footer>
+            )}
           </>
         )}
         {leftNav === 'skills' && <SkillsPanel client={client} onClose={() => setLeftNav('chat')} />}

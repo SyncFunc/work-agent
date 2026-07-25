@@ -3,6 +3,7 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import type { ChatModel } from './useEventReducer'
+import type { TurnMeta } from './MessageItem'
 import { MessageItem } from './MessageItem'
 import { ToolBlock } from './ToolBlock'
 import { SubagentCard } from './SubagentCard'
@@ -14,16 +15,25 @@ export function MessageList({
   model,
   defaultToolCollapsed = false,
   autoScroll = false,
+  turnMeta = null,
 }: {
   model: ChatModel
   /** 工具调用默认折叠（子 agent 块内为 true）。 */
   defaultToolCollapsed?: boolean
   /** 主聊天区启用自动滚动（子 agent 卡内为 false）。 */
   autoScroll?: boolean
+  /** M9.9 步骤7：单轮 Token / 耗时，仅挂到最后一条助手文本块。 */
+  turnMeta?: TurnMeta | null
 }): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
   const [showJump, setShowJump] = useState(false)
+
+  // M9.9 步骤7：定位最后一条「助手文本块」，把 Token/耗时 仅挂到它身上。
+  let lastTextIdx = -1
+  model.blocks.forEach((b, i) => {
+    if (b.type === 'text') lastTextIdx = i
+  })
 
   const scrollToBottom = (): void => {
     const el = scrollRef.current
@@ -45,10 +55,10 @@ export function MessageList({
 
   const content = (
     <div className="wa-chat">
-      {model.blocks.map((b) => {
+      {model.blocks.map((b, i) => {
         if (b.type === 'subagent') return <SubagentCard key={b.key} block={b} />
         if (b.type === 'tool') return <ToolBlock key={b.key} block={b} defaultCollapsed={defaultToolCollapsed} />
-        return <MessageItem key={b.key} block={b} />
+        return <MessageItem key={b.key} block={b} turnMeta={i === lastTextIdx ? turnMeta : null} />
       })}
     </div>
   )

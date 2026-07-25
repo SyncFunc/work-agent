@@ -142,9 +142,10 @@ def _from_openai(tc: Any) -> ToolCall:
 def _usage_to_dict(usage: Any) -> dict[str, int] | None:
     """OpenAI 兼容的 usage 对象 → 归一化 dict；无 usage 时返回 None。
 
-    除基础 prompt/completion/total 外，还解析文档扩展字段：
+    除基础 prompt/completion/total 外，还解析文档扩展字段（对齐前端 UsagePayload）：
     - ``reasoning_tokens``（推理模型思维链 token，嵌套在 completion_tokens_details）
-    - ``prompt_cache_hit_tokens`` / ``prompt_cache_miss_tokens``（上下文缓存命中情况）
+    - ``cache_hit_tokens`` / ``cache_miss_tokens``（上下文缓存命中/未命中）
+    - ``cache_write_tokens``（本请求新写入上下文缓存的 token）
     """
     if usage is None:
         return None
@@ -153,13 +154,28 @@ def _usage_to_dict(usage: Any) -> dict[str, int] | None:
         "completion_tokens": int(getattr(usage, "completion_tokens", 0) or 0),
         "total_tokens": int(getattr(usage, "total_tokens", 0) or 0),
     }
-    if (v := getattr(usage, "prompt_cache_hit_tokens", None)) is not None:
-        d["prompt_cache_hit_tokens"] = int(v)
-    if (v := getattr(usage, "prompt_cache_miss_tokens", None)) is not None:
-        d["prompt_cache_miss_tokens"] = int(v)
+    # —— 思维链 token ——
     details = getattr(usage, "completion_tokens_details", None)
     if details is not None and (v := getattr(details, "reasoning_tokens", None)) is not None:
         d["reasoning_tokens"] = int(v)
+    if (v := getattr(usage, "reasoning_tokens", None)) is not None:
+        d["reasoning_tokens"] = int(v)
+    # —— 缓存相关（优先取 prompt_tokens_details，再兼容扁平写法）——
+    pdetails = getattr(usage, "prompt_tokens_details", None)
+    if pdetails is not None:
+        if (v := getattr(pdetails, "cached_tokens", None)) is not None:
+            d["cache_hit_tokens"] = int(v)
+        if (v := getattr(pdetails, "cache_creation_input_tokens", None)) is not None:
+            d["cache_write_tokens"] = int(v)
+    if (v := getattr(usage, "prompt_cache_hit_tokens", None)) is not None:
+        d.setdefault("cache_hit_tokens", int(v))
+    if (v := getattr(usage, "prompt_cache_miss_tokens", None)) is not None:
+        d.setdefault("cache_miss_tokens", int(v))
+    if (v := getattr(usage, "cache_creation_input_tokens", None)) is not None:
+        d.setdefault("cache_write_tokens", int(v))
+    # 仅知道命中时，按 prompt - hit 推导未命中
+    if "cache_hit_tokens" in d and "cache_miss_tokens" not in d:
+        d["cache_miss_tokens"] = max(0, d["prompt_tokens"] - d["cache_hit_tokens"])
     return d
 
 

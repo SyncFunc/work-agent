@@ -91,10 +91,19 @@
   font: inherit;
   font-size: var(--wa-f-sm);
   font-weight: 600;
-  cursor: default;
+  cursor: pointer;
+  transition: filter var(--wa-dur-fast) var(--wa-ease),
+    transform var(--wa-dur-fast) var(--wa-ease);
 }
 .wa-newtask:hover {
-  background: var(--wa-primary-strong);
+  filter: brightness(0.94);
+}
+.wa-newtask:active {
+  transform: translateY(1px);
+}
+.wa-newtask:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
 }
 
 /* 导航菜单（技能 / 智能体 / 可观测） */
@@ -220,6 +229,39 @@
   background: var(--wa-success);
   flex: none;
   box-shadow: 0 0 0 3px var(--wa-success-weak, rgba(40, 167, 69, 0.18));
+}
+/* M9.9 步骤6：删除二次确认 */
+.wa-history-item__confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.wa-history-item__confirm-yes,
+.wa-history-item__confirm-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.wa-history-item__confirm-yes {
+  background: rgba(255, 99, 99, 0.16);
+  color: #ff7878;
+}
+.wa-history-item__confirm-yes:hover {
+  background: rgba(255, 99, 99, 0.28);
+}
+.wa-history-item__confirm-no {
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text-muted);
+}
+.wa-history-item__confirm-no:hover {
+  background: var(--wa-surface-hover);
+  color: var(--wa-text);
 }
 
 /* 底部用户栏 */

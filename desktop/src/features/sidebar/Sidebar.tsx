@@ -1,5 +1,5 @@
 import React, { useState } from 'react'
-import { Sparkles, Bot, BarChart2, Search, Plus, Settings, PanelLeft, GitBranch } from 'lucide-react'
+import { Sparkles, Bot, BarChart2, Search, Plus, Settings, PanelLeft, GitBranch, Trash2, Check, X } from 'lucide-react'
 import type { SessionInfo } from '../../protocol/types'
 import { IconButton } from '../../components'
 import './Sidebar.css'
@@ -19,6 +19,7 @@ interface SidebarProps {
   onOpen: (id: string) => void
   onCreate: () => void
   onFork: (id: string) => void
+  onDelete: (id: string) => void
   onSettings: () => void
   onCollapse: () => void
   onUser: () => void
@@ -64,11 +65,14 @@ export function Sidebar(props: SidebarProps): React.ReactElement {
     onOpen,
     onCreate,
     onFork,
+    onDelete,
     onSettings,
     onCollapse,
     onUser,
   } = props
   const [query, setQuery] = useState('')
+  // M9.9 步骤6：删除二次确认。
+  const [confirmId, setConfirmId] = useState<string | null>(null)
 
   if (collapsed) {
     return (
@@ -157,15 +161,57 @@ export function Sidebar(props: SidebarProps): React.ReactElement {
                     <span className="wa-history-item__time">{relTime(s.last_activity)}</span>
                   </span>
                   {s.running && <span className="wa-history-item__running" title="运行中" />}
-                  <IconButton
-                    icon={<GitBranch size={14} />}
-                    label="fork 出新会话"
-                    size="sm"
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      onFork(s.id)
-                    }}
-                  />
+                  {confirmId === s.id ? (
+                    <span
+                      className="wa-history-item__confirm"
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        className="wa-history-item__confirm-yes"
+                        title="确认删除"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmId(null)
+                          onDelete(s.id)
+                        }}
+                      >
+                        <Check size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="wa-history-item__confirm-no"
+                        title="取消"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmId(null)
+                        }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </span>
+                  ) : (
+                    <>
+                      <IconButton
+                        icon={<GitBranch size={14} />}
+                        label="fork 出新会话"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onFork(s.id)
+                        }}
+                      />
+                      <IconButton
+                        icon={<Trash2 size={14} />}
+                        label="删除会话"
+                        size="sm"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setConfirmId(s.id)
+                        }}
+                      />
+                    </>
+                  )}
                 </li>
               )
             })}

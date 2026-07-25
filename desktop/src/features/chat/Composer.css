@@ -1,0 +1,289 @@
+/* Composer：M9.9 步骤4 圆角独立输入容器。
+ * 注意：本文件只负责 Composer 专属样式；通用按钮（.wa-btn 体系）由 ui.css 统一管理，
+ * 这里不要重复定义 .wa-btn，否则会覆盖 ui.css 并使「可观测刷新」等按钮变暗。 */
+
+.wa-composer {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0 16px 14px;
+  padding: 8px 10px 10px;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-lg);
+  background: var(--wa-bg);
+  box-shadow: var(--wa-shadow-sm);
+  transition: border-color var(--wa-dur-fast) var(--wa-ease),
+    box-shadow var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-composer:focus-within {
+  border-color: var(--wa-primary);
+  box-shadow: 0 0 0 3px var(--wa-primary-weak);
+}
+
+/* 命令候选框（M9.9 步骤5 / 步骤8：命令 + 技能 分组） */
+.wa-cand {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin-bottom: 6px;
+  padding: 4px;
+  max-height: 264px;
+  overflow-y: auto;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg);
+  box-shadow: var(--wa-shadow-lg);
+}
+.wa-cand__group-label {
+  padding: 6px 10px 3px;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--wa-text-faint);
+}
+.wa-cand__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 7px 10px;
+  border: none;
+  border-radius: var(--wa-r-sm);
+  background: transparent;
+  color: var(--wa-text);
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-cand__item:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-cand__item--active,
+.wa-cand__item--active:hover {
+  background: var(--wa-primary);
+  color: #fff;
+  box-shadow: inset 2px 0 0 rgba(255, 255, 255, 0.85);
+}
+.wa-cand__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: none;
+  border-radius: 6px;
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text-muted);
+}
+.wa-cand__item--active .wa-cand__icon {
+  background: rgba(255, 255, 255, 0.18);
+  color: #fff;
+}
+.wa-cand__text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  gap: 1px;
+}
+.wa-cand__name {
+  font-size: 13px;
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.wa-cand__desc {
+  font-size: 12px;
+  color: var(--wa-text-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-cand__item--active .wa-cand__desc {
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.wa-composer__top {
+  display: flex;
+  align-items: center;
+}
+
+.wa-composer__attach {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border: none;
+  border-radius: var(--wa-r-sm);
+  background: transparent;
+  color: var(--wa-text-muted);
+  cursor: pointer;
+}
+.wa-composer__attach:hover:not(:disabled) {
+  background: var(--wa-surface-hover);
+  color: var(--wa-text);
+}
+.wa-composer__attach:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.wa-composer__input {
+  width: 100%;
+  min-height: 60px;
+  max-height: 220px;
+  resize: none;
+  border: none;
+  outline: none;
+  background: transparent;
+  color: var(--wa-text);
+  font: 14px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "PingFang SC",
+    "Microsoft YaHei", sans-serif;
+  padding: 8px 10px;
+}
+.wa-composer__input::placeholder {
+  color: var(--wa-text-muted);
+}
+
+.wa-composer__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.wa-composer__footer-left {
+  display: flex;
+  align-items: center;
+  padding-left: 10px; /* 与 textarea 内边距对齐，使模式按钮与输入光标左对齐 */
+}
+.wa-composer__footer-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+/* 上下文占用徽标 */
+.wa-usage-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 8px;
+  border-radius: var(--wa-r-pill);
+  font-size: 12px;
+  color: var(--wa-text-muted);
+  background: var(--wa-bg-subtle);
+  border: 1px solid var(--wa-border);
+  cursor: help;
+}
+.wa-usage-badge--warn {
+  color: #b26a00;
+  background: rgba(255, 170, 0, 0.12);
+  border-color: rgba(255, 170, 0, 0.3);
+}
+.wa-usage-badge--muted {
+  opacity: 0.7;
+}
+.wa-usage-badge__pct {
+  font-variant-numeric: tabular-nums;
+}
+
+/* 上下文占用圆环：常驻圆环，hover 展示数字详情 */
+.wa-ctx-ring {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 2px 4px;
+  border-radius: var(--wa-r-pill);
+  outline: none;
+  cursor: help;
+}
+.wa-ctx-ring__svg {
+  display: block;
+  transform: rotate(-90deg);
+}
+.wa-ctx-ring__track {
+  fill: none;
+  stroke: var(--wa-border);
+  stroke-width: 2.5;
+}
+.wa-ctx-ring__bar {
+  fill: none;
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  transition: stroke-dashoffset 0.4s var(--wa-ease), stroke 0.3s var(--wa-ease);
+}
+.wa-ctx-ring__model {
+  font-size: 12px;
+  color: var(--wa-text-muted);
+  max-width: 150px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wa-ctx-ring__tip {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  right: 0;
+  padding: 5px 9px;
+  border-radius: var(--wa-r-sm);
+  background: var(--wa-bg-solid);
+  color: var(--wa-text);
+  font-size: 12px;
+  white-space: nowrap;
+  border: 1px solid var(--wa-border);
+  box-shadow: var(--wa-shadow-md);
+  opacity: 0;
+  transform: translateY(4px);
+  pointer-events: none;
+  transition: opacity 0.15s var(--wa-ease), transform 0.15s var(--wa-ease);
+  z-index: 5;
+}
+.wa-ctx-ring:hover .wa-ctx-ring__tip,
+.wa-ctx-ring:focus .wa-ctx-ring__tip,
+.wa-ctx-ring:focus-visible .wa-ctx-ring__tip {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+
+/* 模式分段控件 */
+.wa-seg {
+  display: inline-flex;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  overflow: hidden;
+  background: var(--wa-bg-subtle);
+}
+.wa-seg__item {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 5px 10px;
+  border: none;
+  background: transparent;
+  color: var(--wa-text-muted);
+  font-size: 12px;
+  cursor: pointer;
+}
+.wa-seg__item:hover {
+  color: var(--wa-text);
+}
+.wa-seg__item--active {
+  color: #fff;
+  background: var(--wa-primary);
+}
+
+.wa-composer__model {
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+  color: var(--wa-text-muted);
+  padding: 0 2px;
+}

@@ -32,6 +32,8 @@ export const COMMANDS: CommandDef[] = [
 export interface UseCommands {
   commands: CommandDef[]
   run: (name: string, args?: string) => void
+  /** M9.9 步骤5：按关键字过滤交互命令候选（用于 Composer 候选框）。 */
+  interactive: (q?: string) => CommandDef[]
 }
 
 export function useCommands(client: DaemonClient | null): UseCommands {
@@ -42,5 +44,12 @@ export function useCommands(client: DaemonClient | null): UseCommands {
     [client],
   )
   const commands = useMemo(() => COMMANDS, [])
-  return { commands, run }
+  const interactive = useCallback((q?: string) => {
+    const kw = (q ?? '').trim().toLowerCase()
+    if (!kw) return commands
+    return commands.filter(
+      (c) => c.name.toLowerCase().includes(kw) || c.description.toLowerCase().includes(kw),
+    )
+  }, [commands])
+  return { commands, run, interactive }
 }
