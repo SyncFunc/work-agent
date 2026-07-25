@@ -48,6 +48,11 @@ class SessionLike(Protocol):
     skill_loader: SkillLoader | None
     loop: Any
     settings: Settings
+    # M9 subsession：daemon 模式由 registry 在 new/restore 时注入（见 registry.py），
+    # 使后台 subagent 能走独立 subsession 实时转发；CLI 模式保持 None。显式列入契约，
+    # 避免注册表赋值被 basedpyright 判为「未知属性」。
+    daemon_handle: Any
+    daemon_registry: Any
 
     def step(
         self,

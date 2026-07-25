@@ -30,8 +30,10 @@ from agent.core.events import Event
 from agent.daemon.protocol import MsgType
 
 if TYPE_CHECKING:
+    from agent.context.session_store import SessionStore
     from agent.core.session import SessionLike
     from agent.daemon.bridge import BridgeTransport
+    from agent.obs.store import TraceStore
 
 
 DEFAULT_BUFFER_SIZE = 200
@@ -99,8 +101,8 @@ class SessionRegistry:
         session_factory: Callable[[str, str], SessionLike] | None = None,
         transport_factory: Callable[[SessionHandle], BridgeTransport] | None = None,
         restore_factory: Callable[[str, str], SessionLike | None] | None = None,
-        store_factory: Callable[[str], object] | None = None,
-        trace_store_factory: Callable[[str], object] | None = None,
+        store_factory: Callable[[str], SessionStore] | None = None,
+        trace_store_factory: Callable[[str], TraceStore] | None = None,
     ) -> None:
         self._sessions: dict[str, SessionHandle] = {}
         # 工厂签名（M9.0）：一律带入 project_root，按项目解析 settings / SessionStore。
