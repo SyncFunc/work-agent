@@ -28,7 +28,7 @@ if TYPE_CHECKING:
     from agent.core.events import EventStream
     from agent.core.loop import AgentResult
     from agent.core.plan import PlanStep
-    from agent.daemon.registry import SessionHandle
+    from agent.daemon.registry import ConnLike, SessionHandle
 
 
 def _action_to_dict(a: Action) -> dict[str, Any]:
@@ -169,3 +169,67 @@ class BridgeTransport(AgentTransport):
             self._send(MsgType.USAGE, {"usage": {"estimated_tokens": est}, "estimated": True})
         else:
             self._send(MsgType.USAGE, {"usage": usage, "estimated": False})
+
+
+class SubsessionBridgeTransport(BridgeTransport):
+    """子会话（subsession）专用 transport：复用父会话的 ``attached_conn`` 做事件多路复用。
+
+    MVP 原则（见里程碑方案 §7 Step D）：不引入多连接路由重构——子 agent 事件经父连接
+    转发，仅 EVENT 消息额外携带 ``subsession_id``，前端按 id 建独立 panel。HITL（ask/approve）
+    也复用父连接（子代理默认非交互，极少触发）。
+
+    - ``_send`` 发往 ``parent_handle.attached_conn``（而非自身 handle 的空连接）。
+    - ``_on_event`` 写入自身 subsession handle 的 ``event_buffer``（供回放），并实时转发
+      给父连接、附带 ``subsession_id``。
+    """
+
+    def __init__(self, parent_handle: SessionHandle, handle: SessionHandle) -> None:
+        super().__init__(handle)
+        self.parent_handle = parent_handle
+
+    def _resolve_conn(self) -> ConnLike | None:
+        """解析实际发送连接：沿父链向上找最近一个已 attach 的会话句柄。
+
+        子会话自身从不被客户端 attach（attached_conn 恒为 None），其事件须复用父会话
+        当前连接。嵌套 subsession 时沿 parent_id 逐层上溯，取到真实连接（兼容父会话
+        中途 detach/switch 后连接变更）。
+        """
+        h: SessionHandle | None = self.parent_handle
+        seen: set[str] = set()
+        while h is not None:
+            if h.attached_conn is not None:
+                return h.attached_conn
+            if h.parent_id and h.registry is not None and h.session_id not in seen:
+                seen.add(h.session_id)
+                h = h.registry._subsessions.get(h.parent_id) or h.registry._sessions.get(
+                    h.parent_id
+                )
+            else:
+                break
+        return None
+
+    def _send(self, mtype: MsgType, payload: dict[str, Any], *, id: str | None = None) -> None:
+        conn = self._resolve_conn()
+        if conn is None:
+            return
+        self._track(
+            asyncio.ensure_future(
+                conn.send(mtype, payload, id=id, session=self.parent_handle.session_id)
+            )
+        )
+
+    def _on_event(self, ev: Event) -> None:
+        # 仅非 transient 事件进回放缓冲（与父会话一致）。
+        if not ev.transient:
+            self.handle.event_buffer.append(ev)
+        conn = self._resolve_conn()
+        if conn is not None:
+            self._track(
+                asyncio.ensure_future(
+                    conn.send(
+                        MsgType.EVENT,
+                        {"event": ev.to_dict(), "subsession_id": self.handle.session_id},
+                        session=self.parent_handle.session_id,
+                    )
+                )
+            )

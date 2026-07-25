@@ -13,6 +13,7 @@
 | **M6 生产化** | 可恢复可观测可测 | 会话恢复 + 测试金字塔 + CI | ⚪ 待启动 |
 | **M7 agentrunner 守护进程分离** | 渲染层与 agentrunner 完全分离为守护进程 + 前端 | daemon + WS 协议 + CLI 客户端 + 多会话切换 | 🟢 已完成（M7.1–M7.6 全部落地，全量 `pytest` 380 passed） |
 | **M8 CLI 全屏重构** | Textual 全屏 TUI，对标 Claude Code 美观与交互 | `TextualTransport`(新 `AgentTransport` 实现) + 全屏 `App` + 流式 Markdown / 可折叠工具块 / diff 高亮 / HITL 模态 / 命令面板 / 多主题 | 🔵 文档已生成（`milestones/M8-CLI全屏重构/`，M8.0–M8.7 分步计划就绪，待编码落地） |
+| **M9 Electron 桌面客户端** | 基于 agentrunner 的桌面客户端：Electron 内拉起 daemon，React+TS 渲染层直连 WS，功能对标 M8 | 全局单 daemon（多项目感知）+ `desktop/`(Electron+Vite+React+TS) + TS 协议库 + 项目管理/多会话 + 流式渲染 + HITL + 设置/命令面板 + 可观测 | ⚪ 文档已生成（`milestones/M9-Electron桌面客户端/`，M9.0–M9.7 分步计划就绪，待编码落地） |
 
 ## M1 步骤文件
 
@@ -56,6 +57,19 @@
 - `milestones/M8-CLI全屏重构/M8.5-主题命令面板状态栏.md`
 - `milestones/M8-CLI全屏重构/M8.6-子agent渲染接入与验收.md`
 - `milestones/M8-CLI全屏重构/M8.7-迁移切换.md`
+
+## M9 步骤文件（分步计划已生成，待编码落地）
+
+- 设计依据：`agent/daemon/protocol.py` + `agent/core/events.py`（协议与 Event 流事实来源）、`agent/daemon/server.py`/`registry.py`（多项目感知改造点）、M7/M8 既有的渲染/HITL/可观测交互（功能等价参考，代码不复用）
+- `milestones/M9-Electron桌面客户端/README.md` — 里程碑计划与步骤索引（目标 / 已确认决策 / 架构总览 / 前置依赖 / 步骤索引）
+- `milestones/M9-Electron桌面客户端/M9.0-daemon多项目感知.md` — **前置**：daemon 改为多项目感知（按 `project_root` 隔离 settings/SessionStore）+ 协议扩展携带 `project_root`
+- `milestones/M9-Electron桌面客户端/M9.1-Electron外壳与daemon生命周期.md` — `desktop/` 脚手架 + 主进程 spawn/守护/kill 单例 daemon + 渲染进程直连 WS
+- `milestones/M9-Electron桌面客户端/M9.2-TS协议客户端库.md` — TS 协议客户端库（编解码/重连/HITL 配对/Event 反序列化）+ Python↔TS 契约测试
+- `milestones/M9-Electron桌面客户端/M9.3-项目管理与多会话.md` — 项目根切换 + 多会话标签页 + 会话列表 + resume/fork + 重放
+- `milestones/M9-Electron桌面客户端/M9.4-流式渲染与工具块.md` — 流式 Markdown + 可折叠工具块 + diff 高亮 + 参数/结果分离
+- `milestones/M9-Electron桌面客户端/M9.5-HITL模态与审批可视化.md` — HITL 模态（ask/confirm_plan/approve）+ 审批/沙箱可视化
+- `milestones/M9-Electron桌面客户端/M9.6-设置面板与命令面板.md` — 设置面板 + 命令面板 + 斜杠命令
+- `milestones/M9-Electron桌面客户端/M9.7-可观测面板.md` — 上下文状态栏 + trace 树 + 日志 + 后台子 agent 状态（含 daemon `trace.query` 扩展）
 
 ## M5 步骤文件（5.1–5.5 已全部编码落地，全量 `pytest` 314 passed）
 

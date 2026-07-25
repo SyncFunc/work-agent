@@ -78,7 +78,7 @@ def _split_frontmatter(text: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------- #
 # M4.5：System Prompt 静态段 / 动态段分离 + 固定底座（AGENTS.md）
 # --------------------------------------------------------------------------- #
-def _read_agents_md(settings) -> str | None:
+def _read_agents_md(settings, cwd: Path | None = None) -> str | None:
     """读取项目级 ``AGENTS.md`` 固定底座内容（永不压缩，每次投影重新注入）。
 
     位置优先级（高 → 低）：
@@ -90,7 +90,7 @@ def _read_agents_md(settings) -> str | None:
     """
     if not getattr(settings, "context", None) or not settings.context.agents_md_enabled:
         return None
-    root = Path(os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd())
+    root = cwd or Path(os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd())
     user_root = Path(os.environ.get("AGENT_USER_CONFIG_DIR") or Path.home() / ".agent")
     rel = settings.context.agents_md_path or "AGENTS.md"
     candidates = [
@@ -107,7 +107,7 @@ def _read_agents_md(settings) -> str | None:
     return None
 
 
-def _build_dynamic_segment(settings) -> str:
+def _build_dynamic_segment(settings, cwd: Path | None = None) -> str:
     """构建 System Prompt 动态段（每轮更新，不进 prompt cache）。
 
     含：AGENTS.md 固定底座、当前工作目录、当前日期、Git 仓库状态。
@@ -124,14 +124,15 @@ def _build_dynamic_segment(settings) -> str:
     parts: list[str] = []
     # ① AGENTS.md 固定底座（最不易变，排首位以纳入缓存前缀）：永不压缩，每次从磁盘重新读取注入。
     if settings.context.agents_md_enabled:
-        agents_content = _read_agents_md(settings)
+        agents_content = _read_agents_md(settings, cwd=cwd)
         if agents_content:
             parts.append(f"<system-reminder>\n## AGENTS.md\n{agents_content}\n</system-reminder>\n")
 
     # ② 当前工作目录（会话内基本不变，排第二位）：让模型明确知道自己在哪个目录工作，
     #    尤其是从其他目录用 AGENT_PROJECT_ROOT 启动、或 cwd 与项目根不一致时。
-    cwd = Path.cwd()
-    proj_root_env = os.environ.get("AGENT_PROJECT_ROOT")
+    #    M9.0 多项目：cwd 由 Session 传入 project_root，确保 agent 落在打开的项目目录。
+    cwd = cwd or Path.cwd()
+    proj_root_env = os.environ.get("AGENT_PROJECT_ROOT") or str(cwd)
     if proj_root_env:
         parts.append(f"## 当前工作目录\n{cwd}\n项目根目录（AGENT_PROJECT_ROOT）：{proj_root_env}\n")
     else:
@@ -146,11 +147,13 @@ def _build_dynamic_segment(settings) -> str:
             ["git", "branch", "--show-current"],
             text=True,
             stderr=subprocess.DEVNULL,
+            cwd=str(cwd),
         ).strip()
         status = subprocess.check_output(
             ["git", "status", "--short"],
             text=True,
             stderr=subprocess.DEVNULL,
+            cwd=str(cwd),
         ).strip()
         if branch or status:
             parts.append(f"## Git 状态\n分支：{branch}\n{status[:1000]}\n")
@@ -168,6 +171,7 @@ def _build_system_parts(
     clarify_enabled: bool = True,
     skills_catalog: str = "",
     agents_catalog: str = "",
+    cwd: Path | None = None,
 ) -> tuple[str, str]:
     """构建静态段与动态段（分别返回），供 ``build_system_prompt`` 拼接，也供上下文计量使用。"""
     try:
@@ -185,7 +189,7 @@ def _build_system_parts(
         skills_catalog=skills_catalog,
         agents_catalog=agents_catalog,
     )
-    dynamic = _build_dynamic_segment(settings)
+    dynamic = _build_dynamic_segment(settings, cwd=cwd)
     return static, dynamic
 
 
@@ -197,6 +201,7 @@ def build_system_prompt(
     clarify_enabled: bool = True,
     skills_catalog: str = "",
     agents_catalog: str = "",
+    cwd: Path | None = None,
 ) -> str:
     """构建完整 System Prompt（静态段 + 动态段），稳定前缀在前以复用 prompt cache。
 
@@ -211,6 +216,7 @@ def build_system_prompt(
         clarify_enabled=clarify_enabled,
         skills_catalog=skills_catalog,
         agents_catalog=agents_catalog,
+        cwd=cwd,
     )
     if dynamic:
         return static + "\n\n" + dynamic

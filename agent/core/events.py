@@ -169,13 +169,24 @@ class EventStream:
     websocket），无需等到 ``run`` 结束才随 ``AgentResult`` 返回。
     """
 
-    def __init__(self) -> None:
+    def __init__(self, maxlen: int | None = None) -> None:
         self._events: list[Event] = []
         self._sinks: list[EventSink] = []
+        # 单调计数器：seq 全局唯一，与列表长度解耦。即使因 maxlen 截断列表，
+        # seq 也不会回退/复用（否则会与历史事件冲突、重演 Step A 消灭的 seq 重复 bug）。
+        self._seq = 0
+        # 内存上限（防 OOM）：非 None 时 _events 仅保留最近 maxlen 条。
+        # 持久化不受影响（SessionStoreSink 仍全量落盘 sqlite）。
+        self.maxlen = maxlen
 
     def subscribe(self, sink: EventSink) -> None:
-        """注册一个实时事件处理器（渲染/转发）。无去重，多次订阅多次分发。"""
-        self._sinks.append(sink)
+        """注册一个实时事件处理器（渲染/转发）。幂等：同一 sink 重复订阅只生效一次。
+
+        幂等性使「session 级 EventStream 被 loop.run 跨多轮复用」时，bridge / sink
+        不会因每轮重新 bind/subscribe 而被重复分发（否则每轮事件会被转发/落盘多次）。
+        """
+        if sink not in self._sinks:
+            self._sinks.append(sink)
 
     def unsubscribe(self, sink: EventSink) -> None:
         """移除已注册的处理器。"""
@@ -185,11 +196,14 @@ class EventStream:
             pass
 
     def append(self, ev: Event) -> Event:
-        # 写入时自动分配 seq（同步、无 await，单线程下原子，并发调工具也安全）。
-        ev.seq = len(self._events)
+        # 用单调计数器分配全局唯一 seq（不依赖 len(_events)，以支持 maxlen 截断）。
+        ev.seq = self._seq
+        self._seq += 1
         if ev.ts == 0.0:
             ev.ts = time.time()
         self._events.append(ev)
+        if self.maxlen is not None and len(self._events) > self.maxlen:
+            self._events.pop(0)
         # 实时分发：订阅者（终端渲染 / web 转发）在事件落盘后立即收到，无需等待 run 结束。
         for sink in self._sinks:
             sink(ev)
@@ -218,8 +232,29 @@ class EventStream:
         return json.dumps([e.to_dict() for e in self._events], ensure_ascii=False, indent=2)
 
     @classmethod
-    def from_json(cls, s: str) -> EventStream:
-        es = cls()
+    def from_json(cls, s: str, maxlen: int | None = None) -> EventStream:
+        es = cls(maxlen=maxlen)
+        seqs: list[int] = []
         for d in json.loads(s):
-            es._events.append(Event.from_dict(d))
+            ev = Event.from_dict(d)
+            es._events.append(ev)
+            if ev.seq >= 0:
+                seqs.append(ev.seq)
+        # 续写计数器从已加载事件的最大 seq+1 起，保证后续 append 全局唯一。
+        es._seq = (max(seqs) + 1) if seqs else 0
         return es
+
+    def tail(self, maxlen: int) -> EventStream:
+        """返回仅含最近 ``maxlen`` 条（保留真实 seq）的新流；后续 append 从最大 seq+1 续接。
+
+        用于会话恢复后限定运行期内存（防 OOM）：``rebuild_messages`` 已用完整流重建消息，
+        此处仅保留窗口供 daemon 回放播种，真实历史仍在 sqlite。
+        """
+        capped = EventStream(maxlen=maxlen)
+        recent = (
+            self._events[-maxlen:] if maxlen and len(self._events) > maxlen else list(self._events)
+        )
+        for ev in recent:
+            capped._events.append(ev)
+        capped._seq = (recent[-1].seq + 1) if recent else 0
+        return capped

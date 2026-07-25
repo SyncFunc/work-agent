@@ -115,3 +115,37 @@ def test_session_step_persists_via_sink(tmp_path, monkeypatch):
     assert loaded is not None
     assert EventType.FINAL in [e.type for e in loaded.all()]
     assert store.get_session(sid) is not None
+
+
+def test_iter_events_with_subsession_groups_parent_and_children(tmp_path):
+    """M9 subsession：iter_events_with_subsession 返回父事件（subsession_id=None）+
+
+    子事件（subsession_id=子会话 id），按 ts 升序，供回放重建主聊天独立块历史。
+    """
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create("parent")
+
+    # 父会话事件
+    p_es = EventStream()
+    p_es.append(Event(type=EventType.DECISION, ts=1.0, decision=Decision(text="p1", tool_calls=[])))
+    store.append_events("parent", p_es)
+
+    # 子会话事件（带 parent_session_id）
+    child_id = "parent/sub_general_0_abc123"
+    c_es = EventStream()
+    c_es.append(Event(type=EventType.TEXT, ts=2.0, text="sub work", kind="content"))
+    c_es.append(Event(type=EventType.FINAL, ts=3.0, text="sub done"))
+    for ev in c_es.all():
+        store.append_event(child_id, ev, parent_session_id="parent")
+
+    rows = store.iter_events_with_subsession("parent")
+    subs = [(ev.type.value, sub) for ev, sub in rows]
+    # 父在前、子在后（按 ts）
+    assert subs[0] == ("decision", None)
+    assert subs[1] == ("text", child_id)
+    assert subs[2] == ("final", child_id)
+    # 子事件确已带 parent_session_id 落盘
+    assert store.get_parent("parent") is None  # 父自身无父
+    # 通过回放条件验证：子事件可由 parent 查到
+    child_rows = [r for r in rows if r[1] == child_id]
+    assert len(child_rows) == 2

@@ -87,6 +87,7 @@ class AgentLoop:
         gate: ApprovalGate | None = None,
         skill_loader: SkillLoader | None = None,
         subagent_spawner: SubagentSpawner | None = None,
+        cwd: Path | None = None,
     ) -> None:
         self.model = model
         self.registry = registry
@@ -98,6 +99,8 @@ class AgentLoop:
         self.gate = gate
         self.skill_loader = skill_loader
         self.subagent_spawner = subagent_spawner
+        # M9.0 多项目：工具执行/提示的工作目录（默认进程 cwd，由 Session 传入 project_root）。
+        self.cwd = cwd or Path.cwd()
         self._agent_span = None  # 由 run() 内的 _span 上下文设置；直接调工具时回退为 None
         self._transport = None  # 由 run() 设置；直接调工具时回退为 None
         self._context_mgr = None  # 由 run() 设置；直接调 _system_prompt 时回退为 None
@@ -123,6 +126,7 @@ class AgentLoop:
         context_mgr: ContextManager | None = None,
         name: str = "",
         event_sink: Callable[[Event], None] | None = None,
+        stream: EventStream | None = None,
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
@@ -140,7 +144,11 @@ class AgentLoop:
         if self._context_mgr is not None:
             self._context_mgr.set_conv(conv)
             conv = await self._context_mgr.apply_microcompact()
-        stream = EventStream()
+        # 复用外部传入的 stream（session 级唯一真相，跨多轮 append 全局 seq）；
+        # 未传则内部新建（subagent/后台 agent/测试 等自包含场景）。无论哪种都重新
+        # bind/subscribe——EventStream.subscribe 幂等，跨轮复用同一 stream 不会重复订阅。
+        if stream is None:
+            stream = EventStream()
         if transport is not None:
             transport.bind(stream)
         if event_sink is not None:
@@ -394,6 +402,7 @@ class AgentLoop:
             clarify_enabled=self.settings.clarify.enabled,
             skills_catalog=catalog,
             agents_catalog=agents_catalog,
+            cwd=self.cwd,
         )
         # M4.6 修复：把真实静态/动态段 token 数回填给 ContextManager，
         # 使 /context 的「动态段」不再恒为 0（此前 _system_dynamic 从未被写入）。
@@ -545,6 +554,11 @@ class AgentLoop:
         if spec is None:
             return ToolResult(ok=False, error=f"unknown agent: {agent_name}")
         parent_span = self._agent_span
+        # M9 subsession：daemon 模式经 transport.handle 透传父会话 handle/registry，使子 agent
+        # 走独立 subsession 实时转发（事件带 subsession_id）；CLI 模式 transport 无 handle 属性
+        # → parent_handle 为 None → 走本地 transport，行为不变（向后兼容）。
+        parent_handle = getattr(self._transport, "handle", None)
+        registry = parent_handle.registry if parent_handle is not None else None
         try:
             result = await self.subagent_spawner.spawn(
                 spec,
@@ -556,6 +570,8 @@ class AgentLoop:
                 parent_transport=self._transport,
                 parent_sandbox=self.sandbox,
                 parent_gate=self.gate,
+                parent_handle=parent_handle,
+                registry=registry,
             )
         except RecursionError as e:
             return ToolResult(ok=False, error=str(e))
@@ -573,7 +589,7 @@ class AgentLoop:
         env["LANG"] = "C.UTF-8"
         env["LC_ALL"] = "C.UTF-8"
         profile = elevated_profile if elevated_profile is not None else sandbox.default_profile
-        req = ExecRequest(cmd=cmd, cwd=Path.cwd(), env=env, timeout=timeout, profile=profile)
+        req = ExecRequest(cmd=cmd, cwd=self.cwd, env=env, timeout=timeout, profile=profile)
         r = await sandbox.run(req)
         return ToolResult(ok=r.ok, output=r.output, error=r.error)
 

@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import sys
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any
@@ -87,8 +88,10 @@ async def _run(
     run_task: str | None = None,
     settings: Settings | None = None,
     transport: TerminalTransport | None = None,
+    project_root: str | None = None,
 ) -> None:
     settings = settings or load_settings()
+    project_root = project_root or os.getcwd()  # M9.0：CLI 缺省 cwd，UI 应显式传入
     if transport is None:
         transport = TerminalTransport(interactive=sys.stdin.isatty(), context_mgr=None)
     current: str | None = None
@@ -149,21 +152,29 @@ async def _run(
     # 握手
     await ws.send(make_message(MsgType.HELLO, {"client_type": "cli", "version": "0.1.0"}))
     if session_id:
-        await ws.send(make_message(MsgType.SESSION_ATTACH, {"session_id": session_id}))
+        await ws.send(
+            make_message(
+                MsgType.SESSION_ATTACH, {"session_id": session_id, "project_root": project_root}
+            )
+        )
     elif resume:
-        # 恢复最近会话：从 SessionStore 取最近更新的 session_id 并 attach
+        # 恢复最近会话：从该项目 SessionStore 取最近更新的 session_id 并 attach
         # （daemon 重启后该会话可能不在内存，但 attach 路径会经 restore_factory 冷启动恢复）。
         from agent.context.session_store import SessionStore
 
-        store = SessionStore(settings.obs.sessions_db_path)
+        store = SessionStore(_anchor_for_cli(settings, project_root))
         infos = store.list_sessions()
         if infos:
             target = infos[0]["session_id"]  # list_sessions 按 updated_at 倒序
-            await ws.send(make_message(MsgType.SESSION_ATTACH, {"session_id": target}))
+            await ws.send(
+                make_message(
+                    MsgType.SESSION_ATTACH, {"session_id": target, "project_root": project_root}
+                )
+            )
         else:
-            await ws.send(make_message(MsgType.SESSION_NEW))
+            await ws.send(make_message(MsgType.SESSION_NEW, {"project_root": project_root}))
     else:
-        await ws.send(make_message(MsgType.SESSION_NEW))
+        await ws.send(make_message(MsgType.SESSION_NEW, {"project_root": project_root}))
 
     if run_task is not None:
         await ws.send(make_message(MsgType.TASK_SEND, {"text": run_task}))
@@ -186,6 +197,14 @@ async def _run(
         recv_task.cancel()
 
 
+def _anchor_for_cli(settings: Settings, project_root: str) -> str:
+    """把相对 db 路径锚定到 project_root（与 daemon 端 _anchor_path 一致；CLI 单项目场景）。"""
+    import os
+
+    p = settings.obs.sessions_db_path
+    return p if os.path.isabs(p) else os.path.join(project_root, p)
+
+
 async def run_client(
     port: int,
     *,
@@ -193,6 +212,7 @@ async def run_client(
     session_id: str | None = None,
     resume: bool = False,
     run_task: str | None = None,
+    project_root: str | None = None,
 ) -> None:
     settings = load_settings()
     uri = f"ws://{host}:{port}"
@@ -203,4 +223,5 @@ async def run_client(
             resume=resume,
             run_task=run_task,
             settings=settings,
+            project_root=project_root,
         )

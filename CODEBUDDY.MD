@@ -100,4 +100,6 @@ ruff check .
 ruff format .
 # 仅检查格式是否合规（不改文件）
 ruff format --check .
+# 类型检查（CI 强制门禁之一；提交前务必本地先跑，否则远端 basedpyright 报错会阻塞 PR）
+basedpyright
 ```

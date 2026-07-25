@@ -11,13 +11,32 @@
 方向约定（同字符串可双向，方向由发送方隐含）：
 - Client → Server：``hello`` / ``session.new`` / ``session.attach`` / ``session.switch`` /
   ``session.detach`` / ``session.list`` / ``task.send`` / ``answer`` / ``confirm_plan`` /
-  ``approve`` / ``command``
+  ``approve`` / ``command`` / ``trace.list`` / ``trace.get``
 - Server → Client：``welcome`` / ``session.created`` / ``attached`` / ``detached`` /
   ``session_list`` / ``event`` / ``replay_start`` / ``replay_end`` / ``ask`` /
   ``show_questions`` / ``show_plan`` / ``show_skills`` / ``show_agents`` / ``notify`` /
-  ``usage`` / ``close`` / ``error``
+  ``usage`` / ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
+
+M9.7 可观测面板：新增 trace 查询
+- ``trace.list``（C→S）：``{project_root, session_id?}`` → 按项目根列出含 trace 的会话（带 ``id`` 以便响应配对）。
+- ``trace.get``（C→S）：``{project_root, trace_id}``（trace_id == session_id）→ 取单条 trace 的 span 树。
+- ``trace_list``（S→C）：``{project_root, traces[], id?}``，每项为 ``{session_id, span_count, first_ts, last_ts}``。
+- ``trace_tree``（S→C）：``{session_id, spans[], id?}``，span 含 ``parent_id`` 供客户端重建父子树。
 
 事件 ``event`` 直接承载 ``Event.to_dict()``，是天然序列化边界（见 M7.2 知识沉淀）。
+
+M9.0 多项目感知：会话相关消息的 payload 携带 ``project_root``（项目根绝对路径），用于 daemon
+按项目隔离 settings 与 ``SessionStore``：
+
+- ``session.new``：``{name?, project_root}``（必带；CLI 缺省回退 cwd）
+- ``session.attach``：``{session_id, project_root}``
+- ``session.switch``：``{session_id, project_root}``
+- ``session.list``：``{project_root}`` → 仅列该项目会话；响应 ``{project_root, sessions}``
+- ``session.created`` / ``attached``：响应附带 ``project_root``
+- ``task.send``：会话已绑定 project_root，通常无需重复携带；保留 ``{text, yes?, plan?}``
+
+缺省规则：客户端未带 ``project_root`` 时，daemon 回退为 ``os.getcwd()``（仅用于 CLI 向后兼容）；
+任何 UI 调用都应显式携带目标项目根。
 """
 
 from __future__ import annotations
@@ -46,6 +65,8 @@ class MsgType(StrEnum):
     CONFIRM_PLAN = "confirm_plan"  # 客户端回传：{id, confirmed}
     APPROVE = "approve"  # 客户端回传：{id, approved}
     COMMAND = "command"
+    TRACE_LIST = "trace.list"
+    TRACE_GET = "trace.get"
     # ---- Server -> Client ----
     WELCOME = "welcome"
     SESSION_CREATED = "session.created"
@@ -64,6 +85,8 @@ class MsgType(StrEnum):
     USAGE = "usage"
     CLOSE = "close"
     ERROR = "error"
+    TRACE_LIST_RESP = "trace_list"
+    TRACE_TREE = "trace_tree"
 
 
 @runtime_checkable

@@ -8,6 +8,7 @@ M5.4 增强：后台 Subagent 支持——``spawn_background()`` 启动异步任
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 import uuid
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
@@ -47,6 +48,11 @@ class SessionLike(Protocol):
     skill_loader: SkillLoader | None
     loop: Any
     settings: Settings
+    # M9 subsession：daemon 模式由 registry 在 new/restore 时注入（见 registry.py），
+    # 使后台 subagent 能走独立 subsession 实时转发；CLI 模式保持 None。显式列入契约，
+    # 避免注册表赋值被 basedpyright 判为「未知属性」。
+    daemon_handle: Any
+    daemon_registry: Any
 
     def step(
         self,
@@ -79,6 +85,7 @@ class Session:
         context_mgr=None,
         session_id: str | None = None,
         session_store: SessionStore | None = None,
+        project_root: str | None = None,
     ):
         from pathlib import Path
 
@@ -87,11 +94,23 @@ class Session:
         from agent.runtime.sandbox import SandboxProfile, build_executor
 
         self.settings = settings
+        self.project_root = project_root
+        # M9.0 多项目：会话工作目录优先用显式 project_root 参数（daemon 单进程多会话，
+        # 每个会话独立项目根，不能用全局 cwd）。未传时回退 AGENT_PROJECT_ROOT 环境变量
+        # （测试/容器场景，与 scaffold_project/project_config_path 约定一致），最后回退 cwd。
+        if project_root:
+            cwd = Path(project_root)
+        else:
+            env_root = os.environ.get("AGENT_PROJECT_ROOT")
+            cwd = Path(env_root) if env_root else Path.cwd()
+        self.cwd = cwd
         self.tracer = tracer
         self.trace_store: TraceStore | None = trace_store
-        # M6.2 会话恢复：冷启动从 sqlite 重建时，把完整（未压缩）EventStream 挂到这里，
-        # 供 daemon 冷启动把最近 K 条事件播种进 event_buffer（仅当本会话是被恢复而非新建时非空）。
-        self.event_stream: EventStream | None = None
+        # M9 重构：session 持有唯一跨轮 EventStream（状态单一事实来源）。新建会话即创建空 stream，
+        # resume 时由 from_store 覆盖为从 DB 重建的完整 stream；loop.run 复用之，seq 全局唯一。
+        # Step B：套用运行期内存上限（防 OOM）；持久化仍全量落盘 sqlite，历史不丢。
+        _ml = settings.context.event_stream_maxlen
+        self.event_stream: EventStream = EventStream(maxlen=_ml if _ml and _ml > 0 else None)
         # 会话级根 span：整条 session 的 trace 树锚点（所有 run 都挂在其下）。
         # tracer 为 None 时不创建（无观测路径）；否则直接 new Span 并挂到 tracer，
         # 生命周期跨多轮，不用 _span 上下文管理器（避免 per-step 关闭）。
@@ -108,7 +127,7 @@ class Session:
         sandbox_pipeline = build_sandbox_pipeline(settings)
         sandbox = build_executor(
             settings.sandbox.mode,
-            workspace=Path.cwd(),
+            workspace=cwd,
             profile=SandboxProfile(settings.sandbox.profile),
             pipeline=sandbox_pipeline,
         )
@@ -121,19 +140,17 @@ class Session:
         )
 
         # M5.3：构造 SkillLoader / SubagentSpawner 并接入 AgentLoop
-        import os
-
         from agent.skills.loader import SkillLoader
         from agent.subagent import SubagentSpawner
 
         skill_loader = None
         subagent_spawner = None
         if settings.skills.enabled:
-            _proj = Path(os.environ.get("AGENT_PROJECT_ROOT") or Path.cwd())
+            _proj = cwd
             skill_loader = SkillLoader(_proj)
         if settings.subagents.enabled:
             subagent_spawner = SubagentSpawner(
-                settings, tracer=tracer, max_depth=settings.subagents.max_depth
+                settings, tracer=tracer, max_depth=settings.subagents.max_depth, cwd=cwd
             )
         self.loop = AgentLoop(
             model,
@@ -144,6 +161,7 @@ class Session:
             gate=gate,
             skill_loader=skill_loader,
             subagent_spawner=subagent_spawner,
+            cwd=cwd,
         )
         # M5.4：持有 loader/spawner 供 CLI 命令（/skills /agents /skill）直接查询
         self.skill_loader = skill_loader
@@ -159,9 +177,20 @@ class Session:
         # 前置：要求 Auto Compact 开启，否则不启用（见 4.4.2）。
         # M6 会话恢复：统一 session_id（daemon/CLI 创建时传入，与持久化行一致）
         self.session_id = session_id or uuid.uuid4().hex
+        # M9 subsession：daemon 模式由 registry 注入自身 handle/registry（见 registry.new/restore），
+        # 使后台 subagent 能走独立 subsession 实时转发；CLI 模式保持 None（子 agent 用本地 transport）。
+        self.daemon_handle = None
+        self.daemon_registry = None
         self.session_store = session_store
         if self.session_store is not None:
             self.session_store.create(self.session_id, plan_mode=plan_mode, plan_path=plan_path)
+        # M9 重构：复用 session 级唯一 sink（与 event_stream 配套，__init__ 创建一次；
+        # loop.run 幂等订阅，跨轮 step 不会重复落盘）。无 store 时为 None（不持久化）。
+        self._event_sink = (
+            SessionStoreSink(self.session_store, self.session_id)
+            if self.session_store is not None
+            else None
+        )
         self.session_memory: SessionMemory | None = None
         if settings.context.session_memory_enabled and settings.context.auto_compact_enabled:
             self.session_memory = SessionMemory(
@@ -210,6 +239,7 @@ class Session:
         *,
         trace_store=None,
         context_mgr=None,
+        project_root: str | None = None,
     ) -> Session:
         """从 ``SessionStore`` 恢复一个已有会话（sqlite 中存在该 ``session_id``）。
 
@@ -235,11 +265,14 @@ class Session:
             context_mgr=context_mgr,
             session_id=session_id,
             session_store=store,
+            project_root=project_root,
         )
-        sess.event_stream = stream
-        # 重建的消息直接用于下一轮 step；若末轮中断，rebuild_messages 已丢弃悬空
-        # assistant 并注入续跑提示，保证 messages 合法、可续跑。
+        # 重建消息必须用完整流（保证 messages 合法、可续跑，含中断检测）。
         sess.messages = rebuild_messages(stream)
+        # Step B：运行期内存上限（防 OOM）。保留最近 maxlen 条（真实 seq 续接），
+        # 完整历史仍在 sqlite（SessionStoreSink 全量落盘）。daemon 冷启动播种取最近窗口即可。
+        _ml = settings.context.event_stream_maxlen
+        sess.event_stream = stream.tail(_ml) if _ml and _ml > 0 else stream
         return sess
 
     async def step(
@@ -256,11 +289,7 @@ class Session:
             if self.context_mgr is not None:
                 self.context_mgr.set_conv(self.messages)
 
-            event_sink = (
-                SessionStoreSink(self.session_store, self.session_id)
-                if self.session_store is not None
-                else None
-            )
+            # 复用 session 级唯一 sink/stream（__init__ 创建一次；loop.run 幂等订阅，跨轮不重复）。
             res = await self.loop.run(
                 current_task,
                 self.messages,
@@ -270,7 +299,8 @@ class Session:
                 transport=transport,
                 parent_span=self.root_span,
                 context_mgr=self.context_mgr,
-                event_sink=event_sink,
+                event_sink=self._event_sink,
+                stream=self.event_stream,
             )
             if self.session_store is not None:
                 self.session_store.touch(self.session_id)
@@ -385,6 +415,10 @@ class Session:
                     parent_sandbox=self.loop.sandbox,
                     parent_gate=self.loop.gate,
                     live=False,
+                    # M9 subsession：daemon 模式透传自身 handle/registry，使子 agent 走独立
+                    # subsession 实时转发；CLI 模式 daemon_handle 为 None，走本地 transport。
+                    parent_handle=self.daemon_handle,
+                    registry=self.daemon_registry,
                 )
                 if result_sink is not None:
                     result_sink(agent_name, task, result.text)
