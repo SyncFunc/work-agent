@@ -82,13 +82,13 @@ class TraceStore:
                         json.dumps(s.meta, ensure_ascii=False, default=str),
                     ),
                 )
-            for lg in s.logs:
-                conn.execute(
-                    """INSERT INTO logs
-                       (session_id, span_id, ts, key, value, level)
-                       VALUES (?, ?, ?, ?, ?, ?)""",
-                    (session_id, s.id, lg.ts, lg.key, _serialize_value(lg.value), lg.level),
-                )
+                for lg in s.logs:
+                    conn.execute(
+                        """INSERT INTO logs
+                           (session_id, span_id, ts, key, value, level)
+                           VALUES (?, ?, ?, ?, ?, ?)""",
+                        (session_id, s.id, lg.ts, lg.key, _serialize_value(lg.value), lg.level),
+                    )
 
     def delete_session(self, session_id: str) -> None:
         """M9.9 彻底删除：删除该会话的全部 span 与 log（含子会话的 trace 由调用方逐个清理）。"""
