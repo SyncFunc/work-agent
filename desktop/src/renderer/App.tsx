@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from 'react'
 import './theme.css'
+import './layout.css'
 import type { DaemonConfig } from '../shared/daemon-config'
 import { DaemonClient } from '../protocol/client'
 import { loadProjectRoot, saveProjectRoot } from '../features/projects/ProjectSwitcher'
@@ -11,16 +12,23 @@ import { useChatModel } from '../features/chat/useEventReducer'
 import { HitlModalHost } from '../features/hitl/HitlModalHost'
 import { useHitl } from '../features/hitl/useHitl'
 import { SettingsPanel } from '../features/settings/SettingsPanel'
-import { applyTheme, loadTheme } from '../features/settings/settingsApi'
+import { applyTheme, loadSettings, loadTheme } from '../features/settings/settingsApi'
 import { CommandPalette } from '../features/command/CommandPalette'
 import { useCommands } from '../features/command/useCommands'
 import { parseSlash } from '../features/command/parseSlash'
 import { NoticeHost } from '../features/notices/NoticeHost'
 import { useNotices } from '../features/notices/useNotices'
 import { ObsPanel } from '../features/obs/ObsPanel'
-import { loadSettings } from '../features/settings/settingsApi'
-import { IconButton } from '../components'
-import { BarChart2, Settings } from 'lucide-react'
+import { Button, IconButton } from '../components'
+import { BarChart2, Bot, PanelLeft, Settings } from 'lucide-react'
+
+const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
+
+function loadNum(key: string, fallback: number): number {
+  const raw = localStorage.getItem(key)
+  const n = raw ? Number(raw) : NaN
+  return Number.isFinite(n) ? clamp(n, 180, 460) : fallback
+}
 
 export default function App(): React.ReactElement {
   const [config, setConfig] = useState<DaemonConfig | null>(null)
@@ -32,17 +40,19 @@ export default function App(): React.ReactElement {
   const [paletteOpen, setPaletteOpen] = useState(false)
   const [obsOpen, setObsOpen] = useState(false)
   const [contextWindow, setContextWindow] = useState<number | undefined>(undefined)
+  const [sidebarW, setSidebarW] = useState(() => loadNum('workagent.sidebarW', 260))
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(() => localStorage.getItem('workagent.sidebarCollapsed') === '1')
+  const [obsW, setObsW] = useState(() => loadNum('workagent.obsW', 340))
+  const [isNarrow, setIsNarrow] = useState(() => (typeof window !== 'undefined' ? window.innerWidth < 900 : false))
 
   // 应用启动时套用持久化主题。
   useEffect(() => {
     applyTheme(loadTheme())
   }, [])
 
-  // 拉取 daemon 配置并建连（DaemonClient 默认用全局 WebSocket 直连 daemon）。
+  // 拉取 daemon 配置并建连。
   useEffect(() => {
     let cancelled = false
-    // 防护：agentApi 由 Electron preload 注入，仅存在于客户端窗口内。
-    // 若用普通浏览器直接打开 localhost:5173，这里会是 undefined，给出可读提示而非白屏。
     if (!window.agentApi) {
       setError(
         '未检测到客户端桥接（agentApi）。请通过 npm run dev 弹出的 Electron 窗口打开，' +
@@ -69,7 +79,6 @@ export default function App(): React.ReactElement {
     if (config) setProjectRoot(loadProjectRoot(''))
   }, [config])
 
-  // 拉取项目 settings 的上下文窗口大小，供状态栏占比展示。
   useEffect(() => {
     if (!projectRoot) return
     let cancelled = false
@@ -85,7 +94,6 @@ export default function App(): React.ReactElement {
     }
   }, [projectRoot])
 
-  // 菜单「打开项目…」回调（主进程 dialog 选目录后推送）：持久化并切换项目根。
   useEffect(() => {
     const off = window.agentApi.onProjectOpen?.((root: string) => {
       saveProjectRoot(root)
@@ -94,17 +102,60 @@ export default function App(): React.ReactElement {
     return () => off?.()
   }, [])
 
-  // 全局快捷键：Ctrl/Cmd+K 打开命令面板。
+  // 全局快捷键：Ctrl/Cmd+K 命令面板，+B 折叠侧栏，+J 切换可观测面板。
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
-      if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'k') {
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && e.key.toLowerCase() === 'k') {
         e.preventDefault()
         setPaletteOpen((v) => !v)
+      } else if (mod && e.key.toLowerCase() === 'b') {
+        e.preventDefault()
+        setSidebarCollapsed((v) => {
+          const nv = !v
+          localStorage.setItem('workagent.sidebarCollapsed', nv ? '1' : '0')
+          return nv
+        })
+      } else if (mod && e.key.toLowerCase() === 'j') {
+        e.preventDefault()
+        setObsOpen((v) => !v)
       }
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [])
+
+  // 窄窗检测：obs 面板转为抽屉。
+  useEffect(() => {
+    const onResize = (): void => setIsNarrow(window.innerWidth < 900)
+    window.addEventListener('resize', onResize)
+    return () => window.removeEventListener('resize', onResize)
+  }, [])
+
+  // 拖拽改宽（侧栏 / obs）。
+  const startResize = (which: 'sidebar' | 'obs') => (e: React.MouseEvent): void => {
+    e.preventDefault()
+    const startX = e.clientX
+    const startW = which === 'sidebar' ? sidebarW : obsW
+    const onMove = (ev: MouseEvent): void => {
+      const delta = ev.clientX - startX
+      const next =
+        which === 'sidebar' ? clamp(startW + delta, 180, 460) : clamp(startW - delta, 260, 560)
+      if (which === 'sidebar') {
+        setSidebarW(next)
+        localStorage.setItem('workagent.sidebarW', String(next))
+      } else {
+        setObsW(next)
+        localStorage.setItem('workagent.obsW', String(next))
+      }
+    }
+    const onUp = (): void => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+  }
 
   const sessions = useSessions(client, projectRoot)
   const active = sessions.state.tabs.find((t) => t.id === sessions.state.activeId) ?? null
@@ -119,7 +170,6 @@ export default function App(): React.ReactElement {
     if (!text) return
     const slash = parseSlash(text)
     if (slash && client) {
-      // 斜杠命令：直接发 command（与 M7.3 CLI REPL 一致）。
       client.command(slash.name, slash.args ? slash.args : null)
     } else {
       sessions.sendTask(text)
@@ -127,35 +177,70 @@ export default function App(): React.ReactElement {
     setDraft('')
   }
 
+  const inputDisabled = !active || hitlPending
+
   return (
-    <div style={{ display: 'flex', height: '100vh', fontFamily: 'system-ui, sans-serif' }}>
-      {/* 侧栏：项目切换 + 会话列表 */}
-      <aside style={{ width: 260, borderRight: '1px solid #eee', display: 'flex', flexDirection: 'column' }}>
-        <h1 style={{ fontSize: 16, margin: 0, padding: '10px 12px', borderBottom: '1px solid #eee', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <span>Work Agent</span>
-          <span style={{ display: 'flex', gap: 4 }}>
+    <div className="wa-app">
+      {/* 侧栏：可折叠 + 可拖拽伸缩 */}
+      {sidebarCollapsed ? (
+        <aside className="wa-sidebar wa-sidebar--collapsed">
+          <div className="wa-brand" style={{ flexDirection: 'column', gap: 4 }}>
+            <IconButton
+              icon={<PanelLeft size={18} />}
+              label="展开侧栏"
+              onClick={() => {
+                setSidebarCollapsed(false)
+                localStorage.setItem('workagent.sidebarCollapsed', '0')
+              }}
+            />
             <IconButton icon={<BarChart2 size={18} />} label="可观测面板" onClick={() => setObsOpen((v) => !v)} />
             <IconButton icon={<Settings size={18} />} label="设置" onClick={() => setSettingsOpen(true)} />
-          </span>
-        </h1>
-        <div style={{ padding: '8px 12px', borderBottom: '1px solid #eee' }}>
-          <div style={{ fontSize: 12, color: '#666' }}>当前项目</div>
-          <div style={{ fontSize: 12, wordBreak: 'break-all' }} title={projectRoot}>
-            {projectRoot || '—'}
           </div>
-        </div>
-        <SessionList
-          list={sessions.state.list}
-          activeId={sessions.state.activeId}
-          projectRoot={projectRoot}
-          onOpen={sessions.openSession}
-          onCreate={() => sessions.createSession()}
-          onFork={sessions.forkSession}
-        />
-      </aside>
+        </aside>
+      ) : (
+        <>
+          <aside className="wa-sidebar" style={{ width: sidebarW }}>
+            <div className="wa-brand">
+              <h1 className="wa-brand__title">
+                <Bot size={18} className="wa-brand__logo" />
+                <span>Work Agent</span>
+              </h1>
+              <div className="wa-sidebar-actions">
+                <IconButton icon={<BarChart2 size={18} />} label="可观测面板" onClick={() => setObsOpen((v) => !v)} />
+                <IconButton icon={<Settings size={18} />} label="设置" onClick={() => setSettingsOpen(true)} />
+                <IconButton
+                  icon={<PanelLeft size={18} />}
+                  label="折叠侧栏"
+                  onClick={() => {
+                    setSidebarCollapsed(true)
+                    localStorage.setItem('workagent.sidebarCollapsed', '1')
+                  }}
+                />
+              </div>
+            </div>
+            <div className="wa-project">
+              <div className="wa-project__label">当前项目</div>
+              <div className="wa-project__path" title={projectRoot}>
+                {projectRoot || '—'}
+              </div>
+            </div>
+            <div className="wa-sessionlist">
+              <SessionList
+                list={sessions.state.list}
+                activeId={sessions.state.activeId}
+                projectRoot={projectRoot}
+                onOpen={sessions.openSession}
+                onCreate={() => sessions.createSession()}
+                onFork={sessions.forkSession}
+              />
+            </div>
+          </aside>
+          <div className="wa-resizer" onMouseDown={startResize('sidebar')} />
+        </>
+      )}
 
-      {/* 主区：标签页 + 会话内容（渲染在 M9.4） */}
-      <main style={{ flex: 1, display: 'flex', flexDirection: 'column', minWidth: 0 }}>
+      {/* 主区：标签页 + 会话内容 + 贴底 composer */}
+      <main className="wa-main">
         <SessionTabs
           tabs={sessions.state.tabs}
           activeId={sessions.state.activeId}
@@ -176,12 +261,17 @@ export default function App(): React.ReactElement {
             </div>
           )}
         </section>
-        <footer style={{ borderTop: '1px solid #eee', padding: 8, display: 'flex', gap: 8 }}>
-          <input
+        <footer className="wa-composer">
+          <textarea
+            className="wa-composer__input"
             value={draft}
+            rows={1}
             onChange={(e) => setDraft(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter') submit()
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault()
+                submit()
+              }
             }}
             placeholder={
               active
@@ -190,14 +280,15 @@ export default function App(): React.ReactElement {
                   : '输入任务，或 / 开头执行命令（Ctrl/Cmd+K 命令面板）'
                 : '请先打开会话'
             }
-            disabled={!active || hitlPending}
-            style={{ flex: 1 }}
+            disabled={inputDisabled}
           />
-          <button onClick={submit} disabled={!active || hitlPending}>
+          <Button variant="primary" onClick={submit} disabled={inputDisabled}>
             {parseSlash(draft) ? '执行' : '发送'}
-          </button>
+          </Button>
         </footer>
       </main>
+
+      {/* 可观测面板（drawer 或内联 + 拖拽） */}
       {obsOpen && (
         <ObsPanel
           client={client}
@@ -205,15 +296,15 @@ export default function App(): React.ReactElement {
           sessionId={active ? active.id : null}
           contextWindow={contextWindow}
           onClose={() => setObsOpen(false)}
+          drawer={isNarrow}
+          width={obsW}
+          onResizeStart={startResize('obs')}
         />
       )}
+
       {settingsOpen && <SettingsPanel projectRoot={projectRoot} onClose={() => setSettingsOpen(false)} />}
       {paletteOpen && (
-        <CommandPalette
-          commands={commands.commands}
-          onRun={commands.run}
-          onClose={() => setPaletteOpen(false)}
-        />
+        <CommandPalette commands={commands.commands} onRun={commands.run} onClose={() => setPaletteOpen(false)} />
       )}
       <HitlModalHost
         requests={hitl.requests}
