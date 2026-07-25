@@ -413,3 +413,88 @@
   display: inline-flex;
   vertical-align: middle;
 }
+
+/* 文本域 / 输入框 */
+.wa-textarea,
+.wa-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg);
+  color: var(--wa-text);
+  padding: var(--wa-s2) var(--wa-s3);
+  font: inherit;
+  font-size: var(--wa-f-md);
+}
+.wa-textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+.wa-textarea:focus,
+.wa-input:focus {
+  border-color: var(--wa-primary);
+  outline: none;
+}
+
+/* 代码块（计划/参数预览） */
+.wa-pre {
+  background: var(--wa-code-bg);
+  padding: var(--wa-s3);
+  border-radius: var(--wa-r-md);
+  border: 1px solid var(--wa-border);
+  max-height: 280px;
+  overflow: auto;
+  font-size: var(--wa-f-md);
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin: var(--wa-s2) 0;
+}
+
+/* 设置面板字段 */
+.wa-fieldset {
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  padding: var(--wa-s3);
+  margin: 0 0 var(--wa-s3);
+}
+.wa-fieldset legend {
+  padding: 0 var(--wa-s2);
+  font-weight: 600;
+  color: var(--wa-text-muted);
+}
+.wa-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wa-s3);
+  margin: var(--wa-s2) 0;
+}
+.wa-field .wa-input {
+  flex: 1;
+  max-width: 320px;
+}
+
+/* 命令面板列表 */
+.wa-cmd-list {
+  list-style: none;
+  margin: var(--wa-s2) 0 0;
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+}
+.wa-cmd-item {
+  padding: var(--wa-s2) var(--wa-s3);
+  border-radius: var(--wa-r-md);
+  cursor: pointer;
+  display: flex;
+  gap: var(--wa-s2);
+  align-items: baseline;
+}
+.wa-cmd-item--active {
+  background: var(--wa-primary-weak);
+}
+.wa-cmd-empty {
+  padding: var(--wa-s2) var(--wa-s3);
+  color: var(--wa-text-faint);
+}

@@ -5,6 +5,8 @@ import { DaemonClient } from '../../protocol/client'
 import type { SpanNode, TraceInfo } from '../../protocol/types'
 import { getTrace, listTraces } from './obsApi'
 import { buildTree, type SpanTreeNode } from './traceModel'
+import { Button } from '../../components'
+import { RefreshCw } from 'lucide-react'
 
 interface Props {
   client: DaemonClient | null
@@ -80,7 +82,7 @@ export function TraceTree({ client, projectRoot, sessionId }: Props) {
   return (
     <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
       <div style={{ display: 'flex', gap: 6, alignItems: 'center', padding: '4px 8px' }}>
-        <span style={{ fontSize: 12, color: '#666' }}>Trace</span>
+        <span style={{ fontSize: 12, color: 'var(--wa-text-muted)' }}>Trace</span>
         <select
           value={selected ?? ''}
           onChange={(e) => setSelected(e.target.value || null)}
@@ -94,14 +96,20 @@ export function TraceTree({ client, projectRoot, sessionId }: Props) {
             </option>
           ))}
         </select>
-        <button type="button" onClick={() => selected && getTrace(client as DaemonClient, projectRoot, selected).then((r) => setSpans(r.spans)).catch(() => {})}>
-          刷新
-        </button>
+        <Button
+          variant="ghost"
+          size="sm"
+          onClick={() =>
+            selected && getTrace(client as DaemonClient, projectRoot, selected).then((r) => setSpans(r.spans)).catch(() => {})
+          }
+        >
+          <RefreshCw size={14} /> 刷新
+        </Button>
       </div>
       <div style={{ flex: 1, overflowY: 'auto', padding: '4px 8px', fontSize: 12 }}>
-        {loading && <p style={{ color: '#999' }}>加载中…</p>}
-        {error && <p style={{ color: 'crimson' }}>错误：{error}</p>}
-        {!loading && !error && tree.length === 0 && <p style={{ color: '#999' }}>暂无 span</p>}
+        {loading && <p style={{ color: 'var(--wa-text-faint)' }}>加载中…</p>}
+        {error && <p style={{ color: 'var(--wa-danger)' }}>错误：{error}</p>}
+        {!loading && !error && tree.length === 0 && <p style={{ color: 'var(--wa-text-faint)' }}>暂无 span</p>}
         {tree.map((node) => (
           <TreeNodeView key={node.span.span_id} node={node} depth={0} collapsed={collapsed} onToggle={toggle} />
         ))}
@@ -123,7 +131,7 @@ function TreeNodeView({
 }) {
   const isCollapsed = collapsed.has(node.span.span_id)
   const hasChildren = node.children.length > 0
-  const statusColor = node.span.status === 'open' ? '#f29900' : '#1e7e34'
+  const statusColor = node.span.status === 'open' ? 'var(--wa-warn)' : 'var(--wa-success)'
   return (
     <div style={{ marginLeft: depth * 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '1px 0' }}>
@@ -139,11 +147,11 @@ function TreeNodeView({
           <span style={{ width: 16, display: 'inline-block' }} />
         )}
         <span style={{ fontWeight: 600 }}>{node.span.name}</span>
-        <span style={{ color: '#999' }}>[{node.span.kind}]</span>
+        <span style={{ color: 'var(--wa-text-faint)' }}>[{node.span.kind}]</span>
         <span style={{ color: statusColor }}>· {node.span.status}</span>
-        <span style={{ color: '#999' }}>{durationMs(node.span).toFixed(1)}ms</span>
+        <span style={{ color: 'var(--wa-text-faint)' }}>{durationMs(node.span).toFixed(1)}ms</span>
         {node.span.logs.length > 0 && (
-          <span style={{ color: '#999' }}>· {node.span.logs.length} 日志</span>
+          <span style={{ color: 'var(--wa-text-faint)' }}>· {node.span.logs.length} 日志</span>
         )}
       </div>
       {!isCollapsed &&

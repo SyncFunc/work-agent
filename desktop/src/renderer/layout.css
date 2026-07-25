@@ -66,6 +66,53 @@
   flex: 1;
   min-height: 0;
 }
+.wa-session {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+.wa-session-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: var(--wa-s1) var(--wa-s1);
+}
+.wa-session-head__label {
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+}
+.wa-session-empty {
+  padding: var(--wa-s3);
+  color: var(--wa-text-faint);
+  font-size: var(--wa-f-md);
+}
+.wa-session-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.wa-session-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wa-s2);
+  padding: var(--wa-s2);
+  border-radius: var(--wa-r-md);
+  cursor: pointer;
+  transition: background var(--wa-dur-fast) var(--wa-ease), color var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-session-item:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-session-item--active {
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+}
+.wa-session-item__name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 /* —— 主区 —— */
 .wa-main {
@@ -73,6 +120,42 @@
   display: flex;
   flex-direction: column;
   min-width: 0;
+}
+.wa-session-tabs {
+  display: flex;
+  gap: var(--wa-s1);
+  padding: var(--wa-s1) var(--wa-s2);
+  overflow-x: auto;
+}
+.wa-session-tabs__empty {
+  padding: 6px 12px;
+  color: var(--wa-text-faint);
+  font-size: var(--wa-f-sm);
+}
+.wa-session-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px var(--wa-s2);
+  border-radius: var(--wa-r-md);
+  cursor: pointer;
+  background: var(--wa-bg-subtle);
+  border: 1px solid transparent;
+  white-space: nowrap;
+  transition: background var(--wa-dur-fast) var(--wa-ease),
+    border-color var(--wa-dur-fast) var(--wa-ease), color var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-session-tab:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-session-tab--active {
+  background: var(--wa-primary-weak);
+  border-color: var(--wa-primary);
+  color: var(--wa-primary);
+  font-weight: 600;
+}
+.wa-session-tab__name {
+  font-size: var(--wa-f-md);
 }
 .wa-composer {
   border-top: 1px solid var(--wa-border);

@@ -13,38 +13,29 @@ interface Props {
 /** 多会话标签页：每个 tab = 一个 session_id + project_root。 */
 export function SessionTabs({ tabs, activeId, onSwitch, onClose }: Props): React.ReactElement {
   if (tabs.length === 0) {
-    return <div style={{ padding: '6px 12px', color: '#999', fontSize: 13 }}>（无打开的会话）</div>
+    return <div className="wa-session-tabs__empty">（无打开的会话）</div>
   }
   return (
-    <div style={{ display: 'flex', gap: 4, padding: '4px 8px', overflowX: 'auto' }}>
+    <div className="wa-session-tabs">
       {tabs.map((t) => {
         const active = t.id === activeId
         return (
           <div
             key={t.id}
+            className={`wa-session-tab${active ? ' wa-session-tab--active' : ''}`}
             onClick={() => onSwitch(t.id)}
-            style={{
-              display: 'flex',
-              alignItems: 'center',
-              gap: 6,
-              padding: '4px 8px',
-              borderRadius: 6,
-              cursor: 'pointer',
-              background: active ? '#e8f0fe' : '#f1f1f1',
-              border: active ? '1px solid #4285f4' : '1px solid transparent',
-              whiteSpace: 'nowrap',
-            }}
           >
-            <span>{t.name}</span>
-              <IconButton
-                icon={<X size={14} />}
-                label="关闭（detach）"
-                size="sm"
-                onClick={(e) => {
-                  e.stopPropagation()
-                  onClose(t.id)
-                }}
-              />
+            <span className="wa-session-tab__name">{t.name}</span>
+            <IconButton
+              icon={<X size={14} />}
+              label="关闭（detach）"
+              size="sm"
+              className="wa-session-tab__close"
+              onClick={(e) => {
+                e.stopPropagation()
+                onClose(t.id)
+              }}
+            />
           </div>
         )
       })}

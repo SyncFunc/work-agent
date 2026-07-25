@@ -1,18 +1,21 @@
 // 设置面板：编辑 LLM/计划/澄清/UI 主题/沙箱/审批配置，写回项目级 settings.yaml。
-// 仅持久化，不做热重载（新建会话/重启 daemon 后生效），保存后提示。
+// 仅持久化，不做热重载（新建会话/重启 daemon 后生效），保存后弹出成功 Toast。
 
 import React, { useEffect, useState } from 'react'
 import type { SettingsShape } from './settingsApi'
 import { applyTheme, loadSettings, saveSettings, type Theme } from './settingsApi'
+import { Button, Modal } from '../../components'
+import type { ToastKind } from '../../components'
 
 interface Props {
   projectRoot: string
   onClose: () => void
+  /** 保存成功后由宿主弹出 Toast（避免与通知堆叠重叠）。 */
+  onToast: (kind: ToastKind, text: string) => void
 }
 
-export function SettingsPanel({ projectRoot, onClose }: Props): React.ReactElement {
+export function SettingsPanel({ projectRoot, onClose, onToast }: Props): React.ReactElement {
   const [s, setS] = useState<SettingsShape>({})
-  const [saved, setSaved] = useState(false)
   const [busy, setBusy] = useState(false)
 
   useEffect(() => {
@@ -29,7 +32,6 @@ export function SettingsPanel({ projectRoot, onClose }: Props): React.ReactEleme
     const next: SettingsShape = JSON.parse(JSON.stringify(s ?? {}))
     fn(next)
     setS(next)
-    setSaved(false)
   }
 
   const save = async (): Promise<void> => {
@@ -37,7 +39,7 @@ export function SettingsPanel({ projectRoot, onClose }: Props): React.ReactEleme
     await saveSettings(projectRoot, s)
     if (s.ui?.theme) applyTheme((s.ui.theme as Theme) ?? 'light')
     setBusy(false)
-    setSaved(true)
+    onToast('success', '已保存（新会话/重启 daemon 生效）')
   }
 
   const llm = s.llm ?? {}
@@ -48,54 +50,95 @@ export function SettingsPanel({ projectRoot, onClose }: Props): React.ReactEleme
   const approval = s.approval ?? {}
 
   return (
-    <div className="wa-modal" onClick={onClose}>
-      <div className="wa-modal-box" style={{ maxWidth: 560 }} onClick={(e) => e.stopPropagation()}>
-        <h3 style={{ marginTop: 0 }}>设置 · {projectRoot || '(未选择项目)'}</h3>
+    <Modal
+      open
+      onClose={onClose}
+      title={`设置 · ${projectRoot || '(未选择项目)'}`}
+      footer={
+        <>
+          <Button onClick={onClose}>关闭</Button>
+          <Button variant="primary" onClick={() => void save()} disabled={busy}>
+            {busy ? '保存中…' : '保存'}
+          </Button>
+        </>
+      }
+    >
+      <fieldset className="wa-fieldset">
+        <legend>LLM</legend>
+        <label className="wa-field">
+          model
+          <input
+            className="wa-input"
+            value={llm.model ?? ''}
+            onChange={(e) => patch((d) => { d.llm = { ...llm, model: e.target.value } })}
+          />
+        </label>
+        <label className="wa-field">
+          base_url
+          <input
+            className="wa-input"
+            value={llm.base_url ?? ''}
+            onChange={(e) => patch((d) => { d.llm = { ...llm, base_url: e.target.value } })}
+          />
+        </label>
+        <label className="wa-field">
+          api_key
+          <input
+            className="wa-input"
+            type="password"
+            value={llm.api_key ?? ''}
+            placeholder="留空不修改"
+            onChange={(e) => patch((d) => { d.llm = { ...llm, api_key: e.target.value } })}
+          />
+        </label>
+      </fieldset>
 
-        <fieldset style={{ border: '1px solid #eee', borderRadius: 8, padding: 10 }}>
-          <legend>LLM</legend>
-          <label style={labelStyle}>model
-            <input style={inputStyle} value={llm.model ?? ''} onChange={(e) => patch((d) => { d.llm = { ...llm, model: e.target.value } })} />
-          </label>
-          <label style={labelStyle}>base_url
-            <input style={inputStyle} value={llm.base_url ?? ''} onChange={(e) => patch((d) => { d.llm = { ...llm, base_url: e.target.value } })} />
-          </label>
-          <label style={labelStyle}>api_key
-            <input style={inputStyle} type="password" value={llm.api_key ?? ''} placeholder="留空不修改" onChange={(e) => patch((d) => { d.llm = { ...llm, api_key: e.target.value } })} />
-          </label>
-        </fieldset>
-
-        <fieldset style={{ border: '1px solid #eee', borderRadius: 8, padding: 10, marginTop: 8 }}>
-          <legend>计划 / 澄清 / 沙箱 / 审批 / 主题</legend>
-          <label style={labelStyle}>plan.mode
-            <input style={inputStyle} value={plan.mode ?? ''} onChange={(e) => patch((d) => { d.plan = { ...plan, mode: e.target.value } })} />
-          </label>
-          <label style={labelStyle}>clarify.enabled
-            <input type="checkbox" checked={clarify.enabled === true} onChange={(e) => patch((d) => { d.clarify = { ...clarify, enabled: e.target.checked } })} />
-          </label>
-          <label style={labelStyle}>sandbox.profile
-            <input style={inputStyle} value={sandbox.profile ?? ''} onChange={(e) => patch((d) => { d.sandbox = { ...sandbox, profile: e.target.value } })} />
-          </label>
-          <label style={labelStyle}>approval.mode
-            <input style={inputStyle} value={approval.mode ?? ''} onChange={(e) => patch((d) => { d.approval = { ...approval, mode: e.target.value } })} />
-          </label>
-          <label style={labelStyle}>ui.theme
-            <select value={ui.theme ?? 'light'} onChange={(e) => patch((d) => { d.ui = { ...ui, theme: e.target.value } })}>
-              <option value="light">light</option>
-              <option value="dark">dark</option>
-            </select>
-          </label>
-        </fieldset>
-
-        <div style={{ marginTop: 12, display: 'flex', gap: 8, justifyContent: 'flex-end', alignItems: 'center' }}>
-          {saved && <span style={{ color: '#2e7d32', fontSize: 12 }}>已保存（新会话/重启 daemon 生效）</span>}
-          <button type="button" onClick={onClose}>关闭</button>
-          <button type="button" disabled={busy} onClick={() => void save()}>保存</button>
-        </div>
-      </div>
-    </div>
+      <fieldset className="wa-fieldset">
+        <legend>计划 / 澄清 / 沙箱 / 审批 / 主题</legend>
+        <label className="wa-field">
+          plan.mode
+          <input
+            className="wa-input"
+            value={plan.mode ?? ''}
+            onChange={(e) => patch((d) => { d.plan = { ...plan, mode: e.target.value } })}
+          />
+        </label>
+        <label className="wa-field">
+          <span>clarify.enabled</span>
+          <input
+            type="checkbox"
+            checked={clarify.enabled === true}
+            onChange={(e) => patch((d) => { d.clarify = { ...clarify, enabled: e.target.checked } })}
+          />
+        </label>
+        <label className="wa-field">
+          sandbox.profile
+          <input
+            className="wa-input"
+            value={sandbox.profile ?? ''}
+            onChange={(e) => patch((d) => { d.sandbox = { ...sandbox, profile: e.target.value } })}
+          />
+        </label>
+        <label className="wa-field">
+          approval.mode
+          <input
+            className="wa-input"
+            value={approval.mode ?? ''}
+            onChange={(e) => patch((d) => { d.approval = { ...approval, mode: e.target.value } })}
+          />
+        </label>
+        <label className="wa-field">
+          ui.theme
+          <select
+            className="wa-input"
+            value={ui.theme ?? 'light'}
+            onChange={(e) => patch((d) => { d.ui = { ...ui, theme: e.target.value } })}
+          >
+            <option value="light">light</option>
+            <option value="dark">dark</option>
+          </select>
+        </label>
+      </fieldset>
+    </Modal>
   )
 }
-
-const labelStyle: React.CSSProperties = { display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center', margin: '4px 0' }
-const inputStyle: React.CSSProperties = { flex: 1, marginLeft: 8, maxWidth: 320 }

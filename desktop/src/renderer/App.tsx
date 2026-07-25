@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useRef, useState } from 'react'
 import './theme.css'
 import './layout.css'
 import type { DaemonConfig } from '../shared/daemon-config'
@@ -16,10 +16,10 @@ import { applyTheme, loadSettings, loadTheme } from '../features/settings/settin
 import { CommandPalette } from '../features/command/CommandPalette'
 import { useCommands } from '../features/command/useCommands'
 import { parseSlash } from '../features/command/parseSlash'
-import { NoticeHost } from '../features/notices/NoticeHost'
 import { useNotices } from '../features/notices/useNotices'
 import { ObsPanel } from '../features/obs/ObsPanel'
-import { Button, IconButton } from '../components'
+import { Button, IconButton, ToastStack } from '../components'
+import type { ToastData, ToastKind } from '../components'
 import { BarChart2, Bot, PanelLeft, Settings } from 'lucide-react'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
@@ -102,29 +102,6 @@ export default function App(): React.ReactElement {
     return () => off?.()
   }, [])
 
-  // 全局快捷键：Ctrl/Cmd+K 命令面板，+B 折叠侧栏，+J 切换可观测面板。
-  useEffect(() => {
-    const onKey = (e: KeyboardEvent): void => {
-      const mod = e.ctrlKey || e.metaKey
-      if (mod && e.key.toLowerCase() === 'k') {
-        e.preventDefault()
-        setPaletteOpen((v) => !v)
-      } else if (mod && e.key.toLowerCase() === 'b') {
-        e.preventDefault()
-        setSidebarCollapsed((v) => {
-          const nv = !v
-          localStorage.setItem('workagent.sidebarCollapsed', nv ? '1' : '0')
-          return nv
-        })
-      } else if (mod && e.key.toLowerCase() === 'j') {
-        e.preventDefault()
-        setObsOpen((v) => !v)
-      }
-    }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [])
-
   // 窄窗检测：obs 面板转为抽屉。
   useEffect(() => {
     const onResize = (): void => setIsNarrow(window.innerWidth < 900)
@@ -158,12 +135,61 @@ export default function App(): React.ReactElement {
   }
 
   const sessions = useSessions(client, projectRoot)
+
+  // 全局快捷键：Ctrl/Cmd+K 命令面板，+B 折叠侧栏，+J 切换可观测面板，+1..9 切会话。
+  // tabs 随渲染变化，用 ref 持有最新值，避免闭包捕获过期引用。
+  const tabsRef = useRef(sessions.state.tabs)
+  tabsRef.current = sessions.state.tabs
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent): void => {
+      const mod = e.ctrlKey || e.metaKey
+      if (mod && e.key.toLowerCase() === 'k') {
+        e.preventDefault()
+        setPaletteOpen((v) => !v)
+      } else if (mod && e.key.toLowerCase() === 'b') {
+        e.preventDefault()
+        setSidebarCollapsed((v) => {
+          const nv = !v
+          localStorage.setItem('workagent.sidebarCollapsed', nv ? '1' : '0')
+          return nv
+        })
+      } else if (mod && e.key.toLowerCase() === 'j') {
+        e.preventDefault()
+        setObsOpen((v) => !v)
+      } else if (mod && /^[1-9]$/.test(e.key)) {
+        e.preventDefault()
+        const tab = tabsRef.current[Number(e.key) - 1]
+        if (tab) sessions.switchSession(tab.id)
+      }
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
   const active = sessions.state.tabs.find((t) => t.id === sessions.state.activeId) ?? null
   const model = useChatModel(active ? active.events : [])
   const hitl = useHitl(client)
   const hitlPending = hitl.pending
   const commands = useCommands(client)
   const notices = useNotices(client)
+
+  // 统一 toast 堆叠：通知（来自 daemon）与瞬时提示（如保存成功）共用一个右下角堆叠，避免重叠。
+  const [savedToasts, setSavedToasts] = useState<ToastData[]>([])
+  const dismissToast = (id: string): void => setSavedToasts((prev) => prev.filter((t) => t.id !== id))
+  const pushToast = (kind: ToastKind, text: string): void => {
+    const id = `t-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`
+    setSavedToasts((prev) => [...prev.slice(-3), { id, kind, text }])
+  }
+  const NOTICE_KIND: Record<string, ToastKind> = {
+    notify: 'info',
+    skills: 'info',
+    agents: 'info',
+    error: 'error',
+  }
+  const noticeToasts: ToastData[] = notices.map((n) => ({
+    id: `n-${n.id}`,
+    kind: NOTICE_KIND[n.kind] ?? 'info',
+    text: n.text,
+  }))
 
   const submit = (): void => {
     const text = draft.trim()
@@ -302,7 +328,13 @@ export default function App(): React.ReactElement {
         />
       )}
 
-      {settingsOpen && <SettingsPanel projectRoot={projectRoot} onClose={() => setSettingsOpen(false)} />}
+      {settingsOpen && (
+        <SettingsPanel
+          projectRoot={projectRoot}
+          onClose={() => setSettingsOpen(false)}
+          onToast={pushToast}
+        />
+      )}
       {paletteOpen && (
         <CommandPalette commands={commands.commands} onRun={commands.run} onClose={() => setPaletteOpen(false)} />
       )}
@@ -312,7 +344,7 @@ export default function App(): React.ReactElement {
         onConfirm={hitl.resolvePlan}
         onApprove={hitl.resolveApprove}
       />
-      <NoticeHost notices={notices} />
+      <ToastStack toasts={[...noticeToasts, ...savedToasts]} onDismiss={dismissToast} />
     </div>
   )
 }

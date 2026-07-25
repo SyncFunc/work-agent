@@ -2,6 +2,43 @@
 
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { CommandDef } from './useCommands'
+import { Button, Modal } from '../../components'
+import {
+  Activity,
+  Bot,
+  CheckCheck,
+  ClipboardList,
+  Compress,
+  GitFork,
+  HelpCircle,
+  History,
+  Layers,
+  PlayCircle,
+  Repeat,
+  Search,
+  Sparkles,
+  Terminal,
+  TerminalSquare,
+} from 'lucide-react'
+
+const ICONS: Record<string, React.ReactNode> = {
+  context: <Activity size={15} />,
+  compact: <Compress size={15} />,
+  plan: <ClipboardList size={15} />,
+  skills: <Sparkles size={15} />,
+  agents: <Bot size={15} />,
+  mode: <Repeat size={15} />,
+  exec: <TerminalSquare size={15} />,
+  approve: <CheckCheck size={15} />,
+  bg: <Layers size={15} />,
+  sessions: <History size={15} />,
+  resume: <PlayCircle size={15} />,
+  fork: <GitFork size={15} />,
+  skill: <Sparkles size={15} />,
+  agent: <Bot size={15} />,
+  help: <HelpCircle size={15} />,
+}
+const FALLBACK_ICON = <Terminal size={15} />
 
 export function CommandPalette({
   commands,
@@ -23,9 +60,7 @@ export function CommandPalette({
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase()
     if (!q) return commands
-    return commands.filter(
-      (c) => c.name.includes(q) || c.description.toLowerCase().includes(q),
-    )
+    return commands.filter((c) => c.name.includes(q) || c.description.toLowerCase().includes(q))
   }, [commands, query])
 
   useEffect(() => {
@@ -39,14 +74,15 @@ export function CommandPalette({
   }
 
   return (
-    <div className="wa-modal" onClick={onClose}>
-      <div className="wa-modal-box" style={{ maxWidth: 480 }} onClick={(e) => e.stopPropagation()}>
+    <Modal open onClose={onClose} title="命令面板" width={480}>
+      <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginBottom: 'var(--wa-s2)' }}>
+        <Search size={16} className="wa-icon" style={{ color: 'var(--wa-text-faint)' }} />
         <input
           ref={inputRef}
+          className="wa-input"
           value={query}
           onChange={(e) => setQuery(e.target.value)}
           placeholder="输入命令…（如 context / compact / skills）"
-          style={{ width: '100%', boxSizing: 'border-box', padding: 8 }}
           onKeyDown={(e) => {
             if (e.key === 'ArrowDown') {
               e.preventDefault()
@@ -62,25 +98,24 @@ export function CommandPalette({
             }
           }}
         />
-        <ul style={{ listStyle: 'none', margin: '8px 0 0', padding: 0, maxHeight: 280, overflow: 'auto' }}>
-          {filtered.map((c, i) => (
-            <li
-              key={c.name}
-              onMouseEnter={() => setActive(i)}
-              onClick={() => choose(c)}
-              style={{
-                padding: '6px 8px',
-                borderRadius: 6,
-                cursor: 'pointer',
-                background: i === active ? '#e7f0ff' : 'transparent',
-              }}
-            >
-              <code>/{c.name}</code> <span style={{ color: '#888', fontSize: 13 }}>{c.description}</span>
-            </li>
-          ))}
-          {filtered.length === 0 && <li style={{ color: '#888', padding: 6 }}>无匹配命令</li>}
-        </ul>
       </div>
-    </div>
+      <ul className="wa-cmd-list">
+        {filtered.map((c, i) => (
+          <li
+            key={c.name}
+            className={`wa-cmd-item${i === active ? ' wa-cmd-item--active' : ''}`}
+            onMouseEnter={() => setActive(i)}
+            onClick={() => choose(c)}
+          >
+            <span className="wa-icon" style={{ color: 'var(--wa-text-muted)' }}>
+              {ICONS[c.name] ?? FALLBACK_ICON}
+            </span>
+            <code>/{c.name}</code>
+            <span className="wa-cmd-item__desc">{c.description}</span>
+          </li>
+        ))}
+        {filtered.length === 0 && <li className="wa-cmd-empty">无匹配命令</li>}
+      </ul>
+    </Modal>
   )
 }

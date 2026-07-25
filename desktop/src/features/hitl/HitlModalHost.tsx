@@ -1,8 +1,7 @@
-// 全局 HITL 模态宿主：按 queue 顺序渲染 ask / plan / approve 模态。
-// 多并发请求各自成模态（按 id 配对，互不串）；调用方应在 pending 时禁用输入。
+// 全局 HITL 模态宿主：各子模态自带 Modal 壳（焦点陷阱 + Esc + 遮罩关闭）。
+// 多并发请求各自成模态（按 id 配对，互不串）。
 
 import React from 'react'
-import './hitl.css'
 import type { HitlRequest } from './hitlMachine'
 import { AskModal } from './AskModal'
 import { PlanModal } from './PlanModal'
