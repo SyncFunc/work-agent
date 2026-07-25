@@ -28,6 +28,7 @@ export type SessionsAction =
   | { type: 'replayEnd'; events: AgentEvent[] }
   | { type: 'liveEvent'; event: AgentEvent }
   | { type: 'closeTab'; id: string }
+  | { type: 'sessionDeleted'; id: string }
 
 export function initialState(projectRoot: string): SessionsState {
   return { projectRoot, tabs: [], activeId: null, list: [], replaying: false }
@@ -136,6 +137,14 @@ export function sessionsReducer(state: SessionsState, action: SessionsAction): S
       const tabs = state.tabs.filter((t) => t.id !== action.id)
       const activeId = state.activeId === action.id ? (tabs[0]?.id ?? null) : state.activeId
       return { ...state, tabs, activeId }
+    }
+
+    // M9.9 步骤6：会话彻底删除后，从列表/标签/激活态中移除。
+    case 'sessionDeleted': {
+      const list = state.list.filter((s) => s.id !== action.id)
+      const tabs = state.tabs.filter((t) => t.id !== action.id)
+      const activeId = state.activeId === action.id ? (tabs[0]?.id ?? null) : state.activeId
+      return { ...state, list, tabs, activeId }
     }
 
     default:

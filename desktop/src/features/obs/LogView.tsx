@@ -1,6 +1,9 @@
-// LogView：滚动日志视图（消费 notify），带清空按钮。
+// LogView：滚动日志视图（消费 notify），带搜索、自动滚底与清空。
 
+import { useEffect, useRef, useState } from 'react'
 import type { ObsLog } from './useObs'
+import { Button } from '../../components'
+import { Search } from 'lucide-react'
 
 interface Props {
   logs: ObsLog[]
@@ -8,36 +11,44 @@ interface Props {
 }
 
 function fmtTime(ts: number): string {
-  const d = new Date(ts)
-  return d.toLocaleTimeString()
+  return new Date(ts).toLocaleTimeString()
 }
 
 export function LogView({ logs, onClear }: Props) {
+  const [q, setQ] = useState('')
+  const bodyRef = useRef<HTMLDivElement>(null)
+  const filtered = q.trim() ? logs.filter((l) => l.message.toLowerCase().includes(q.trim().toLowerCase())) : logs
+
+  useEffect(() => {
+    const el = bodyRef.current
+    if (el) el.scrollTop = el.scrollHeight
+  }, [filtered.length])
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px' }}>
-        <span style={{ fontSize: 12, color: '#666' }}>日志 ({logs.length})</span>
-        <button type="button" onClick={onClear} style={{ fontSize: 12 }}>
+    <div className="wa-logview">
+      <div className="wa-logview__bar">
+        <div className="wa-logview__search">
+          <Search size={14} />
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="搜索日志…"
+            aria-label="搜索日志"
+          />
+        </div>
+        <span className="wa-logview__count">{logs.length}</span>
+        <Button size="sm" variant="ghost" onClick={onClear}>
           清空
-        </button>
+        </Button>
       </div>
-      <div
-        style={{
-          flex: 1,
-          overflowY: 'auto',
-          padding: '0 8px 8px',
-          fontFamily: 'monospace',
-          fontSize: 12,
-          lineHeight: 1.5,
-        }}
-      >
-        {logs.length === 0 ? (
-          <p style={{ color: '#999' }}>暂无日志</p>
+      <div className="wa-logview__body" ref={bodyRef}>
+        {filtered.length === 0 ? (
+          <p className="wa-logview__empty">{logs.length === 0 ? '暂无日志' : '无匹配'}</p>
         ) : (
-          logs.map((l) => (
-            <div key={l.id} style={{ borderBottom: '1px solid #f0f0f0', padding: '2px 0' }}>
-              <span style={{ color: '#999', marginRight: 6 }}>{fmtTime(l.ts)}</span>
-              <span>{l.message}</span>
+          filtered.map((l) => (
+            <div key={l.id} className="wa-logview__row">
+              <span className="wa-logview__time">{fmtTime(l.ts)}</span>
+              <span className="wa-logview__msg">{l.message}</span>
             </div>
           ))
         )}

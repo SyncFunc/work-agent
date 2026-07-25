@@ -1,0 +1,128 @@
+/* 设计 Token：全应用唯一颜色/间距/圆角/字号/阴影/动效/层级来源。
+   组件只允许引用这里的变量，禁止硬编码十六进制色。
+   暗色模式仅切换变量值，组件无需改动。 */
+
+:root {
+  /* —— 色板（语义化，非品牌色）—— */
+  --wa-bg: #ffffff;
+  --wa-bg-subtle: #f6f8fa;
+  --wa-bg-elevated: #ffffff;
+  --wa-bg-inset: #fbfbfd;
+  --wa-surface-hover: #eef1f5;
+  --wa-surface-active: #e2e6eb;
+
+  --wa-border: #e0e0e0;
+  --wa-border-strong: #c9d1d9;
+
+  --wa-text: #1a1a1a;
+  --wa-text-muted: #57606a;
+  --wa-text-faint: #8b949e;
+
+  --wa-primary: #1a73e8;
+  --wa-primary-hover: #1666cc;
+  --wa-primary-active: #145bb3;
+  --wa-primary-weak: #e8f0fe;
+  --wa-on-primary: #ffffff;
+
+  --wa-success: #1e7e34;
+  --wa-success-weak: #e6f4ea;
+  --wa-warn: #b9770e;
+  --wa-warn-weak: #fff4d6;
+  --wa-danger: #c0392b;
+  --wa-danger-hover: #a93226;
+  --wa-danger-weak: #fdecea;
+  --wa-on-danger: #ffffff;
+
+  --wa-bubble-user: #e7f0ff;
+  --wa-bubble-user-text: #0b2545;
+  --wa-reasoning-border: #d0d7de;
+
+  --wa-code-bg: #fbfbfd;
+  --wa-overlay: rgba(0, 0, 0, 0.4);
+
+  /* —— 阴影 —— */
+  --wa-shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+  --wa-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.12);
+  --wa-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.22);
+
+  /* —— 间距 scale —— */
+  --wa-s1: 4px;
+  --wa-s2: 8px;
+  --wa-s3: 12px;
+  --wa-s4: 16px;
+  --wa-s5: 24px;
+  --wa-s6: 32px;
+
+  /* —— 圆角 —— */
+  --wa-r-sm: 6px;
+  --wa-r-md: 8px;
+  --wa-r-lg: 12px;
+  --wa-r-pill: 999px;
+
+  /* —— 字号 —— */
+  --wa-f-xs: 11px;
+  --wa-f-sm: 12px;
+  --wa-f-md: 13px;
+  --wa-f-lg: 14px;
+  --wa-f-xl: 16px;
+  --wa-f-2xl: 20px;
+
+  /* —— 动效 —— */
+  --wa-ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --wa-dur-fast: 100ms;
+  --wa-dur: 160ms;
+  --wa-dur-slow: 240ms;
+
+  /* —— 层级 —— */
+  --wa-z-resize: 50;
+  --wa-z-modal: 1000;
+  --wa-z-toast: 2000;
+  --wa-z-tooltip: 1500;
+
+  /* —— 布局尺寸 —— */
+  --wa-sidebar-w: 260px;
+  --wa-obs-w: 340px;
+  --wa-resizer-w: 5px;
+}
+
+body[data-theme='dark'] {
+  --wa-bg: #1e1e1e;
+  --wa-bg-subtle: #262626;
+  --wa-bg-elevated: #2a2a2a;
+  --wa-bg-inset: #2a2a2a;
+
+  --wa-surface-hover: #333333;
+  --wa-surface-active: #3d3d3d;
+
+  --wa-border: #3a3a3a;
+  --wa-border-strong: #555555;
+
+  --wa-text: #e6e6e6;
+  --wa-text-muted: #a8a8a8;
+  --wa-text-faint: #8a8a8a;
+
+  --wa-primary: #4c8dff;
+  --wa-primary-hover: #5e99ff;
+  --wa-primary-active: #3a7df0;
+  --wa-primary-weak: #1b2a44;
+  --wa-on-primary: #ffffff;
+
+  --wa-success: #4caf6a;
+  --wa-success-weak: #14331f;
+  --wa-warn: #e0a92e;
+  --wa-warn-weak: #3a2f12;
+  --wa-danger: #e0665a;
+  --wa-danger-hover: #d9574a;
+  --wa-danger-weak: #3a1c1a;
+  --wa-on-danger: #ffffff;
+
+  --wa-bubble-user: #1b2a44;
+  --wa-bubble-user-text: #d6e4ff;
+  --wa-reasoning-border: #3a3a3a;
+
+  --wa-code-bg: #2a2a2a;
+  --wa-overlay: rgba(0, 0, 0, 0.6);
+
+  --wa-shadow-md: 0 4px 16px rgba(0, 0, 0, 0.5);
+  --wa-shadow-lg: 0 12px 40px rgba(0, 0, 0, 0.6);
+}

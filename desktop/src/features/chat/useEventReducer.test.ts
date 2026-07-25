@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { buildChatModel, type ChatBlock } from './useEventReducer'
+import { buildChatModel, deriveSubagentStatus, type ChatBlock } from './useEventReducer'
 import type { AgentEvent } from '../../protocol/types'
 
 function toolBlocks(blocks: ChatBlock[]) {
@@ -7,6 +7,9 @@ function toolBlocks(blocks: ChatBlock[]) {
 }
 function textBlocks(blocks: ChatBlock[]) {
   return blocks.filter((b): b is Extract<ChatBlock, { type: 'text' }> => b.type === 'text')
+}
+function subBlocks(blocks: ChatBlock[]) {
+  return blocks.filter((b): b is Extract<ChatBlock, { type: 'subagent' }> => b.type === 'subagent')
 }
 
 describe('buildChatModel', () => {
@@ -97,5 +100,115 @@ describe('buildChatModel', () => {
     const texts = textBlocks(buildChatModel(events).blocks)
     expect(texts).toHaveLength(1)
     expect(texts[0].content).toBe('already')
+  })
+
+  it('spawn_subagent：TOOL_USE 在子 agent 前、TOOL_RESULT 在子 agent 后，跨段配对到同一块', () => {
+    const sub = 'sess/sub_explore_1_abc123'
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'tool_call_delta', tc_index: 0, tc_name: 'spawn_subagent', tc_args: '{"agent"', ts: 0 },
+      { seq: 1, type: 'tool_use', tool_use: { id: 'c1', name: 'spawn_subagent', arguments: { agent: 'explore', task: 'x' } }, ts: 0 },
+      // 子 agent 段（subsession_id 非空）
+      { seq: 2, type: 'text', text: '子 agent 思考', kind: 'content', subsession_id: sub, ts: 0 },
+      { seq: 3, type: 'final', text: '子 agent 结论', subsession_id: sub, ts: 0 },
+      // 父会话结果（回到 subsession_id 空）
+      { seq: 4, type: 'tool_result', tool_call_id: 'c1', tool_result: { ok: true, output: '[Subagent explore]\n子 agent 结论' }, ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    // 不应有「孤立」的工具结果块：spawn_subagent 这一块就带结果且已完成。
+    const tools = toolBlocks(blocks)
+    expect(tools).toHaveLength(1)
+    expect(tools[0].name).toBe('spawn_subagent')
+    expect(tools[0].running).toBe(false)
+    expect(tools[0].result).toEqual({ ok: true, output: '[Subagent explore]\n子 agent 结论' })
+    // 子 agent 独立成块
+    const subs = subBlocks(blocks)
+    expect(subs).toHaveLength(1)
+    expect(subs[0].name).toBe('explore')
+    expect(deriveSubagentStatus(subs[0].blocks)).toBe('done')
+  })
+
+  it('ask_clarification 不会留下悬空「运行中」工具块（被澄清事件丢弃）', () => {
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'tool_call_delta', tc_index: 0, tc_name: 'ask_clarification', tc_args: '{"questions":[{"question":"?"}]}', ts: 0 },
+      { seq: 1, type: 'clarify', questions: [{ question: '想澄清什么？', options: ['A', 'B'] }], ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    // 没有 tool 块残留（delta 产生的悬空块被丢弃），只有澄清块。
+    expect(toolBlocks(blocks)).toHaveLength(0)
+    const clarifies = blocks.filter((b) => b.type === 'clarify')
+    expect(clarifies).toHaveLength(1)
+  })
+
+  it('澄清回答回填到澄清块（与澄清一起渲染，不另起 user 块）', () => {
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'clarify', questions: [{ question: '想澄清什么？' }], ts: 0 },
+      { seq: 1, type: 'user', text: '项目需求不明确', ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    const clarifies = blocks.filter((b) => b.type === 'clarify')
+    expect(clarifies).toHaveLength(1)
+    expect(clarifies[0].type === 'clarify' && clarifies[0].answer).toBe('项目需求不明确')
+    // 回答未另成 user 块
+    expect(blocks.filter((b) => b.type === 'user')).toHaveLength(0)
+  })
+
+  it('正常 user 任务不误并入澄清块', () => {
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'user', text: '新任务', ts: 0 },
+      { seq: 1, type: 'clarify', questions: [{ question: '?' }], ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    expect(blocks.filter((b) => b.type === 'user')).toHaveLength(1)
+    expect(blocks.filter((b) => b.type === 'clarify')).toHaveLength(1)
+  })
+
+  it('运行中的子 agent 推导为 running', () => {
+    const sub = 'sess/sub_explore_1_abc123'
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'text', text: '子 agent 正在思考', kind: 'content', subsession_id: sub, ts: 0 },
+    ]
+    const subs = subBlocks(buildChatModel(events).blocks)
+    expect(subs).toHaveLength(1)
+    expect(deriveSubagentStatus(subs[0].blocks)).toBe('running')
+  })
+
+  it('流式标记：最后一个未收尾文本块 streaming=true，被工具冲刷出的中间思考段 streaming=false', () => {
+    const events: AgentEvent[] = [
+      // 轮次①：纯思考后调用工具（该思考块应被冲刷、streaming=false）
+      { seq: 0, type: 'text', text: '我需要先看看', kind: 'reasoning', ts: 0 },
+      { seq: 1, type: 'tool_call_delta', tc_index: 0, tc_name: 'read', tc_args: '{"path":', ts: 0 },
+      { seq: 2, type: 'tool_use', tool_use: { id: 't1', name: 'read', arguments: { path: 'x' } }, ts: 0 },
+      { seq: 3, type: 'tool_result', tool_call_id: 't1', tool_result: { ok: true, output: '...' }, ts: 0 },
+      // 轮次②：当前正在流式生成（无 final）→ 最后一个文本块 streaming=true
+      { seq: 4, type: 'text', text: '我还在想', kind: 'reasoning', ts: 0 },
+    ]
+    const texts = textBlocks(buildChatModel(events).blocks)
+    expect(texts).toHaveLength(2)
+    expect(texts[0].streaming).toBe(false) // 被工具冲刷出的中间思考段
+    expect(texts[0].final).toBe(false)
+    expect(texts[1].streaming).toBe(true) // 当前活动气泡
+  })
+
+  it('终态收尾的文本块 streaming=false（完整回放不应残留光标）', () => {
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'text', text: '结论', kind: 'content', ts: 0 },
+      { seq: 1, type: 'final', text: '结论', ts: 0 },
+    ]
+    const texts = textBlocks(buildChatModel(events).blocks)
+    expect(texts).toHaveLength(1)
+    expect(texts[0].streaming).toBe(false)
+    expect(texts[0].final).toBe(true)
+  })
+
+  it('子 agent 以 final 终态收尾 → 推导为 done（显示已完成）', () => {
+    const sub = 'sess/sub_explore_1_abc123'
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'text', text: '探索中', kind: 'reasoning', subsession_id: sub, ts: 0 },
+      { seq: 1, type: 'text', text: '结论文本', kind: 'content', subsession_id: sub, ts: 0 },
+      { seq: 2, type: 'final', text: '结论文本', subsession_id: sub, ts: 0 },
+    ]
+    const subs = subBlocks(buildChatModel(events).blocks)
+    expect(subs).toHaveLength(1)
+    expect(deriveSubagentStatus(subs[0].blocks)).toBe('done')
   })
 })

@@ -3,6 +3,7 @@
 import React from 'react'
 import type { ApproveRequest } from './hitlMachine'
 import { ApprovalBadge } from './ApprovalBadge'
+import { Button, Modal } from '../../components'
 
 function summarizeArgs(args: Record<string, unknown>): string {
   const parts = Object.entries(args).map(([k, v]) => {
@@ -21,30 +22,31 @@ export function ApproveModal({
 }): React.ReactElement {
   const a = req.action
   return (
-    <div className="wa-modal">
-      <div className="wa-modal-box">
-        <h3 style={{ marginTop: 0 }}>
+    <Modal
+      open
+      title={
+        <span>
           工具执行需审批 <ApprovalBadge risk={a.risk} />
-        </h3>
-        <p>
-          工具：<code>{a.tool}</code>
-        </p>
-        {a.description ? <p style={{ color: '#555' }}>{a.description}</p> : null}
-        {a.approval_request ? (
-          <p style={{ color: '#b9770e' }}>请求理由：{a.approval_request}</p>
-        ) : null}
-        <pre style={{ background: '#fbfbfd', padding: 10, maxHeight: 200, overflow: 'auto', fontSize: 13, whiteSpace: 'pre-wrap' }}>
-          {summarizeArgs(a.args)}
-        </pre>
-        <div style={{ marginTop: 12, textAlign: 'right', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button type="button" onClick={() => onApprove(req.id, false)}>
-            拒绝
-          </button>
-          <button type="button" onClick={() => onApprove(req.id, true)}>
+        </span>
+      }
+      onClose={() => onApprove(req.id, false)}
+      footer={
+        <>
+          <Button onClick={() => onApprove(req.id, false)}>拒绝</Button>
+          <Button variant="primary" onClick={() => onApprove(req.id, true)}>
             批准
-          </button>
-        </div>
-      </div>
-    </div>
+          </Button>
+        </>
+      }
+    >
+      <p>
+        工具：<code>{a.tool}</code>
+      </p>
+      {a.description ? <p style={{ color: 'var(--wa-text-muted)' }}>{a.description}</p> : null}
+      {a.approval_request ? (
+        <p style={{ color: 'var(--wa-warn)' }}>请求理由：{a.approval_request}</p>
+      ) : null}
+      <pre className="wa-pre">{summarizeArgs(a.args)}</pre>
+    </Modal>
   )
 }

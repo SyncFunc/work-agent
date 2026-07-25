@@ -90,6 +90,12 @@ class TraceStore:
                         (session_id, s.id, lg.ts, lg.key, _serialize_value(lg.value), lg.level),
                     )
 
+    def delete_session(self, session_id: str) -> None:
+        """M9.9 彻底删除：删除该会话的全部 span 与 log（含子会话的 trace 由调用方逐个清理）。"""
+        with self._conn() as conn:
+            conn.execute("DELETE FROM logs WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM spans WHERE session_id = ?", (session_id,))
+
     def load_trace(self, session_id: str) -> Tracer | None:
         """按 session_id 重建 Tracer（含全部 span + logs）。不存在返回 None。"""
         with self._conn() as conn:

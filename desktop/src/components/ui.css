@@ -1,0 +1,500 @@
+/* 原语组件样式。依赖 tokens.css 变量。由 components/index.ts 引入。 */
+
+/* —————— Button —————— */
+.wa-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wa-s2);
+  border: 1px solid transparent;
+  border-radius: var(--wa-r-md);
+  font: inherit;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background var(--wa-dur-fast) var(--wa-ease),
+    border-color var(--wa-dur-fast) var(--wa-ease),
+    transform var(--wa-dur-fast) var(--wa-ease),
+    box-shadow var(--wa-dur-fast) var(--wa-ease);
+  white-space: nowrap;
+  user-select: none;
+}
+.wa-btn:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.wa-btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.wa-btn--md {
+  padding: var(--wa-s2) var(--wa-s3);
+  font-size: var(--wa-f-lg);
+}
+.wa-btn--sm {
+  padding: var(--wa-s1) var(--wa-s2);
+  font-size: var(--wa-f-md);
+}
+.wa-btn--primary {
+  background: var(--wa-primary);
+  color: var(--wa-on-primary);
+}
+.wa-btn--primary:hover:not(:disabled) {
+  background: var(--wa-primary-hover);
+}
+.wa-btn--primary:active:not(:disabled) {
+  background: var(--wa-primary-active);
+}
+.wa-btn--secondary {
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text);
+  border-color: var(--wa-border);
+}
+.wa-btn--secondary:hover:not(:disabled) {
+  background: var(--wa-surface-hover);
+}
+.wa-btn--ghost {
+  background: transparent;
+  color: var(--wa-text);
+}
+.wa-btn--ghost:hover:not(:disabled) {
+  background: var(--wa-surface-hover);
+}
+.wa-btn--danger {
+  background: var(--wa-danger);
+  color: var(--wa-on-danger);
+}
+.wa-btn--danger:hover:not(:disabled) {
+  background: var(--wa-danger-hover);
+}
+
+/* —————— IconButton —————— */
+.wa-icon-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: none;
+  border-radius: var(--wa-r-md);
+  background: transparent;
+  color: var(--wa-text-muted);
+  cursor: pointer;
+  transition: background var(--wa-dur-fast) var(--wa-ease),
+    color var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-icon-btn:hover:not(:disabled) {
+  background: var(--wa-surface-hover);
+  color: var(--wa-text);
+}
+.wa-icon-btn:active:not(:disabled) {
+  background: var(--wa-surface-active);
+}
+.wa-icon-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+.wa-icon-btn--md {
+  width: 32px;
+  height: 32px;
+}
+.wa-icon-btn--sm {
+  width: 26px;
+  height: 26px;
+}
+
+/* —————— Spinner —————— */
+.wa-spinner {
+  display: inline-block;
+  border: 2px solid var(--wa-border-strong);
+  border-top-color: var(--wa-primary);
+  border-radius: 50%;
+  animation: wa-spin 0.7s linear infinite;
+  flex: none;
+}
+@keyframes wa-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* —————— Badge / Pill —————— */
+.wa-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--wa-s1);
+  padding: 1px var(--wa-s2);
+  border-radius: var(--wa-r-pill);
+  font-size: var(--wa-f-xs);
+  font-weight: 600;
+  line-height: 1.6;
+  white-space: nowrap;
+}
+.wa-badge__icon {
+  display: inline-flex;
+}
+.wa-badge--neutral {
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text-muted);
+}
+.wa-badge--primary {
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+}
+.wa-badge--success {
+  background: var(--wa-success-weak);
+  color: var(--wa-success);
+}
+.wa-badge--warn {
+  background: var(--wa-warn-weak);
+  color: var(--wa-warn);
+}
+.wa-badge--danger {
+  background: var(--wa-danger-weak);
+  color: var(--wa-danger);
+}
+
+/* —————— Modal —————— */
+.wa-modal {
+  position: fixed;
+  inset: 0;
+  background: var(--wa-overlay);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: var(--wa-z-modal);
+  padding: var(--wa-s4);
+  animation: wa-fade var(--wa-dur) var(--wa-ease);
+}
+.wa-modal-box {
+  background: var(--wa-bg-elevated);
+  color: var(--wa-text);
+  border-radius: var(--wa-r-lg);
+  padding: var(--wa-s4) var(--wa-s5);
+  min-width: 360px;
+  max-width: 92vw;
+  max-height: 88vh;
+  overflow: auto;
+  box-shadow: var(--wa-shadow-lg);
+  animation: wa-pop var(--wa-dur) var(--wa-ease);
+}
+.wa-modal-box__head {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
+  margin-bottom: var(--wa-s3);
+  padding-bottom: var(--wa-s2);
+  border-bottom: 1px solid var(--wa-border);
+}
+.wa-modal-box__title {
+  margin: 0;
+  font-size: var(--wa-f-xl);
+  font-weight: 700;
+}
+.wa-modal-box__body {
+  font-size: var(--wa-f-lg);
+}
+.wa-modal-box__foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--wa-s2);
+  margin-top: var(--wa-s4);
+  padding-top: var(--wa-s3);
+  border-top: 1px solid var(--wa-border);
+}
+@keyframes wa-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes wa-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* —————— Tabs —————— */
+.wa-tabs {
+  display: flex;
+  align-items: stretch;
+}
+.wa-tab {
+  appearance: none;
+  border: none;
+  background: transparent;
+  color: var(--wa-text-muted);
+  font: inherit;
+  cursor: pointer;
+  padding: var(--wa-s2) var(--wa-s3);
+  border-bottom: 2px solid transparent;
+  transition: color var(--wa-dur-fast) var(--wa-ease),
+    background var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-tab:hover:not(.wa-tab--active) {
+  color: var(--wa-text);
+  background: var(--wa-surface-hover);
+}
+.wa-tab--active {
+  color: var(--wa-primary);
+  border-bottom-color: var(--wa-primary);
+  font-weight: 600;
+}
+.wa-tabs--pill {
+  gap: var(--wa-s1);
+}
+.wa-tabs--pill .wa-tab {
+  border-bottom: none;
+  border-radius: var(--wa-r-pill);
+}
+.wa-tabs--pill .wa-tab--active {
+  background: var(--wa-primary-weak);
+}
+
+/* —————— Tooltip —————— */
+.wa-tooltip-wrap {
+  position: relative;
+  display: inline-flex;
+}
+.wa-tooltip {
+  position: absolute;
+  bottom: calc(100% + 6px);
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--wa-bg-elevated);
+  color: var(--wa-text);
+  border: 1px solid var(--wa-border);
+  box-shadow: var(--wa-shadow-md);
+  padding: var(--wa-s1) var(--wa-s2);
+  border-radius: var(--wa-r-sm);
+  font-size: var(--wa-f-sm);
+  white-space: nowrap;
+  z-index: var(--wa-z-tooltip);
+  pointer-events: none;
+  animation: wa-fade var(--wa-dur-fast) var(--wa-ease);
+}
+
+/* —————— Skeleton —————— */
+.wa-skeleton {
+  display: block;
+  background: linear-gradient(
+    90deg,
+    var(--wa-surface-hover) 25%,
+    var(--wa-bg-subtle) 37%,
+    var(--wa-surface-hover) 63%
+  );
+  background-size: 400% 100%;
+  animation: wa-shimmer 1.3s ease-in-out infinite;
+}
+@keyframes wa-shimmer {
+  0% {
+    background-position: 100% 0;
+  }
+  100% {
+    background-position: 0 0;
+  }
+}
+
+/* —————— Avatar —————— */
+.wa-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 50%;
+  font-weight: 700;
+  flex: none;
+  line-height: 1;
+}
+.wa-avatar--assistant {
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+}
+.wa-avatar--user {
+  background: var(--wa-bubble-user);
+  color: var(--wa-bubble-user-text);
+}
+.wa-avatar--subagent {
+  background: var(--wa-success-weak);
+  color: var(--wa-success);
+}
+
+/* —————— Resizer（布局分隔条） —————— */
+.wa-resizer {
+  flex: none;
+  width: var(--wa-resizer-w);
+  cursor: col-resize;
+  background: transparent;
+  transition: background var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-resizer:hover,
+.wa-resizer--active {
+  background: var(--wa-primary);
+}
+
+/* —————— Toast —————— */
+.wa-toast-stack {
+  position: fixed;
+  right: var(--wa-s4);
+  bottom: var(--wa-s4);
+  display: flex;
+  flex-direction: column;
+  gap: var(--wa-s2);
+  z-index: var(--wa-z-toast);
+  max-width: 380px;
+}
+.wa-toast {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--wa-s2);
+  background: var(--wa-bg-elevated);
+  color: var(--wa-text);
+  border: 1px solid var(--wa-border);
+  border-left: 3px solid var(--wa-text-muted);
+  border-radius: var(--wa-r-md);
+  padding: var(--wa-s2) var(--wa-s3);
+  box-shadow: var(--wa-shadow-md);
+  animation: wa-toast-in var(--wa-dur) var(--wa-ease);
+}
+.wa-toast--error {
+  border-left-color: var(--wa-danger);
+}
+.wa-toast--success {
+  border-left-color: var(--wa-success);
+}
+.wa-toast--info {
+  border-left-color: var(--wa-primary);
+}
+.wa-toast__icon {
+  flex: none;
+  margin-top: 1px;
+}
+.wa-toast__msg {
+  flex: 1;
+  font-size: var(--wa-f-md);
+  word-break: break-word;
+}
+.wa-toast__close {
+  flex: none;
+  border: none;
+  background: transparent;
+  color: var(--wa-text-faint);
+  cursor: pointer;
+  padding: 0;
+  line-height: 1;
+}
+.wa-toast__close:hover {
+  color: var(--wa-text);
+}
+.wa-toast__bar {
+  position: absolute;
+  left: 0;
+  bottom: 0;
+  height: 2px;
+  background: var(--wa-text-faint);
+  opacity: 0.6;
+}
+@keyframes wa-toast-in {
+  from {
+    opacity: 0;
+    transform: translateX(24px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+/* —————— 通用工具类 —————— */
+.wa-icon {
+  display: inline-flex;
+  vertical-align: middle;
+}
+
+/* 文本域 / 输入框 */
+.wa-textarea,
+.wa-input {
+  width: 100%;
+  box-sizing: border-box;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg);
+  color: var(--wa-text);
+  padding: var(--wa-s2) var(--wa-s3);
+  font: inherit;
+  font-size: var(--wa-f-md);
+}
+.wa-textarea {
+  resize: vertical;
+  line-height: 1.5;
+}
+.wa-textarea:focus,
+.wa-input:focus {
+  border-color: var(--wa-primary);
+  outline: none;
+}
+
+/* 代码块（计划/参数预览） */
+.wa-pre {
+  background: var(--wa-code-bg);
+  padding: var(--wa-s3);
+  border-radius: var(--wa-r-md);
+  border: 1px solid var(--wa-border);
+  max-height: 280px;
+  overflow: auto;
+  font-size: var(--wa-f-md);
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin: var(--wa-s2) 0;
+}
+
+/* 设置面板字段 */
+.wa-fieldset {
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  padding: var(--wa-s3);
+  margin: 0 0 var(--wa-s3);
+}
+.wa-fieldset legend {
+  padding: 0 var(--wa-s2);
+  font-weight: 600;
+  color: var(--wa-text-muted);
+}
+.wa-field {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--wa-s3);
+  margin: var(--wa-s2) 0;
+}
+.wa-field .wa-input {
+  flex: 1;
+  max-width: 320px;
+}
+
+/* 命令面板列表 */
+.wa-cmd-list {
+  list-style: none;
+  margin: var(--wa-s2) 0 0;
+  padding: 0;
+  max-height: 280px;
+  overflow: auto;
+}
+.wa-cmd-item {
+  padding: var(--wa-s2) var(--wa-s3);
+  border-radius: var(--wa-r-md);
+  cursor: pointer;
+  display: flex;
+  gap: var(--wa-s2);
+  align-items: baseline;
+}
+.wa-cmd-item--active {
+  background: var(--wa-primary-weak);
+}
+.wa-cmd-empty {
+  padding: var(--wa-s2) var(--wa-s3);
+  color: var(--wa-text-faint);
+}

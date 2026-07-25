@@ -3,6 +3,7 @@
 
 import React from 'react'
 import type { PlanRequest } from './hitlMachine'
+import { Button, Modal } from '../../components'
 
 export function PlanModal({
   req,
@@ -13,32 +14,46 @@ export function PlanModal({
 }): React.ReactElement {
   const actionable = req.id !== null
   return (
-    <div className="wa-modal">
-      <div className="wa-modal-box" style={{ maxWidth: 640 }}>
-        <h3 style={{ marginTop: 0 }}>执行计划需确认</h3>
-        {req.planPath ? <div style={{ fontSize: 12, color: '#888' }}>{req.planPath}</div> : null}
-        <pre style={{ background: '#fbfbfd', padding: 10, maxHeight: 240, overflow: 'auto', fontSize: 13, whiteSpace: 'pre-wrap' }}>
-          {req.plan || '(无计划文本)'}
-        </pre>
-        {req.planSteps.length > 0 && (
-          <ol style={{ fontSize: 13, paddingLeft: 20 }}>
-            {req.planSteps.map((s) => (
-              <li key={s.id} style={{ color: s.status === 'done' ? '#2e7d32' : s.status === 'failed' ? '#c0392b' : '#333' }}>
-                {s.title} <span style={{ color: '#888' }}>[{s.status}]</span>
-              </li>
-            ))}
-          </ol>
-        )}
-        <div style={{ marginTop: 12, textAlign: 'right', display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
-          <button type="button" disabled={!actionable} onClick={() => req.id && onConfirm(req.id, false)}>
+    <Modal
+      open
+      width={640}
+      title="执行计划需确认"
+      onClose={() => req.id && onConfirm(req.id, false)}
+      footer={
+        <>
+          <Button onClick={() => req.id && onConfirm(req.id, false)} disabled={!actionable}>
             拒绝
-          </button>
-          <button type="button" disabled={!actionable} onClick={() => req.id && onConfirm(req.id, true)}>
+          </Button>
+          <Button variant="primary" onClick={() => req.id && onConfirm(req.id, true)} disabled={!actionable}>
             批准并继续
-          </button>
-        </div>
-        {!actionable && <p style={{ color: '#888', fontSize: 12 }}>等待 daemon 进入计划确认…</p>}
-      </div>
-    </div>
+          </Button>
+        </>
+      }
+    >
+      {req.planPath ? (
+        <div style={{ fontSize: 'var(--wa-f-sm)', color: 'var(--wa-text-muted)' }}>{req.planPath}</div>
+      ) : null}
+      <pre className="wa-pre">{req.plan || '(无计划文本)'}</pre>
+      {req.planSteps.length > 0 && (
+        <ol style={{ fontSize: 'var(--wa-f-md)', paddingLeft: 'var(--wa-s4)' }}>
+          {req.planSteps.map((s) => (
+            <li
+              key={s.id}
+              style={{
+                color:
+                  s.status === 'done'
+                    ? 'var(--wa-success)'
+                    : s.status === 'failed'
+                      ? 'var(--wa-danger)'
+                      : 'var(--wa-text)',
+              }}
+            >
+              {s.title} <span style={{ color: 'var(--wa-text-faint)' }}>[{s.status}]</span>
+            </li>
+          ))}
+        </ol>
+      )}
+      {!actionable && <p style={{ color: 'var(--wa-text-faint)', fontSize: 'var(--wa-f-sm)' }}>等待 daemon 进入计划确认…</p>}
+    </Modal>
   )
 }

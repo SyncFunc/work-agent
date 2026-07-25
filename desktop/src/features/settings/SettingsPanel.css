@@ -1,0 +1,318 @@
+/* M9.9 步骤8：整屏设置面板（按 settings.py 分组全量展示，美观布局） */
+
+.wa-settings {
+  position: fixed;
+  inset: 0;
+  z-index: 3000;
+  isolation: isolate;
+  display: flex;
+  flex-direction: column;
+  background: var(--wa-bg);
+  color: var(--wa-text);
+  animation: wa-settings-in var(--wa-dur) var(--wa-ease);
+  /* frameless 窗口下确保整块浮层不被标题栏拖拽区拦截鼠标事件 */
+  -webkit-app-region: no-drag;
+}
+
+@keyframes wa-settings-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.wa-settings__header {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--wa-border);
+  background: var(--wa-bg-elevated);
+}
+
+.wa-settings__back {
+  position: relative;
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border-radius: var(--wa-r-md);
+  border: 1px solid var(--wa-border);
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text);
+  font-size: var(--wa-f-md);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: background var(--wa-dur-fast) var(--wa-ease),
+    border-color var(--wa-dur-fast) var(--wa-ease), color var(--wa-dur-fast) var(--wa-ease);
+}
+
+.wa-settings__back:hover {
+  background: var(--wa-primary-weak);
+  border-color: var(--wa-primary);
+  color: var(--wa-primary);
+}
+
+.wa-settings__title {
+  font-size: var(--wa-f-lg);
+  font-weight: 600;
+}
+
+.wa-settings__status {
+  margin-left: auto;
+  font-size: var(--wa-f-xs);
+  color: var(--wa-text-muted);
+}
+
+/* 作用域切换条 */
+.wa-settings__scopebar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 24px;
+  border-bottom: 1px solid var(--wa-border);
+  background: var(--wa-bg-elevated);
+}
+
+.wa-settings__scope-label {
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+}
+
+.wa-settings__body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 22px 24px 32px;
+}
+
+.wa-settings__group {
+  max-width: 880px;
+  margin: 0 auto 26px;
+}
+
+.wa-settings__group-head {
+  margin-bottom: 12px;
+}
+
+.wa-settings__group-head h3 {
+  margin: 0 0 2px;
+  font-size: var(--wa-f-lg);
+  font-weight: 600;
+}
+
+.wa-settings__group-head p {
+  margin: 0;
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+}
+
+.wa-settings__grid {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-lg);
+  padding: 4px 18px;
+  background: var(--wa-bg-elevated);
+}
+
+.wa-settings__field {
+  display: grid;
+  grid-template-columns: 240px minmax(0, 1fr);
+  align-items: start;
+  gap: 16px;
+  padding: 14px 0;
+  border-bottom: 1px solid var(--wa-border);
+}
+
+.wa-settings__field:last-child {
+  border-bottom: none;
+}
+
+.wa-settings__field.is-inherited {
+  border-bottom: 1px solid var(--wa-border);
+  border-left: 3px solid var(--wa-primary-weak);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg-subtle);
+  padding: 14px;
+  margin: 6px 0;
+}
+
+.wa-settings__label {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text);
+  padding-top: 2px;
+}
+
+.wa-settings__label-text {
+  font-weight: 500;
+}
+
+.wa-settings__help {
+  font-size: var(--wa-f-xs);
+  color: var(--wa-text-faint);
+  line-height: 1.4;
+}
+
+.wa-settings__inherit-badge {
+  align-self: flex-start;
+  font-size: var(--wa-f-xs);
+  padding: 2px 7px;
+  border-radius: var(--wa-r-pill);
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+}
+
+/* 输入框 / 下拉 */
+.wa-input {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg);
+  color: var(--wa-text);
+  font-size: var(--wa-f-md);
+  font-family: inherit;
+  transition: border-color var(--wa-dur-fast) var(--wa-ease), box-shadow var(--wa-dur-fast) var(--wa-ease);
+}
+
+.wa-input:focus {
+  outline: none;
+  border-color: var(--wa-primary);
+  box-shadow: 0 0 0 3px var(--wa-primary-weak);
+}
+
+.wa-select {
+  appearance: none;
+  cursor: pointer;
+}
+
+/* 开关 */
+.wa-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 42px;
+  height: 24px;
+  border-radius: var(--wa-r-pill);
+  border: 1px solid var(--wa-border);
+  background: var(--wa-border-strong);
+  cursor: pointer;
+  padding: 0;
+  transition: background var(--wa-dur-fast) var(--wa-ease), border-color var(--wa-dur-fast) var(--wa-ease);
+}
+
+.wa-switch.is-on {
+  background: var(--wa-primary);
+  border-color: var(--wa-primary);
+}
+
+.wa-switch__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform var(--wa-dur-fast) var(--wa-ease);
+}
+
+.wa-switch.is-on .wa-switch__knob {
+  transform: translateX(18px);
+}
+
+/* 主题切换器（界面主题：浅色 / 深色，卡片式带图标） */
+.wa-theme-switch {
+  display: inline-flex;
+  gap: 10px;
+}
+
+.wa-theme-switch__opt {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 18px;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg);
+  color: var(--wa-text-muted);
+  font-size: var(--wa-f-md);
+  font-family: inherit;
+  cursor: pointer;
+  transition: border-color var(--wa-dur-fast) var(--wa-ease),
+    background var(--wa-dur-fast) var(--wa-ease), color var(--wa-dur-fast) var(--wa-ease);
+}
+
+.wa-theme-switch__opt:hover {
+  color: var(--wa-text);
+  border-color: var(--wa-border-strong);
+}
+
+.wa-theme-switch__opt.is-active {
+  border-color: var(--wa-primary);
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+}
+
+.wa-theme-switch__icon {
+  display: inline-flex;
+  align-items: center;
+}
+
+.wa-theme-switch__icon svg {
+  display: block;
+}
+
+/* 底部操作区 */
+.wa-settings__actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  max-width: 880px;
+  margin: 8px auto 0;
+}
+
+.wa-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 16px;
+  border-radius: var(--wa-r-md);
+  border: 1px solid var(--wa-border);
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text);
+  font-size: var(--wa-f-md);
+  cursor: pointer;
+  transition: background var(--wa-dur-fast) var(--wa-ease), border-color var(--wa-dur-fast) var(--wa-ease);
+}
+
+.wa-btn:hover {
+  background: var(--wa-surface-hover);
+}
+
+.wa-btn--primary {
+  background: var(--wa-primary);
+  border-color: var(--wa-primary);
+  color: #fff;
+}
+
+.wa-btn--primary:hover {
+  background: var(--wa-primary-hover);
+}
+
+.wa-btn--ghost {
+  background: transparent;
+}
+
+.wa-btn:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}

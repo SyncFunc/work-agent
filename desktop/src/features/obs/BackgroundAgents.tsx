@@ -1,64 +1,59 @@
-// BackgroundAgents：展示后台子 agent 状态（运行中/完成）+ 实时事件流。
+// BackgroundAgents：展示当前会话的后台子 agent 状态（运行中/已完成/出错）。
 //
-// M9 subsession：daemon 模式下，后台 subagent 走独立 subsession，其事件经父连接多路复用、
-// 携带 subsession_id 实时到达。本组件按 subsession_id 分桶，复用主会话的 buildChatModel /
-// MessageList 实时渲染子 agent 的文本/工具流（而非仅「已启动/已完成」两点）。
-// CLI 模式无 subsession（子 agent 用本地 transport），仍由 notify 状态点兜底展示。
+// 关键约束（修复「前台子 agent 也出现在后台、跨会话串台、切回后消失」等 bug）：
+//   1. 只追踪「后台」子 agent —— 数据来源是 daemon 下发的 notify 文本
+//      （RE_START / RE_DONE / RE_ERROR / RE_BG_LINE），前台子 agent 走主聊天区
+//      的 event 流，不会下发这些 notify，因此不会误入后台面板。
+//   2. 只展示「当前会话」的后台任务 —— daemon 仅向当前 attach 的会话连接转发 notify；
+//      本组件在 sessionId 变化时清空任务表并重新拉取，避免跨会话串台与切回后残留/消失。
 
 import { useEffect, useState } from 'react'
 import { DaemonClient } from '../../protocol/client'
-import { agentFromSubId, buildChatModel } from '../chat/useEventReducer'
-import type { AgentEvent } from '../../protocol/types'
-import { SubagentCard } from '../chat/SubagentCard'
+import { Badge, IconButton } from '../../components'
+import { Bot, CheckCircle2, Loader, RefreshCw, XCircle } from 'lucide-react'
 
 interface BgTask {
   id: string
   agent: string
-  status: 'running' | 'done'
-  /** M9 subsession：该子会话累积的事件流（实时渲染用）。 */
-  events: AgentEvent[]
+  status: 'running' | 'done' | 'error'
 }
 
 interface Props {
   client: DaemonClient | null
+  /** 当前 attach 的会话 id；变化即清空并按新会话重新拉取后台任务。 */
+  sessionId: string | null
 }
 
+// 注：以下正则匹配 daemon 下发的状态点文本（含 emoji），属数据匹配，非 UI 图标。
 const RE_START = /后台 Subagent \[(.+?)\] 已启动（task_id: (.+?)）/
 const RE_DONE = /后台 Subagent \[(.+?)\] 已完成/
+const RE_ERROR = /后台 Subagent \[(.+?)\] 出错/
 const RE_BG_LINE = /^\s*(bg_[0-9a-f]+):\s*(✅ 已完成|🔄 运行中)/
 
 function upsert(tasks: Record<string, BgTask>, t: BgTask): Record<string, BgTask> {
   return { ...tasks, [t.id]: t }
 }
 
-export function BackgroundAgents({ client }: Props) {
+export function BackgroundAgents({ client, sessionId }: Props) {
   const [tasks, setTasks] = useState<Record<string, BgTask>>({})
+
+  // 会话切换：清空旧会话的后台任务，并拉取新会话当前正在运行的后台任务。
+  // client.send 与 session.switch 同 FIFO，daemon 先处理 switch 再处理本 bg 查询，
+  // 因此返回的是新会话的任务，不会串台。
+  useEffect(() => {
+    setTasks({})
+    client?.command('bg')
+  }, [client, sessionId])
 
   useEffect(() => {
     if (!client) return
 
-    // M9 subsession：实时累积各子会话事件流。
-    const offEv = client.onEvent((ev) => {
-      const sub = ev.subsession_id
-      if (typeof sub !== 'string' || !sub) return
-      setTasks((prev) => {
-        const existing = prev[sub]
-        const events = existing ? [...existing.events, ev] : [ev]
-        return upsert(prev, {
-          id: sub,
-          agent: agentFromSubId(sub),
-          status: 'running',
-          events,
-        })
-      })
-    })
-
-    // notify 状态点：保留旧行为（CLI 模式占位 / daemon 模式补全完成态）。
     const offMsg = client.onMessage('notify', (env) => {
       const msg = String((env.payload as { message?: string }).message ?? '')
+
+      // 完成（成功）：按 agent 名把该后台任务置为 done。
       const done = msg.match(RE_DONE)
       if (done) {
-        // 完成通知不含 subsession_id，按 agent 名把最近仍在运行的子会话标记完成（尽力）。
         setTasks((prev) => {
           const next = { ...prev }
           for (const k of Object.keys(next)) {
@@ -69,32 +64,40 @@ export function BackgroundAgents({ client }: Props) {
         })
         return
       }
-      const start = msg.match(RE_START)
-      if (start) {
-        // 仅当尚无该子会话实时事件时补占位（避免与 subsession 实时流重复）。
-        setTasks((prev) => (prev[start[2]] ? prev : upsert(prev, {
-          id: start[2],
-          agent: start[1],
-          status: 'running',
-          events: [],
-        })))
+
+      // 出错：按 agent 名置为 error。
+      const err = msg.match(RE_ERROR)
+      if (err) {
+        setTasks((prev) => {
+          const next = { ...prev }
+          for (const k of Object.keys(next)) {
+            const t = next[k]
+            if (t.agent === err[1] && t.status === 'running') next[k] = { ...t, status: 'error' }
+          }
+          return next
+        })
         return
       }
+
+      // 启动：登记一个新后台任务（task_id 即 bg_xxx）。
+      const start = msg.match(RE_START)
+      if (start) {
+        setTasks((prev) =>
+          prev[start[2]] ? prev : upsert(prev, { id: start[2], agent: start[1], status: 'running' }),
+        )
+        return
+      }
+
+      // /bg 状态行：补全/纠正运行中任务的状态（已完成的不在 _bg_tasks 中，故显式置 done）。
       const line = msg.match(RE_BG_LINE)
       if (line) {
-        setTasks((prev) => (prev[line[1]] ? prev : upsert(prev, {
-          id: line[1],
-          agent: line[1],
-          status: line[2].includes('已完成') ? 'done' : 'running',
-          events: [],
-        })))
+        const id = line[1]
+        const status = line[2].includes('已完成') ? 'done' : 'running'
+        setTasks((prev) => upsert(prev, { id, agent: prev[id]?.agent ?? id, status }))
       }
     })
 
-    return () => {
-      offEv()
-      offMsg()
-    }
+    return () => offMsg()
   }, [client])
 
   const refresh = (): void => {
@@ -103,45 +106,48 @@ export function BackgroundAgents({ client }: Props) {
 
   const list = Object.values(tasks)
 
+  const statusBadge = (status: BgTask['status']): React.ReactNode => {
+    if (status === 'running') {
+      return (
+        <Badge tone="primary" icon={<Loader size={12} />}>
+          运行中
+        </Badge>
+      )
+    }
+    if (status === 'done') {
+      return (
+        <Badge tone="success" icon={<CheckCircle2 size={12} />}>
+          已完成
+        </Badge>
+      )
+    }
+    return (
+      <Badge tone="danger" icon={<XCircle size={12} />}>
+        出错
+      </Badge>
+    )
+  }
+
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '4px 8px' }}>
-        <span style={{ fontSize: 12, color: '#666' }}>后台子 Agent ({list.length})</span>
-        <button type="button" onClick={refresh} style={{ fontSize: 12 }}>
-          刷新 (/bg)
-        </button>
+    <div className="wa-bg">
+      <div className="wa-bg__head">
+        <span className="wa-bg__count">后台子 Agent ({list.length})</span>
+        <IconButton icon={<RefreshCw size={14} />} label="刷新后台任务" onClick={refresh} />
       </div>
-      <div style={{ flex: 1, overflowY: 'auto', padding: '0 8px 8px', fontSize: 12 }}>
+      <div className="wa-bg__list">
         {list.length === 0 ? (
-          <p style={{ color: '#999' }}>暂无后台任务</p>
+          <p className="wa-bg__empty">本会话暂无后台任务</p>
         ) : (
-          list.map((t) => {
-            // 同一任务的事件共享同一 subsession_id → buildChatModel 归约为单个 SubagentBlock。
-            const model = buildChatModel(t.events)
-            const sub = model.blocks[0]
-            const subBlock = sub && sub.type === 'subagent' ? sub : null
-            return (
-              <div key={t.id}>
-                {subBlock ? (
-                  <SubagentCard block={subBlock} status={t.status} />
-                ) : (
-                  <div
-                    style={{
-                      padding: '6px 8px',
-                      border: '1px solid #e0e0e0',
-                      borderRadius: 6,
-                      background: '#fafafa',
-                      fontSize: 13,
-                      color: '#888',
-                    }}
-                  >
-                    <span style={{ fontFamily: 'monospace' }}>subagent:{t.agent || '(后台)'}</span>{' '}
-                    · {t.status === 'running' ? '运行中' : '已完成'}（暂无实时流）
-                  </div>
-                )}
-              </div>
-            )
-          })
+          list.map((t) => (
+            <div key={t.id} className="wa-bg__item">
+              <Bot size={15} />
+              <span className="wa-bg__name">{t.agent}</span>
+              {statusBadge(t.status)}
+              <span className="wa-bg__id" title={t.id}>
+                {t.id}
+              </span>
+            </div>
+          ))
         )}
       </div>
     </div>

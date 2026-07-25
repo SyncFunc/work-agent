@@ -17,6 +17,8 @@ export const ALL_MSG_TYPES = [
   'confirm_plan',
   'approve',
   'command',
+  'task.cancel', // M9.9 真实中断当前生成
+  'session.delete', // M9.9 彻底删除会话（含事件/记忆/trace）
   'trace.list',
   'trace.get',
   // ---- Server -> Client ----
@@ -37,6 +39,9 @@ export const ALL_MSG_TYPES = [
   'usage',
   'close',
   'error',
+  'task.cancelled', // M9.9 已停止生成
+  'session.info', // M9.9 推送 plan_mode / model
+  'session.delete_resp', // M9.9 删除结果
   'trace_list',
   'trace_tree',
 ] as const
@@ -189,6 +194,14 @@ export interface UsagePayload {
     prompt_tokens?: number
     completion_tokens?: number
     total_tokens?: number
+    reasoning_tokens?: number
+    /** 缓存命中（本请求从上下文缓存读取的 token）。 */
+    cache_hit_tokens?: number
+    /** 缓存未命中（需重新计算输入的 token）。 */
+    cache_miss_tokens?: number
+    /** 缓存写入（本请求新写入上下文缓存的 token）。 */
+    cache_write_tokens?: number
+    /** 估算 token（无真实用量时由后端粗估）。 */
     estimated_tokens?: number
   }
   estimated: boolean

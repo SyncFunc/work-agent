@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import time
 import uuid
@@ -229,6 +230,46 @@ class SessionStore:
                 (new_id, parent_session_id),
             )
         return new_id
+
+    def delete_session(
+        self,
+        session_id: str,
+        *,
+        trace_store: Any | None = None,
+        session_memory_dir: str | None = None,
+    ) -> None:
+        """M9.9 彻底删除会话。
+
+        删除范围（彻底删除）：
+        - sqlite 行：会话元数据（含全部子会话）+ 事件流（含全部子会话事件）；
+        - 关联的 trace（经 ``trace_store.delete_session``，含子会话）；
+        - 关联的 Session Memory 目录 ``<session_memory_dir>/<session_id>``（含子会话）。
+
+        子会话集合先经 ``parent_session_id`` 查询收集，再统一清理，保证级联彻底。
+        """
+        # 收集自身 + 全部子孙会话 id
+        ids: list[str] = [session_id]
+        with self._conn() as conn:
+            rows = conn.execute(
+                "SELECT session_id FROM sessions WHERE parent_session_id=?", (session_id,)
+            ).fetchall()
+            ids.extend(r["session_id"] for r in rows)
+            placeholders = ",".join("?" * len(ids))
+            conn.execute(f"DELETE FROM events WHERE session_id IN ({placeholders})", ids)
+            conn.execute(f"DELETE FROM sessions WHERE session_id IN ({placeholders})", ids)
+        # trace（duck typing：可选，失败不阻断）
+        if trace_store is not None and hasattr(trace_store, "delete_session"):
+            try:
+                trace_store.delete_session(session_id)
+            except Exception:
+                pass
+        # Session Memory 目录（含子会话）
+        if session_memory_dir:
+            base = Path(session_memory_dir)
+            for sid in ids:
+                d = base / sid
+                if d.is_dir():
+                    shutil.rmtree(d, ignore_errors=True)
 
 
 class SessionStoreSink:

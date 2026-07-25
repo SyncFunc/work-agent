@@ -1,0 +1,301 @@
+/* M9.9 左侧栏：Logo+版本 / 搜索 / 新建任务 / 导航 / 工作空间+历史 / 用户栏。 */
+
+.wa-sidebar {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  background: var(--wa-bg-subtle);
+  border-right: 1px solid var(--wa-border);
+}
+
+/* 顶部 Logo + 名称 + 版本 + 右侧操作 */
+.wa-brand {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 12px 10px 8px;
+}
+.wa-brand__logo {
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  flex: none;
+  background: linear-gradient(135deg, var(--wa-primary), var(--wa-accent, #6d8bff));
+  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.25);
+}
+.wa-brand__text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.15;
+  min-width: 0;
+  flex: 1;
+}
+.wa-brand__title-text {
+  font-weight: 700;
+  font-size: var(--wa-f-md);
+  white-space: nowrap;
+}
+.wa-brand__version {
+  font-size: 11px;
+  color: var(--wa-text-faint);
+}
+.wa-sidebar-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+
+/* 搜索 + 新建任务 */
+.wa-sidebar-top {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 4px 10px 10px;
+}
+.wa-search {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+.wa-search__icon {
+  position: absolute;
+  left: 9px;
+  color: var(--wa-text-faint);
+  pointer-events: none;
+}
+.wa-search__input {
+  width: 100%;
+  height: 32px;
+  padding: 0 10px 0 28px;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg);
+  color: var(--wa-text);
+  font: inherit;
+  font-size: var(--wa-f-sm);
+  outline: none;
+}
+.wa-search__input:focus {
+  border-color: var(--wa-primary);
+}
+.wa-newtask {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  height: 34px;
+  border: none;
+  border-radius: var(--wa-r-md);
+  background: var(--wa-primary);
+  color: #fff;
+  font: inherit;
+  font-size: var(--wa-f-sm);
+  font-weight: 600;
+  cursor: pointer;
+  transition: filter var(--wa-dur-fast) var(--wa-ease),
+    transform var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-newtask:hover {
+  filter: brightness(0.94);
+}
+.wa-newtask:active {
+  transform: translateY(1px);
+}
+.wa-newtask:disabled {
+  opacity: 0.55;
+  cursor: not-allowed;
+}
+
+/* 导航菜单（技能 / 智能体 / 可观测） */
+.wa-nav {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding: 2px 10px;
+}
+.wa-nav__item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 10px;
+  border: none;
+  border-radius: var(--wa-r-md);
+  background: transparent;
+  color: var(--wa-text);
+  font: inherit;
+  font-size: var(--wa-f-sm);
+  cursor: default;
+  text-align: left;
+}
+.wa-nav__item:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-nav__item.is-active {
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+  font-weight: 600;
+}
+.wa-nav__icon {
+  display: inline-flex;
+  color: inherit;
+}
+
+/* 工作空间 */
+.wa-workspace {
+  padding: 8px 12px;
+  margin: 4px 10px;
+  border-radius: var(--wa-r-md);
+  background: var(--wa-bg);
+  border: 1px solid var(--wa-border);
+}
+.wa-workspace__head {
+  font-size: 11px;
+  color: var(--wa-text-faint);
+  letter-spacing: 0.04em;
+}
+.wa-workspace__name {
+  font-size: var(--wa-f-sm);
+  font-weight: 600;
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 历史任务列表（可滚动） */
+.wa-history {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  padding: 6px 10px 10px;
+}
+.wa-history__head {
+  font-size: 11px;
+  color: var(--wa-text-faint);
+  letter-spacing: 0.04em;
+  padding: 2px 2px 6px;
+}
+.wa-history-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  overflow-y: auto;
+  flex: 1;
+}
+.wa-history-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: var(--wa-r-md);
+  cursor: default;
+}
+.wa-history-item:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-history-item.is-active {
+  background: var(--wa-primary-weak);
+}
+.wa-history-item__doc {
+  flex: none;
+  color: var(--wa-text-muted);
+  display: inline-flex;
+}
+.wa-history-item.is-active .wa-history-item__doc {
+  color: var(--wa-primary);
+}
+.wa-history-item__main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  flex: 1;
+}
+.wa-history-item__name {
+  font-size: var(--wa-f-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-history-item__time {
+  font-size: 11px;
+  color: var(--wa-text-faint);
+}
+.wa-history-item__running {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--wa-success);
+  flex: none;
+  box-shadow: 0 0 0 3px var(--wa-success-weak, rgba(40, 167, 69, 0.18));
+}
+/* M9.9 步骤6：删除二次确认 */
+.wa-history-item__confirm {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  flex: none;
+}
+.wa-history-item__confirm-yes,
+.wa-history-item__confirm-no {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.wa-history-item__confirm-yes {
+  background: rgba(255, 99, 99, 0.16);
+  color: #ff7878;
+}
+.wa-history-item__confirm-yes:hover {
+  background: rgba(255, 99, 99, 0.28);
+}
+.wa-history-item__confirm-no {
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text-muted);
+}
+.wa-history-item__confirm-no:hover {
+  background: var(--wa-surface-hover);
+  color: var(--wa-text);
+}
+
+/* 底部用户栏 */
+.wa-userbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 10px;
+  border-top: 1px solid var(--wa-border);
+  cursor: default;
+}
+.wa-userbar:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-userbar__avatar {
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: var(--wa-surface-hover);
+  color: var(--wa-text-muted);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: var(--wa-f-sm);
+  font-weight: 600;
+  flex: none;
+}
+.wa-userbar__name {
+  flex: 1;
+  font-size: var(--wa-f-sm);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-userbar__chevron {
+  color: var(--wa-text-faint);
+}

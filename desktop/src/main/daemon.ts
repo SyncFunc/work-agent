@@ -23,7 +23,6 @@ export class DaemonManager {
     const python = await locatePython()
     const child = spawn(python, ['-m', 'agent.cli', 'daemon'], {
       stdio: ['ignore', 'pipe', 'pipe'],
-      env: { ...process.env },
     })
     this.child = child
 
@@ -50,7 +49,11 @@ export class DaemonManager {
   private ingest(text: string): void {
     const parsed = parseDaemonLog(text)
     if (parsed?.wsUrl && parsed?.healthUrl) {
-      this.config = { wsUrl: parsed.wsUrl, healthUrl: parsed.healthUrl, token: '' }
+      this.config = {
+        wsUrl: parsed.wsUrl,
+        healthUrl: parsed.healthUrl,
+        token: '',
+      }
       return
     }
     if (parsed?.wsUrl && !this.config) {

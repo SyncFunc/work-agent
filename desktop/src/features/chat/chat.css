@@ -1,0 +1,382 @@
+/* 聊天区样式，依赖 tokens.css 变量。 */
+
+/* —— 消息行 —— */
+.wa-msg {
+  display: flex;
+  gap: var(--wa-s2);
+  margin: var(--wa-s2) 0;
+  align-items: flex-start;
+}
+.wa-msg__avatar {
+  flex: none;
+  margin-top: 2px;
+}
+.wa-msg__main {
+  flex: 1;
+  min-width: 0;
+}
+.wa-msg__head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--wa-s2);
+  margin-bottom: 2px;
+}
+.wa-msg__role {
+  font-weight: 600;
+  font-size: var(--wa-f-md);
+}
+.wa-msg__time {
+  color: var(--wa-text-faint);
+  font-size: var(--wa-f-xs);
+}
+
+/* 用户消息：右侧气泡 */
+.wa-msg--user {
+  flex-direction: row-reverse;
+}
+.wa-msg--user .wa-msg__main {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+}
+.wa-bubble {
+  background: var(--wa-bubble-user);
+  color: var(--wa-bubble-user-text);
+  padding: var(--wa-s2) var(--wa-s3);
+  border-radius: var(--wa-r-lg);
+  border-top-right-radius: 3px;
+  max-width: 80%;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+/* Markdown 文本 */
+.wa-md {
+  font-size: var(--wa-f-lg);
+  line-height: 1.6;
+}
+.wa-md > :first-child {
+  margin-top: 0;
+}
+.wa-md > :last-child {
+  margin-bottom: 0;
+}
+.wa-md p {
+  margin: 0 0 var(--wa-s2);
+}
+.wa-md pre {
+  margin: var(--wa-s2) 0;
+  border-radius: var(--wa-r-sm);
+  border: 1px solid var(--wa-border);
+  background: var(--wa-code-bg);
+}
+.wa-md code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.92em;
+}
+.wa-md :not(pre) > code {
+  background: var(--wa-bg-subtle);
+  padding: 1px 5px;
+  border-radius: var(--wa-r-sm);
+  border: 1px solid var(--wa-border);
+}
+.wa-md table {
+  border-collapse: collapse;
+  margin: var(--wa-s2) 0;
+}
+.wa-md th,
+.wa-md td {
+  border: 1px solid var(--wa-border);
+  padding: var(--wa-s1) var(--wa-s2);
+}
+.wa-md blockquote {
+  margin: var(--wa-s2) 0;
+  padding-left: var(--wa-s3);
+  border-left: 3px solid var(--wa-border-strong);
+  color: var(--wa-text-muted);
+}
+
+/* 思考过程 */
+.wa-reason-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  color: var(--wa-text-muted);
+  font: inherit;
+  font-size: var(--wa-f-sm);
+  padding: 2px 0;
+}
+.wa-reason-toggle:hover {
+  color: var(--wa-text);
+}
+.wa-reason-toggle__chev {
+  transition: transform var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-reason-toggle--open .wa-reason-toggle__chev {
+  transform: rotate(90deg);
+}
+.wa-reasoning {
+  border-left: 3px solid var(--wa-reasoning-border);
+  padding-left: var(--wa-s3);
+  color: var(--wa-text-muted);
+  font-size: var(--wa-f-md);
+  white-space: pre-wrap;
+  margin: var(--wa-s1) 0;
+}
+
+/* 警示块（错误 / 澄清 / 计划） */
+.wa-alert {
+  display: flex;
+  gap: var(--wa-s2);
+  padding: var(--wa-s3);
+  border-radius: var(--wa-r-md);
+  border: 1px solid transparent;
+  align-items: flex-start;
+}
+.wa-alert__icon {
+  flex: none;
+  margin-top: 1px;
+}
+.wa-alert--error {
+  background: var(--wa-danger-weak);
+  border-color: var(--wa-danger);
+  color: var(--wa-danger);
+}
+.wa-alert--clarify {
+  background: var(--wa-warn-weak);
+  border-color: var(--wa-warn);
+  color: var(--wa-warn);
+}
+.wa-alert--plan {
+  background: var(--wa-primary-weak);
+  border-color: var(--wa-primary);
+  color: var(--wa-primary);
+}
+.wa-alert ul {
+  margin: var(--wa-s1) 0 0;
+  padding-left: var(--wa-s4);
+}
+
+.wa-clarify__answer {
+  margin-top: var(--wa-s2);
+  padding-top: var(--wa-s2);
+  border-top: 1px solid currentColor;
+  opacity: 0.92;
+  white-space: pre-wrap;
+}
+
+/* streaming 光标：保留原块状样式，钉在正文末行之内（行内闪烁，而非落在整块之下的独立行）。 */
+.wa-cursor {
+  display: inline-block;
+  width: 7px;
+  height: 1.05em;
+  vertical-align: text-bottom;
+  background: var(--wa-primary);
+  margin-left: 2px;
+  border-radius: 1px;
+  animation: wa-blink 1s steps(2, start) infinite;
+}
+@keyframes wa-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* —— 工具块 —— */
+.wa-tool {
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  margin: var(--wa-s2) 0;
+  overflow: hidden;
+  background: var(--wa-bg-elevated);
+}
+.wa-tool__head {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
+  width: 100%;
+  text-align: left;
+  padding: var(--wa-s2) var(--wa-s3);
+  background: var(--wa-bg-subtle);
+  border: none;
+  cursor: pointer;
+  font: inherit;
+  color: var(--wa-text);
+}
+.wa-tool__head:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-tool__name {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-md);
+}
+.wa-tool__chev {
+  margin-left: auto;
+  color: var(--wa-text-muted);
+  transition: transform var(--wa-dur-fast) var(--wa-ease);
+  flex: none;
+}
+.wa-tool__chev--open {
+  transform: rotate(90deg);
+}
+.wa-tool__body {
+  padding: var(--wa-s3);
+}
+.wa-tool__label {
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+  margin-bottom: var(--wa-s1);
+}
+.wa-code-wrap {
+  position: relative;
+}
+.wa-copy-btn {
+  position: absolute;
+  top: 4px;
+  right: 4px;
+}
+.wa-params,
+.wa-result {
+  margin: 0;
+  background: var(--wa-code-bg);
+  padding: var(--wa-s2);
+  border-radius: var(--wa-r-sm);
+  font-size: var(--wa-f-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  border: 1px solid var(--wa-border);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* —— 子 agent 卡 —— */
+.wa-subagent {
+  display: flex;
+  flex-direction: column;
+  margin: var(--wa-s2) 0;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  overflow: hidden;
+  background: var(--wa-bg-subtle);
+}
+.wa-subagent__head {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
+  padding: var(--wa-s2);
+  background: var(--wa-bg-elevated);
+  border-bottom: 1px solid var(--wa-border);
+}
+.wa-subagent__title {
+  font-weight: 600;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-md);
+}
+.wa-subagent__toggle {
+  margin-left: auto;
+}
+.wa-subagent__body {
+  height: 220px;
+  overflow-y: auto;
+  padding: var(--wa-s2);
+}
+
+/* —— 滚动容器 / 空状态 / 回到底部 —— */
+.wa-chat-scroll {
+  position: relative;
+  flex: 1;
+  /* M9.9：flex 子项默认 min-height:auto 会拒绝收缩，导致内容撑破容器、
+     聊天越过输入区被遮挡。显式 0 才能让内部正常滚动。 */
+  min-height: 0;
+  overflow-y: auto;
+  padding: var(--wa-s3) var(--wa-s4);
+}
+.wa-jump-bottom {
+  position: absolute;
+  right: var(--wa-s4);
+  bottom: var(--wa-s3);
+  z-index: 5;
+  box-shadow: var(--wa-shadow-md);
+}
+.wa-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--wa-s2);
+  color: var(--wa-text-faint);
+  height: 100%;
+  text-align: center;
+  padding: var(--wa-s5);
+}
+.wa-empty__icon {
+  opacity: 0.55;
+}
+
+/* —— Diff 着色（行号 / 复制 / 并排）—— */
+.wa-diff-view {
+  position: relative;
+}
+.wa-diff-view__bar {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: var(--wa-s1);
+  margin-bottom: var(--wa-s1);
+}
+.wa-diff {
+  margin: 0;
+  padding: var(--wa-s1) var(--wa-s2);
+  overflow-x: auto;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-md);
+  background: var(--wa-code-bg);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-sm);
+  line-height: 1.5;
+}
+.wa-diff-row {
+  display: flex;
+}
+.wa-diff--split .wa-diff-row {
+  border-bottom: 1px solid var(--wa-border);
+}
+.wa-diff__num {
+  flex: none;
+  user-select: none;
+  text-align: right;
+  padding-right: var(--wa-s2);
+  min-width: 3ch;
+  color: var(--wa-text-faint);
+}
+.wa-diff-line {
+  flex: 1;
+  white-space: pre;
+  min-width: 0;
+}
+.wa-diff--split .wa-diff-cell {
+  flex: 1;
+  display: flex;
+  min-width: 0;
+}
+.wa-diff--split .wa-diff-cell + .wa-diff-cell {
+  border-left: 1px solid var(--wa-border);
+}
+.wa-diff-add {
+  color: var(--wa-success);
+  background: var(--wa-success-weak);
+}
+.wa-diff-del {
+  color: var(--wa-danger);
+  background: var(--wa-danger-weak);
+}
+.wa-diff-hunk {
+  color: var(--wa-primary);
+}
+.wa-diff-ctx {
+  color: var(--wa-text-muted);
+}

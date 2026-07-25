@@ -153,6 +153,12 @@ async def _route(
         _resolve(conn, registry, payload.get("id"), bool(payload.get("approved", False)))
     elif mtype == MsgType.COMMAND.value:
         await _command(conn, registry, payload.get("name", ""), payload.get("args"))
+    elif mtype == MsgType.TASK_CANCEL.value:
+        await _task_cancel(conn, registry)
+    elif mtype == MsgType.SESSION_DELETE.value:
+        await _session_delete(
+            conn, registry, payload.get("session_id"), payload.get("project_root")
+        )
     elif mtype == MsgType.TRACE_LIST.value:
         await _trace_list(
             conn,
@@ -183,6 +189,7 @@ async def _attach(
     await conn.send(
         MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
     )
+    await _send_session_info(conn, handle, sid)
     await _replay(conn, handle, sid)
 
 
@@ -196,6 +203,7 @@ async def _switch(
     await conn.send(
         MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
     )
+    await _send_session_info(conn, handle, sid)
     await _replay(conn, handle, sid)
 
 
@@ -294,17 +302,28 @@ async def _task_send(
             await transport.flush()
             if res is not None:
                 transport.report_usage(res.usage, res.text)
+        except asyncio.CancelledError:
+            # M9.9 真实取消：task.cancel() 在此被捕获，向客户端宣告已停止。
+            handle.cancel_requested = False
+            transport.notify("已停止生成")
+            try:
+                await conn.send(MsgType.TASK_CANCELLED, {}, session=sid)
+            except Exception:
+                pass
+            raise  # 交还 finally 清状态并发送 CLOSE
         except Exception as e:  # step 异常优雅处理，不断开连接
             transport.notify(f"step error: {type(e).__name__}: {e}")
         finally:
             handle.running = False
             handle.busy = False
+            handle.running_task = None
             try:
                 await conn.send(MsgType.CLOSE, {}, session=sid)
             except Exception:
                 pass
 
-    asyncio.ensure_future(_run())
+    task = asyncio.ensure_future(_run())
+    handle.running_task = task
 
 
 def _resolve(conn: Connection, registry: SessionRegistry, rid: str | None, value: object) -> None:
@@ -314,6 +333,77 @@ def _resolve(conn: Connection, registry: SessionRegistry, rid: str | None, value
     handle = registry.get(sid)
     if handle is not None and handle.transport is not None:
         handle.transport.resolve(rid, value)
+
+
+async def _task_cancel(conn: Connection, registry: SessionRegistry) -> None:
+    """M9.9 真实取消：取消当前会话在飞的 step 任务（task.cancel() 中断 LLM 流）。"""
+    sid = conn.session_id
+    if sid is None:
+        return
+    handle = registry.get(sid)
+    if handle is None or handle.running_task is None:
+        return
+    handle.cancel_requested = True
+    handle.running_task.cancel()
+
+
+async def _send_session_info(conn: Connection, handle: SessionHandle, sid: str | None) -> None:
+    """M9.9 会话状态推送：plan_mode / model（前端顶栏与输入区展示）。"""
+    session = handle.session
+    if session is None:
+        return
+    plan_mode = bool(getattr(session, "plan_mode", False))
+    model = ""
+    try:
+        model = session.settings.llm.model
+    except Exception:
+        model = ""
+    await conn.send(MsgType.SESSION_INFO, {"plan_mode": plan_mode, "model": model}, session=sid)
+
+
+async def _session_delete(
+    conn: Connection, registry: SessionRegistry, sid: str | None, project_root: str | None
+) -> None:
+    """M9.9 彻底删除会话（含事件 / Session Memory / trace + 内存句柄级联）。"""
+    if not sid:
+        await conn.send(MsgType.SESSION_DELETE_RESP, {"ok": False, "message": "missing session_id"})
+        return
+    handle = registry.get(sid)
+    proj = project_root or (handle.project_root if handle is not None else os.getcwd())
+    settings = None
+    try:
+        from agent.config.settings import load_settings
+
+        settings = load_settings(project_root=proj)
+    except Exception:
+        settings = None
+
+    store_factory = getattr(registry, "_store_factory", None)
+    trace_factory = getattr(registry, "_trace_store_factory", None)
+    store = store_factory(proj) if store_factory else None
+    trace_store = trace_factory(proj) if trace_factory else None
+    session_memory_dir = (
+        os.path.join(proj, settings.context.session_memory_dir) if settings is not None else None
+    )
+
+    try:
+        if store is not None:
+            store.delete_session(
+                sid, trace_store=trace_store, session_memory_dir=session_memory_dir
+            )
+        elif trace_store is not None:
+            trace_store.delete_session(sid)
+    except Exception as e:
+        await conn.send(MsgType.SESSION_DELETE_RESP, {"ok": False, "message": str(e)}, session=sid)
+        return
+
+    # 内存句柄清理（含级联子会话）
+    if registry.get(sid) is not None:
+        registry.cascade_remove(sid)
+    else:
+        registry.unregister_subsession(sid)
+
+    await conn.send(MsgType.SESSION_DELETE_RESP, {"ok": True, "session_id": sid}, session=sid)
 
 
 async def _command(
