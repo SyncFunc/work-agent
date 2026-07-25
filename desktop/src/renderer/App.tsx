@@ -162,17 +162,17 @@ export default function App(): React.ReactElement {
           onSwitch={sessions.switchSession}
           onClose={sessions.closeTab}
         />
-        <section style={{ flex: 1, overflowY: 'auto', padding: 16 }}>
-          {error && <p style={{ color: 'crimson' }}>错误：{error}</p>}
-          {!client && <p>正在连接 daemon…</p>}
-          {client && !active && <p style={{ color: '#888' }}>从左侧新建或打开一个会话开始。</p>}
+        <section style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+          {error && <p style={{ color: 'var(--wa-danger)', padding: '0 16px' }}>错误：{error}</p>}
+          {!client && <p style={{ color: 'var(--wa-text-muted)', padding: '0 16px' }}>正在连接 daemon…</p>}
+          {client && !active && <p style={{ color: 'var(--wa-text-muted)', padding: 16 }}>从左侧新建或打开一个会话开始。</p>}
           {active && (
-            <div>
-              <p style={{ color: '#888', fontSize: 13 }}>
+            <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
+              <p style={{ color: 'var(--wa-text-muted)', fontSize: 13, padding: '0 16px', margin: '8px 0' }}>
                 会话 <code>{active.name}</code> · {active.events.length} 条事件
                 {sessions.state.replaying ? '（回放中…）' : ''}
               </p>
-              <MessageList model={model} />
+              <MessageList model={model} autoScroll />
             </div>
           )}
         </section>
