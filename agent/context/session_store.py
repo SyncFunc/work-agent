@@ -201,14 +201,10 @@ class SessionStoreSink:
     def __init__(self, store: SessionStore, session_id: str) -> None:
         self._store = store
         self._session_id = session_id
-        self._seq: int | None = None  # 惰性初始化为该会话 DB 最大 seq + 1
 
     def __call__(self, ev: Event) -> None:
         if ev.transient:
             return
-        if self._seq is None:
-            self._seq = self._store._next_seq(self._session_id)
-        # 用会话级全局 seq 覆盖事件自带 seq（同一 Event 对象，in-memory 流同步更新）
-        ev.seq = self._seq
-        self._seq += 1
+        # EventStream 现由调用方保证「会话级全局 seq」（跨轮复用同一 stream，
+        # append 即 len 递增），故直接落盘 ev.seq，无需改写（旧补丁已移除）。
         self._store.append_event(self._session_id, ev)

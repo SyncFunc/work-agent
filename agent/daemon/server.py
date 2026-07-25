@@ -155,13 +155,19 @@ async def _route(
         await _command(conn, registry, payload.get("name", ""), payload.get("args"))
     elif mtype == MsgType.TRACE_LIST.value:
         await _trace_list(
-            conn, registry, payload.get("project_root") or os.getcwd(),
-            payload.get("session_id"), _mid,
+            conn,
+            registry,
+            payload.get("project_root") or os.getcwd(),
+            payload.get("session_id"),
+            _mid,
         )
     elif mtype == MsgType.TRACE_GET.value:
         await _trace_get(
-            conn, registry, payload.get("project_root") or os.getcwd(),
-            payload.get("trace_id"), _mid,
+            conn,
+            registry,
+            payload.get("project_root") or os.getcwd(),
+            payload.get("trace_id"),
+            _mid,
         )
     else:
         await conn.send(MsgType.ERROR, {"code": "unknown_type", "message": mtype or ""})
@@ -198,9 +204,16 @@ async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> N
 
     缓冲仅含非 transient 事件（见 BridgeTransport._on_event），故 tool_call_delta 等瞬时
     事件不会重画，避免参数预览重复渲染。
+
+    修点：每轮 ``loop.run`` 都会新建 ``EventStream``，事件 ``seq`` 从 0 重新递增，导致
+    ``event_buffer`` 跨轮累积后内部 ``seq`` 重复。这里在发送时按缓冲顺序**重新编一个会话内
+    单调递增的全局 seq**，使回放流严格满足 ``Event``「顺序由 seq 唯一确定」的契约，避免任何
+    按 seq 去重/排序的下游（或前端历史重建）因序号碰撞而丢事件或错乱。
     """
     await conn.send(MsgType.REPLAY_START, {}, session=sid)
     for ev in list(handle.event_buffer):
+        # event_buffer 内的 seq 已是会话级全局唯一（session.event_stream 跨轮复用、
+        # SessionStoreSink 不再改写），直接发送，无需重编（旧补丁已移除）。
         await conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=sid)
     await conn.send(MsgType.REPLAY_END, {}, session=sid)
 
@@ -314,8 +327,7 @@ def _span_to_dict(s: Any) -> dict[str, Any]:
         "status": "open" if s.ended_at is None else "ok",
         "meta": s.meta,
         "logs": [
-            {"ts": lg.ts, "key": lg.key, "value": lg.value, "level": lg.level}
-            for lg in s.logs
+            {"ts": lg.ts, "key": lg.key, "value": lg.value, "level": lg.level} for lg in s.logs
         ],
     }
 
@@ -329,14 +341,14 @@ async def _trace_list(
 ) -> None:
     factory = getattr(registry, "_trace_store_factory", None)
     if factory is None:
-        await conn.send(MsgType.TRACE_LIST_RESP, {"project_root": project_root, "traces": []}, id=mid)
+        await conn.send(
+            MsgType.TRACE_LIST_RESP, {"project_root": project_root, "traces": []}, id=mid
+        )
         return
     try:
         traces = factory(project_root).list_traces(session_id)
     except Exception as e:  # 存储不可用：退化为空列表，不阻断查询
-        await conn.send(
-            MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid
-        )
+        await conn.send(MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid)
         return
     await conn.send(
         MsgType.TRACE_LIST_RESP, {"project_root": project_root, "traces": traces}, id=mid
@@ -360,9 +372,7 @@ async def _trace_get(
     try:
         tracer = factory(project_root).load_trace(trace_id)
     except Exception as e:
-        await conn.send(
-            MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid
-        )
+        await conn.send(MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid)
         return
     if tracer is None:
         await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
@@ -478,6 +488,7 @@ def start_daemon(settings: Settings) -> None:
                 session_id,
                 tracer=tracer,
                 trace_store=trace_store,
+                project_root=project_root,
             )
         return Session(
             model,
@@ -488,6 +499,7 @@ def start_daemon(settings: Settings) -> None:
             trace_store=trace_store,
             session_id=session_id,
             session_store=store,
+            project_root=project_root,
         )
 
     def session_factory(project_root: str, session_id: str) -> Session:

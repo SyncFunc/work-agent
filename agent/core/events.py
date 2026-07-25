@@ -174,8 +174,13 @@ class EventStream:
         self._sinks: list[EventSink] = []
 
     def subscribe(self, sink: EventSink) -> None:
-        """注册一个实时事件处理器（渲染/转发）。无去重，多次订阅多次分发。"""
-        self._sinks.append(sink)
+        """注册一个实时事件处理器（渲染/转发）。幂等：同一 sink 重复订阅只生效一次。
+
+        幂等性使「session 级 EventStream 被 loop.run 跨多轮复用」时，bridge / sink
+        不会因每轮重新 bind/subscribe 而被重复分发（否则每轮事件会被转发/落盘多次）。
+        """
+        if sink not in self._sinks:
+            self._sinks.append(sink)
 
     def unsubscribe(self, sink: EventSink) -> None:
         """移除已注册的处理器。"""
