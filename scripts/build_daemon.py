@@ -26,6 +26,15 @@ import subprocess
 import sys
 from pathlib import Path
 
+# Windows 控制台默认 cp1252 无法编码中文，导致 print 报 UnicodeEncodeError。
+# 在此将标准流强制设为 UTF-8（Linux/Mac 本就是 UTF-8，无副作用）。
+for _stream in (sys.stdout, sys.stderr):
+    if hasattr(_stream, "reconfigure"):
+        try:
+            _stream.reconfigure(encoding="utf-8")
+        except (ValueError, OSError):
+            pass
+
 ROOT = Path(__file__).resolve().parent.parent
 
 
