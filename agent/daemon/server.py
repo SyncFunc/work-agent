@@ -17,10 +17,12 @@ import os
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import websockets  # 仅 daemon 路径 import
 
+from agent.context.tokens import _estimate_tokens
+from agent.core.events import Event, EventStream, EventType
 from agent.daemon.protocol import (
     DAEMON_VERSION,
     PROTOCOL_VERSION,
@@ -33,6 +35,7 @@ from agent.daemon.registry import SessionHandle, SessionRegistry
 
 if TYPE_CHECKING:
     from agent.config.settings import Settings
+    from agent.core.loop import AgentResult
     from agent.core.session import Session
     from agent.daemon.bridge import BridgeTransport
 
@@ -72,6 +75,47 @@ def _default_transport_factory(handle: SessionHandle) -> BridgeTransport:
     from agent.daemon.bridge import BridgeTransport
 
     return BridgeTransport(handle)
+
+
+def _emit_usage(
+    stream: EventStream,
+    res: AgentResult,
+    duration: float,
+    *,
+    parent_message_id: str | None,
+) -> None:
+    """M10.2：把一次响应的 token 用量作为 USAGE 事件落盘（并实时转发）。
+
+    替换原 ``transport.report_usage`` 的 ``MsgType.USAGE`` 实时路径（M10.3 删除）。
+    usage 为空时退化为估算 token 数，标记 estimated=True（与历史 report_usage 一致）。
+    """
+    mid = res.message_id or stream.current_message_id
+    if mid is None:
+        return
+    usage = res.usage
+    if not usage:
+        est = _estimate_tokens(res.text or "")
+        stream.append(
+            Event(
+                type=EventType.USAGE,
+                message_id=mid,
+                parent_message_id=parent_message_id,
+                usage={"estimated_tokens": est},
+                duration=duration,
+                estimated=True,
+            )
+        )
+        return
+    stream.append(
+        Event(
+            type=EventType.USAGE,
+            message_id=mid,
+            parent_message_id=parent_message_id,
+            usage=dict(usage),
+            duration=duration,
+            estimated=False,
+        )
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -290,7 +334,9 @@ async def _task_send(
         await conn.send(MsgType.ERROR, {"code": "busy", "message": "session is busy"})
         return
     # 捕获已 narrowing 的 session/transport，供闭包 _run 使用（避免跨闭包丢失类型收窄）。
-    session = handle.session
+    # session 在 daemon 中实际为 Session 实例，但 SessionHandle.session 标注为 SessionLike，
+    # 故用 cast 让 basedpyright 识别 event_stream（M10.2 落盘入口）。
+    session = cast("Session", handle.session)
     transport = handle.transport
     # 同步置 busy：避免并发 task.send 竞态（配合每会话 Lock 双重保险）。
     handle.busy = True
@@ -299,12 +345,16 @@ async def _task_send(
         handle.running = True
         handle.last_activity = time.time()
         try:
+            t0 = time.time()
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
                 res, _err = await session.step(text, transport, yes=yes, fatal_plan_decline=False)
+            duration = time.time() - t0
             # 等待所有在飞事件转发完成，保证 FINAL 等事件先于 CLOSE 落地（顺序正确性）。
             await transport.flush()
             if res is not None:
-                transport.report_usage(res.usage, res.text)
+                # M10.2：顶层 message 用量改为 append USAGE 事件（落盘 + 经 event 消息实时转发），
+                # 替换原 transport.report_usage 的 MsgType.USAGE 实时路径（M10.3 删除）。
+                _emit_usage(session.event_stream, res, duration, parent_message_id=None)
         except asyncio.CancelledError:
             # M9.9 真实取消：task.cancel() 在此被捕获，向客户端宣告已停止。
             handle.cancel_requested = False

@@ -112,6 +112,9 @@ class AgentLoop:
         self._control_tools_enabled: bool = True
         # use_skill 待注入 conv 的正文（run 每轮结束时统一追加为 user 消息）
         self._pending_skill_injections: list[str] = []
+        # M10.2：本 run 的 message_id（run 时更新），供子 agent spawn 透传为 parent_message_id；
+        # 初始化为 None，使不经 run 直接调用 _tool_spawn_subagent 的路径也不报属性缺失。
+        self._run_message_id: str | None = None
 
     async def run(
         self,
@@ -136,6 +139,9 @@ class AgentLoop:
         self._run_pp = pp
         self._transport = transport
         self._run_system_prompt = system_prompt
+        self._run_message_id = (
+            message_id  # M10.2：本 run 的 message_id，供子 agent spawn 透传为 parent_message_id
+        )
         self._context_mgr = context_mgr
 
         conv = list(messages) if messages else []
@@ -581,6 +587,7 @@ class AgentLoop:
                 parent_gate=self.gate,
                 parent_handle=parent_handle,
                 registry=registry,
+                parent_message_id=self._run_message_id,  # M10.2：子 agent USAGE 事件挂到当前 message
             )
         except RecursionError as e:
             return ToolResult(ok=False, error=str(e))

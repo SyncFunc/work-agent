@@ -42,7 +42,7 @@
 ## 核心架构现状（跨里程碑）
 
 ### 事件流 + 传输层（AgentTransport）
-- `EventStream`（`agent/core/events.py`）是唯一实时线格式：`subscribe(sink)` 同步分发；`append` 入档、`emit` 仅分发不入档（`transient=True`，用于 `tool_call_delta` 预览，不污染持久化序列与回放）。`Event` 类型集合：`decision|clarify|plan|plan_progress|tool_use|tool_result|final|error|text|tool_call_delta`。
+- `EventStream`（`agent/core/events.py`）是唯一实时线格式：`subscribe(sink)` 同步分发；`append` 入档、`emit` 仅分发不入档（`transient=True`，用于 `tool_call_delta` 预览，不污染持久化序列与回放）。`Event` 类型集合：`decision|clarify|plan|plan_progress|tool_use|tool_result|final|error|text|tool_call_delta|usage`（M10.1 新增 `usage` 用量落盘事件，非 transient）。
 - `AgentTransport`（`agent/core/transport.py`）统一协议：HITL 方法 + `bind(stream)`（订阅自行渲染）+ `close()` + `report_usage()`。CLI `TerminalTransport`、TUI `TextualTransport`、daemon `BridgeTransport` 实现同一协议。
 - **铁律**：新增实时渲染走事件（持久化用 `append`、瞬时预览用 `emit`），**不要再给 loop 加 `presenter` 回调参数**。
 
@@ -122,6 +122,12 @@
 - **daemon 就绪竞态**：`ws=...` 就绪日志必须在 `_serve` 的 `create_ws_server` 块**内**打印（否则 `DaemonManager.waitForReady` 在端口未监听时误判就绪）。
 - **store 按项目隔离 + 路径锚定**：相对 db 路径（如 `obs.sessions_db_path`）默认相对 cwd，多项目会串库；daemon 内 `_anchor_path(p, project_root)` 锚定到项目根。
 - **`SessionStore` 回放修复**：旧 `_replay` 只走内存 `event_buffer`（被 maxlen 截断）→ 长会话重进历史变少、子事件从未落盘；现改读 sqlite 全量 + 子事件带 `parent_session_id` 落盘。
+
+### 用量持久化（M10：message 模型 + USAGE 事件）
+- **`EventType.USAGE` 事件**（M10.1 加 `usage/duration/estimated` 字段，M10.2 接入落盘）：`transient=False` → 自动落盘（SessionStoreSink）+ 进 `handle.event_buffer`（回放可读）+ `_on_event` 转 `event` 消息（前端经 EVENT payload 读 `usage`）。用量落盘入口：daemon 顶层 `server.py._emit_usage(stream, res, duration, *, parent_message_id)`（替代旧 `transport.report_usage` 的 `MsgType.USAGE` 实时路径，M10.3 删 MsgType.USAGE）；子 agent `SubagentSpawner.spawn(parent_message_id=...)` + `self._emit_subagent_usage(sub_stream, result, duration, parent_message_id=...)`，子事件 `parent_message_id` 指向父 message 形成 message 树。
+- **`AgentLoop._run_message_id`**：`run()` 入口设 `= message_id`，`_tool_spawn_subagent` 透传为子 agent 的 `parent_message_id`；**必须在 `__init__` 初始化为 `None`**（否则绕过 run 直接调 spawn 的测试路径 `AttributeError: 'AgentLoop' object has no attribute '_run_message_id'`）。
+- **`_emit_subagent_usage(self, stream, result, duration, *, parent_message_id)` 的 `parent_message_id` 是 keyword-only**：调用必须 `parent_message_id=...` 关键字传参，位置传参会 `TypeError: takes 3 positional arguments but 4 were given`。
+- 前端归集（M10.4）：桌面端 `useEventReducer` 按 `parent_message_id` 链把子 agent 用量累加回派生子 agent 的那条 message。
 
 ### 桌面端（React / TS）
 - **reducer 跨轮兜底重复渲染**：`lastDecisionText`（收尾兜底）**不可跨轮残留**。修复用 `hasStreamedText` 守卫：`text` 事件置位并丢弃残留兜底；`flushText` 仅在本轮完全无流式 TEXT 时消费兜底；`user` 事件重置守卫。**判据**：每个 assistant 轮次应有且仅有「一个文本气泡」，无重复。
