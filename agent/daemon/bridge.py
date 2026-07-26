@@ -162,13 +162,11 @@ class BridgeTransport(AgentTransport):
         self._send(MsgType.CLOSE, {})
 
     def report_usage(self, usage: dict[str, int] | None, answer: str | None = None) -> None:
-        if not usage:
-            from agent.context.tokens import _estimate_tokens
-
-            est = _estimate_tokens(answer or "")
-            self._send(MsgType.USAGE, {"usage": {"estimated_tokens": est}, "estimated": True})
-        else:
-            self._send(MsgType.USAGE, {"usage": usage, "estimated": False})
+        # M10.3：用量不再经 MsgType.USAGE 实时下发，改由 USAGE 事件（events 流）承载，
+        # 经 BridgeTransport._on_event 统一转 event 消息。此处保留协议占位以满足 AgentTransport，
+        # 实际不会被调用（daemon 路径已在 server._emit_usage / subagent._emit_subagent_usage 落盘）。
+        _ = (usage, answer)
+        return None
 
 
 class SubsessionBridgeTransport(BridgeTransport):

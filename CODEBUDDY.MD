@@ -1,7 +1,7 @@
 # CODEBUDDY.MD — 项目级指令与开发约定
 
 > 本文件是项目级指令。AI 每次开始新会话/新步骤时，**必须先读取本文件**以恢复上下文，并遵循其中的开发模式与约定。
-> 配套文档：`通用Agent架构调研与设计报告.md`（架构依据）、`milestones/`（里程碑计划）、`knowledge/INDEX.md`（跨里程碑知识沉淀）。
+> 配套文档：`通用Agent架构调研与设计报告.md`（架构依据）、`milestones/`（里程碑计划）、`knowledge/INDEX.md`（跨里程碑知识沉淀）、`docs/daemon-api.md`（**daemon WebSocket 接口文档**，前端/后端交互前必查）。
 
 ---
 
@@ -77,6 +77,7 @@
 - 里程碑模板：`milestones/template.md`
 - 里程碑目录：`milestones/<Mx-名称>/`（每步一个 `.md` 文件，均含三要素）
 - 知识库：`knowledge/INDEX.md`
+- **Daemon 接口文档**：`docs/daemon-api.md`（前端/后端经 WebSocket 通信的**权威接口参考**；后端改 daemon 接口须同步更新本文件 + `agent/daemon/protocol.py` + `desktop/src/protocol/types.ts`；前端交互前必须先查）
 - 环境变量：`AGENT_PROJECT_ROOT` / `AGENT_USER_CONFIG_DIR`（覆盖配置目录；`AGENT_PROJECT_ROOT` 也用于从其他目录启动）。密钥 `llm.api_key` 写在 `<项目根>/.agent/settings.yaml`（已被 `.gitignore` 忽略），**不读 `.env`**
 
 ---
@@ -94,7 +95,7 @@
 ### 7.1 判定与对齐规则
 
 1. **先判定，后动手**：开干前用一句话明确"本次是前端 / 后端 / 双端"，并在方案里写清；双端任务需在方案里点明契约影响点。
-2. **双端必须对齐协议**：本仓库的「双端」即 `desktop/`(前端 Electron) 与 `agent/daemon`(后端常驻 daemon)，二者经 **WebSocket** 通信。**契约的唯一事实来源是 `agent/daemon/protocol.py`**（`PROTOCOL_VERSION`、`MsgType` 枚举、消息结构、`parse_message`/`make_message`）。任何双端改动都必须先在此冻结/演进契约，前端 WS 客户端须严格与之对齐（消息类型、字段名、类型、错误码），禁止前端另写一套导致对不上；`PROTOCOL_VERSION` 变化需同步知会对方侧并评估兼容。
+2. **双端必须对齐协议**：本仓库的「双端」即 `desktop/`(前端 Electron) 与 `agent/daemon`(后端常驻 daemon)，二者经 **WebSocket** 通信。**契约的消息类型唯一事实来源是 `agent/daemon/protocol.py`**（`PROTOCOL_VERSION`、`MsgType` 枚举、`parse_message`/`make_message`）；**可读接口文档（payload/行为/流程）见 `docs/daemon-api.md`**，供前端交互需求查阅、后端改接口时同步更新。任何双端改动都必须先在此冻结/演进契约，前端 WS 客户端须严格与之对齐（消息类型、字段名、类型、错误码），禁止前端另写一套导致对不上；`PROTOCOL_VERSION` 变化需同步知会对方侧并评估兼容。三处须保持同步：**`protocol.py`（MsgType 唯一事实来源）+ `docs/daemon-api.md`（接口文档）+ `desktop/src/protocol/types.ts`（前端强类型投影）**，契约测试 `scripts/check-msgtype.mjs` 保证三者 MsgType 一致。
 3. **不确定就提问**：出现以下任一情况，**必须先向用户提问澄清，禁止凭猜测开工**：
    - 无法判定属于前端还是后端，或边界模糊；
    - 双端契约（消息类型、字段名、类型、行为）存在歧义或未定义；

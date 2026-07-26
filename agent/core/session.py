@@ -282,8 +282,10 @@ class Session:
         *,
         yes: bool = False,
         fatal_plan_decline: bool = False,
+        message_id: str | None = None,
     ) -> tuple[AgentResult, int | None]:
         current_task = task
+        mid = message_id or uuid.uuid4().hex
         while True:
             # M4.5：每轮 step 前把当前消息投影交给 ContextManager（压缩作用对象）。
             if self.context_mgr is not None:
@@ -301,6 +303,7 @@ class Session:
                 context_mgr=self.context_mgr,
                 event_sink=self._event_sink,
                 stream=self.event_stream,
+                message_id=mid,
             )
             if self.session_store is not None:
                 self.session_store.touch(self.session_id)

@@ -210,6 +210,49 @@ describe('buildChatModel', () => {
     expect(flatten(blocks).filter((b) => b.type === 'user')).toHaveLength(0)
   })
 
+  it('M10.4：USAGE 事件累积到 ResponseBlock.turnMeta（单轮）', () => {
+    const events: AgentEvent[] = [
+      // 轮次①：用户消息 → 助理回答 → USAGE（父级）
+      { seq: 0, type: 'user', text: '你好', ts: 0 },
+      { seq: 1, type: 'text', text: 'Hi', kind: 'content', ts: 0 },
+      { seq: 2, type: 'final', text: 'Hi', ts: 0 },
+      { seq: 3, type: 'usage', message_id: 'm1', usage: { total_tokens: 10, prompt_tokens: 5, completion_tokens: 5 }, duration: 2.1, estimated: false, ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    const resp = blocks.find((b) => b.type === 'response') as ResponseBlock
+    expect(resp).toBeDefined()
+    expect(resp.turnMeta).toBeDefined()
+    expect(resp.turnMeta?.usage.total_tokens).toBe(10)
+    expect(resp.turnMeta?.duration).toBeCloseTo(2.1, 1)
+  })
+
+  it('M10.4：子 agent 段内的 USAGE 归集到父 ResponseBlock', () => {
+    const sub = 'sess/sub_explore_1_abc123'
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'user', text: '查询', ts: 0 },
+      { seq: 1, type: 'text', text: '探索中', kind: 'content', ts: 0 },
+      { seq: 2, type: 'tool_use', tool_use: { id: 'c1', name: 'spawn_subagent', arguments: { agent: 'explore' } }, ts: 0 },
+      // 子 agent 段（含 USAGE）
+      { seq: 3, type: 'text', text: '子 agent 思考', kind: 'content', subsession_id: sub, ts: 0 },
+      { seq: 4, type: 'final', text: '子 agent 结论', subsession_id: sub, ts: 0 },
+      // 子 agent 的 USAGE 事件（携带 parent_message_id 指向 m1）
+      { seq: 5, type: 'usage', message_id: 'sub-m1', parent_message_id: 'm1', usage: { total_tokens: 20, prompt_tokens: 10, completion_tokens: 10 }, duration: 3.5, estimated: false, subsession_id: sub, ts: 0 },
+      // 父层结果
+      { seq: 6, type: 'tool_result', tool_call_id: 'c1', tool_result: { ok: true, output: '结果' }, ts: 0 },
+      { seq: 7, type: 'final', text: '总结', ts: 0 },
+      // 父级 USAGE
+      { seq: 8, type: 'usage', message_id: 'm2', usage: { total_tokens: 15, prompt_tokens: 7, completion_tokens: 8 }, duration: 1.5, estimated: false, ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    const resp = blocks.find((b) => b.type === 'response') as ResponseBlock
+    expect(resp).toBeDefined()
+    expect(resp.turnMeta).toBeDefined()
+    // 子 agent 20 + 父级 15 = 35
+    expect(resp.turnMeta?.usage.total_tokens).toBe(35)
+    // 子 agent 3.5 + 父级 1.5 = 5.0
+    expect(resp.turnMeta?.duration).toBeCloseTo(5.0, 1)
+  })
+
   it('正常 user 任务不误并入澄清块', () => {
     const events: AgentEvent[] = [
       { seq: 0, type: 'user', text: '新任务', ts: 0 },

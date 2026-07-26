@@ -13,9 +13,9 @@
   ``session.detach`` / ``session.list`` / ``task.send`` / ``answer`` / ``confirm_plan`` /
   ``approve`` / ``command`` / ``trace.list`` / ``trace.get``
 - Server → Client：``welcome`` / ``session.created`` / ``attached`` / ``detached`` /
-  ``session_list`` / ``event`` / ``replay_start`` / ``replay_end`` / ``ask`` /
+  ``session_list`` / ``event``(含 usage 子类型) / ``replay_start`` / ``replay_end`` / ``ask`` /
   ``show_questions`` / ``show_plan`` / ``show_skills`` / ``show_agents`` / ``notify`` /
-  ``usage`` / ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
+  ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
 
 M9.7 可观测面板：新增 trace 查询
 - ``trace.list``（C→S）：``{project_root, session_id?}`` → 按项目根列出含 trace 的会话（带 ``id`` 以便响应配对）。
@@ -84,7 +84,6 @@ class MsgType(StrEnum):
     SHOW_SKILLS = "show_skills"
     SHOW_AGENTS = "show_agents"
     NOTIFY = "notify"
-    USAGE = "usage"
     CLOSE = "close"
     ERROR = "error"
     TRACE_LIST_RESP = "trace_list"

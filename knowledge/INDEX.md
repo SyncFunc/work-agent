@@ -42,7 +42,7 @@
 ## 核心架构现状（跨里程碑）
 
 ### 事件流 + 传输层（AgentTransport）
-- `EventStream`（`agent/core/events.py`）是唯一实时线格式：`subscribe(sink)` 同步分发；`append` 入档、`emit` 仅分发不入档（`transient=True`，用于 `tool_call_delta` 预览，不污染持久化序列与回放）。`Event` 类型集合：`decision|clarify|plan|plan_progress|tool_use|tool_result|final|error|text|tool_call_delta`。
+- `EventStream`（`agent/core/events.py`）是唯一实时线格式：`subscribe(sink)` 同步分发；`append` 入档、`emit` 仅分发不入档（`transient=True`，用于 `tool_call_delta` 预览，不污染持久化序列与回放）。`Event` 类型集合：`decision|clarify|plan|plan_progress|tool_use|tool_result|final|error|text|tool_call_delta|usage`（M10.1 新增 `usage` 用量落盘事件，非 transient）。
 - `AgentTransport`（`agent/core/transport.py`）统一协议：HITL 方法 + `bind(stream)`（订阅自行渲染）+ `close()` + `report_usage()`。CLI `TerminalTransport`、TUI `TextualTransport`、daemon `BridgeTransport` 实现同一协议。
 - **铁律**：新增实时渲染走事件（持久化用 `append`、瞬时预览用 `emit`），**不要再给 loop 加 `presenter` 回调参数**。
 
@@ -122,6 +122,14 @@
 - **daemon 就绪竞态**：`ws=...` 就绪日志必须在 `_serve` 的 `create_ws_server` 块**内**打印（否则 `DaemonManager.waitForReady` 在端口未监听时误判就绪）。
 - **store 按项目隔离 + 路径锚定**：相对 db 路径（如 `obs.sessions_db_path`）默认相对 cwd，多项目会串库；daemon 内 `_anchor_path(p, project_root)` 锚定到项目根。
 - **`SessionStore` 回放修复**：旧 `_replay` 只走内存 `event_buffer`（被 maxlen 截断）→ 长会话重进历史变少、子事件从未落盘；现改读 sqlite 全量 + 子事件带 `parent_session_id` 落盘。
+
+### 用量持久化（M10：message 模型 + USAGE 事件）
+- **`EventType.USAGE` 事件**（M10.1 加 `usage/duration/estimated` 字段，M10.2 接入落盘）：`transient=False` → 自动落盘（SessionStoreSink）+ 进 `handle.event_buffer`（回放可读）+ `_on_event` 转 `event` 消息（前端经 EVENT payload 读 `usage`）。用量落盘入口：daemon 顶层 `server.py._emit_usage(stream, res, duration, *, parent_message_id)`（替代旧 `transport.report_usage` 的 `MsgType.USAGE` 实时路径，M10.3 删 MsgType.USAGE）；子 agent `SubagentSpawner.spawn(parent_message_id=...)` + `self._emit_subagent_usage(sub_stream, result, duration, parent_message_id=...)`，子事件 `parent_message_id` 指向父 message 形成 message 树。
+- **`AgentLoop._run_message_id`**：`run()` 入口设 `= message_id`，`_tool_spawn_subagent` 透传为子 agent 的 `parent_message_id`；**必须在 `__init__` 初始化为 `None`**（否则绕过 run 直接调 spawn 的测试路径 `AttributeError: 'AgentLoop' object has no attribute '_run_message_id'`）。
+- **`_emit_subagent_usage(self, stream, result, duration, *, parent_message_id)` 的 `parent_message_id` 是 keyword-only**：调用必须 `parent_message_id=...` 关键字传参，位置传参会 `TypeError: takes 3 positional arguments but 4 were given`。
+- 前端归集（M10.4）：桌面端 `useEventReducer` 按 `parent_message_id` 链把子 agent 用量累加回派生子 agent 的那条 message。
+- **M10.3：删 `MsgType.USAGE`**：用量从独立 `usage` 消息改为 `event` 消息内的 `USAGE` 事件子类型。契约四处（protocol.py / types.ts / check-msgtype.mjs / docs/daemon-api.md）已同步；`EventTypeStr`/`EVENT_TYPES` 补 `'usage'`。**线格式**：`Event.usage` 仅含 token 字典，`estimated`/`duration`/`message_id`/`parent_message_id` 为 Event 顶层兄弟字段（前端 `AgentEvent` 的 `usage` 为内层字典、`estimated`/`duration` 顶层）。CLI/TUI transport 经 `_on_event` 的 `EventType.USAGE` 分支调 `report_usage` 渲染（与旧 `MsgType.USAGE` 显示等价）；前端只读 `event(USAGE)`，不再有独立 `usage` 消息。
+- **M10.4：前端归集**：`useEventReducer` 在 `buildChatModel` 中处理 `'usage'` 事件，累积到 `usageQueue`，USER 事件触发 flush，最终按顺序挂到 `ResponseBlock.turnMeta`。子 agent 段内的 `USAGE` 事件在 main loop `else` 分支提取同样累积到父会话用量（子 agent 块 `SubagentCard` 不渲染 `turnMeta`）。`App.tsx` 不再维护内存版 `turnMeta`/`turnUsageRef`/`turnStartRef`/`estimatedRef`；`MessageList` 不再传 `turnMeta` prop，`ResponseGroup` 直接从 `block.turnMeta` 读取。回放路径与实时路径共享同一 reducer，重启后用量可通过回放 `USAGE` 事件恢复。
 
 ### 桌面端（React / TS）
 - **reducer 跨轮兜底重复渲染**：`lastDecisionText`（收尾兜底）**不可跨轮残留**。修复用 `hasStreamedText` 守卫：`text` 事件置位并丢弃残留兜底；`flushText` 仅在本轮完全无流式 TEXT 时消费兜底；`user` 事件重置守卫。**判据**：每个 assistant 轮次应有且仅有「一个文本气泡」，无重复。

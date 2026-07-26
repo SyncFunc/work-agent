@@ -14,6 +14,8 @@
 
 from __future__ import annotations
 
+import time
+
 # ruff: noqa: E402  (agent.* 导入刻意置于 AgentSummary 定义之后，避免与 agent.core.loop 循环导入)
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -40,6 +42,8 @@ class AgentSummary:
 
 from agent.config.settings import Settings, project_config_path, user_config_path
 from agent.context.compactors.session_memory import MEMORY_SYSTEM_PROMPT
+from agent.context.tokens import _estimate_tokens
+from agent.core.events import Event, EventStream, EventType
 from agent.core.loop import AgentLoop, AgentResult
 from agent.core.model import Message, Model, OpenAICompatibleModel
 from agent.core.prompts import _split_frontmatter
@@ -269,10 +273,17 @@ class SubagentSpawner:
         # CLI 模式不传，保持现有本地 transport，行为不变（向后兼容）。
         parent_handle: SessionHandle | None = None,
         registry: SessionRegistry | None = None,
+        # M10.2：子 agent USAGE 事件的父 message 指针（指向派生子 agent 的那条 message）；
+        # 由调用方（loop._tool_spawn_subagent）传入当前 message_id，逐级形成 message 树。
+        parent_message_id: str | None = None,
     ) -> AgentResult:
         """构造独立 AgentLoop（独立 EventStream + fork 可选），跑 run()，返回摘要。"""
         if depth >= self.max_depth:
             raise RecursionError(f"subagent depth limit {self.max_depth} reached")
+
+        import uuid as _uuid
+
+        sub_message_id = _uuid.uuid4().hex  # M10.2：子 message 自有 message_id（供 USAGE 事件打标）
 
         # ① 工具白名单：base_registry 子集
         sub_reg = self._subset_registry(base_registry or default_registry, spec)
@@ -285,8 +296,6 @@ class SubagentSpawner:
 
         # daemon 模式 + 给定父 handle/registry：走独立 subsession 实时转发（桌面端可见）。
         if parent_handle is not None and registry is not None:
-            import uuid as _uuid
-
             from agent.core.events import EventStream
             from agent.daemon.bridge import SubsessionBridgeTransport
             from agent.daemon.registry import SessionHandle as _SubHandle
@@ -358,6 +367,7 @@ class SubagentSpawner:
         loop._control_tools_enabled = not spec.no_control_tools
         # 让子 loop 继承当前深度，使嵌套 spawn 能正确累加（depth+1 传入）
         loop._current_depth = depth
+        t0 = time.time()  # M10.2：子 agent 独立计 duration
         try:
             result = await loop.run(
                 task,
@@ -367,12 +377,62 @@ class SubagentSpawner:
                 system_prompt=spec.system_prompt or None,
                 parent_span=parent_span,
                 name=spec.name,
+                message_id=sub_message_id,  # M10.2：子 message 自有 message_id
             )
         finally:
             # loop.run 不会关闭 transport；必须显式关闭，否则子 agent 面板 slot 不注销、
             # hub 的 Live 残留继续占用终端，污染后续父 agent 输出。
             sub_transport.close()
+        # M10.2：daemon 子 agent 用量作为 USAGE 事件落盘（parent_message_id 形成 message 树，
+        # 前端据此归集到派生子 agent 的那条 message）。CLI 分支 sub_stream=None 跳过。
+        if sub_stream is not None and parent_handle is not None:
+            self._emit_subagent_usage(
+                sub_stream, result, time.time() - t0, parent_message_id=parent_message_id
+            )
         return result
+
+    # ------------------------------------------------------------------ #
+    # M10.2：子 agent USAGE 事件辅助
+    # ------------------------------------------------------------------ #
+    def _emit_subagent_usage(
+        self,
+        stream: EventStream,
+        result: AgentResult,
+        duration: float,
+        *,
+        parent_message_id: str | None,
+    ) -> None:
+        """把子 agent 一次响应的 token 用量作为 USAGE 事件落盘（带 parent_message_id）。
+
+        usage 为空时退化为估算 token 数，标记 estimated=True（与历史 report_usage 一致）。
+        """
+        mid = result.message_id or stream.current_message_id
+        if mid is None:
+            return
+        usage = result.usage
+        if not usage:
+            est = _estimate_tokens(result.text or "")
+            stream.append(
+                Event(
+                    type=EventType.USAGE,
+                    message_id=mid,
+                    parent_message_id=parent_message_id,
+                    usage={"estimated_tokens": est},
+                    duration=duration,
+                    estimated=True,
+                )
+            )
+            return
+        stream.append(
+            Event(
+                type=EventType.USAGE,
+                message_id=mid,
+                parent_message_id=parent_message_id,
+                usage=dict(usage),
+                duration=duration,
+                estimated=False,
+            )
+        )
 
     # ------------------------------------------------------------------ #
     # 内部解析

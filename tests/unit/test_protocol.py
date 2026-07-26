@@ -85,7 +85,6 @@ def test_protocol_versions_exposed():
         "show_skills",
         "show_agents",
         "notify",
-        "usage",
         "close",
         "error",
     ]:

@@ -132,8 +132,6 @@ async def _run(
                 transport.show_agents([_dict_to_spec(s) for s in p.get("specs", [])])
             elif t == MsgType.NOTIFY.value:
                 transport.notify(p.get("message", ""))
-            elif t == MsgType.USAGE.value:
-                transport.report_usage(p.get("usage"), None)
             elif t == MsgType.WELCOME.value:
                 pass
             elif t == MsgType.SESSION_CREATED.value:
