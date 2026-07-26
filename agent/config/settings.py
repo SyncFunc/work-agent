@@ -312,6 +312,11 @@ def _env_override(**kv: Any):
 
 
 def load_settings(project_root: str | Path | None = None, **overrides: Any) -> Settings:
+    # 首次加载时自动创建用户级配置骨架（已存在则跳过，不覆盖）。
+    # 放在这里能覆盖全部入口（CLI run/chat/daemon/client/health + daemon server），
+    # 且所有写入均幂等，多次调用安全。
+    scaffold_user()
+
     overrides = {k: v for k, v in overrides.items() if v is not None}
     with _env_override(AGENT_PROJECT_ROOT=project_root):
         return Settings(**overrides)
@@ -383,6 +388,51 @@ def scaffold_project(
 
     # AGENTS.md（自动维护版；已存在则不覆盖）
     agents_md = agent_dir / "AGENTS.md"
+    if not agents_md.exists():
+        agents_md.write_text(_AGENTS_MD_TEMPLATE, encoding="utf-8")
+        created["AGENTS.md"] = True
+    else:
+        created["AGENTS.md"] = False
+
+    return created
+
+
+def scaffold_user() -> dict[str, bool]:
+    """自动创建用户级 ``~/.agent/`` 配置骨架（已存在则跳过，不覆盖）。
+
+    产物：
+      - ``~/.agent/settings.yaml``（注释头，若不存在）
+      - ``~/.agent/skills/``、``~/.agent/agents/``（空目录占位）
+      - ``~/.agent/AGENTS.md``（最小模板，若缺失）
+
+    优先级 ``AGENT_USER_CONFIG_DIR`` 环境变量领先于 ``Path.home()``。
+    """
+    base = Path(os.environ.get("AGENT_USER_CONFIG_DIR") or Path.home() / ".agent")
+    created: dict[str, bool] = {}
+
+    base_exists = base.is_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    created["~/.agent/"] = not base_exists
+
+    # settings.yaml（仅写注释头，不复制 example——用户级应为空模板）
+    settings_path = base / "settings.yaml"
+    if not settings_path.exists():
+        settings_path.write_text("# 用户级配置（项目级同名键会覆盖本文件）\n", encoding="utf-8")
+        created["settings.yaml"] = True
+    else:
+        created["settings.yaml"] = False
+
+    # skills / agents 目录占位
+    for sub in ("skills", "agents"):
+        d = base / sub
+        if not d.exists():
+            d.mkdir(parents=True, exist_ok=True)
+            created[sub] = True
+        else:
+            created[sub] = False
+
+    # AGENTS.md
+    agents_md = base / "AGENTS.md"
     if not agents_md.exists():
         agents_md.write_text(_AGENTS_MD_TEMPLATE, encoding="utf-8")
         created["AGENTS.md"] = True
