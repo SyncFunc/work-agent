@@ -37,10 +37,11 @@ def build(dist_dir: Path) -> Path:
     # 故用 try/except + type: ignore 让 basedpyright 在无 pyinstaller 时也能通过。
     try:
         from PyInstaller.main import run  # type: ignore[import-not-found]
-    except ImportError:  # pragma: no cover - 仅在 `pip install -e ".[bundle]"` 后可用
+    except ImportError as exc:  # pragma: no cover - 仅在 `pip install -e ".[bundle]"` 后可用
         raise RuntimeError(
-            '构建冻结 daemon 需要 pyinstaller，请执行 `pip install -e ".[bundle]"`。',
-        ) from None
+            f"构建冻结 daemon 需要 pyinstaller（当前环境未找到：{exc}）。"
+            '请执行 `pip install -e ".[bundle]"` 或 `pip install pyinstaller`。',
+        ) from exc
 
     dist_dir = dist_dir.resolve()
     dist_dir.mkdir(parents=True, exist_ok=True)

@@ -45,7 +45,10 @@ jobs:
       - name: Install agent + pyinstaller
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[bundle]"
+          pip install -e .
+          # 显式安装 pyinstaller，不依赖可选依赖 [bundle] 的解析（mac/windows 上
+          # 可编辑安装 + extra 偶有未被纳入的情况），确保构建脚本能 import PyInstaller。
+          pip install "pyinstaller>=6.0"
 
       - name: Freeze daemon binary
         run: python scripts/build_daemon.py --dist desktop/build/daemon/${{ matrix.platform }}
