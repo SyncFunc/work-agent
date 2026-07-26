@@ -142,9 +142,9 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
   const deleteSession = useCallback(
     (id: string) => {
       dispatch({ type: 'sessionDeleted', id })
-      client?.deleteSession(id)
+      client?.deleteSession(id, projectRoot)
     },
-    [client],
+    [client, projectRoot],
   )
 
   return { state, createSession, openSession, switchSession, closeTab, forkSession, deleteSession, sendTask }

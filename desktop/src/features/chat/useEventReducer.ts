@@ -17,7 +17,29 @@
 // 结果回填到发起调用的那一块，而不是另起一个孤立「运行中」块。
 
 import { useMemo } from 'react'
-import type { AgentEvent, Question, ToolResult } from '../../protocol/types'
+import type {
+  AgentEvent,
+  PlanStepView,
+  PlanUpdate,
+  Question,
+  ToolResult,
+} from '../../protocol/types'
+
+/** 合并计划步骤：优先用后端回传的完整投影，缺失时基于增量本地 merge。 */
+function mergePlanSteps(
+  prev: PlanStepView[] | undefined,
+  full: PlanStepView[] | null | undefined,
+  update: PlanUpdate | null | undefined,
+): PlanStepView[] {
+  if (full) return full.map((s) => ({ ...s }))
+  const arr: PlanStepView[] = prev ? prev.map((s) => ({ ...s })) : []
+  if (update) {
+    const si = arr.findIndex((s) => s.id === update.step_id)
+    if (si >= 0) arr[si] = { ...arr[si], status: update.status }
+    else arr.push({ id: update.step_id, title: update.step_id, status: update.status })
+  }
+  return arr
+}
 
 export interface TextBlock {
   key: string
@@ -41,6 +63,10 @@ export interface ToolBlock {
   deltaArgs: string
   result: ToolResult | null
   running: boolean
+  /** update_plan：后端回传的完整计划列表，供前端渲染完整步骤。 */
+  planSteps?: PlanStepView[]
+  /** update_plan：本次更新定位的步骤（高亮用）。 */
+  planUpdate?: { stepId: string; status: string; note?: string | null }
 }
 
 export interface UserBlock {
@@ -70,6 +96,10 @@ export interface PlanBlock {
   stepId?: string
   status?: string
   note?: string | null
+  /** 计划正文（PLAN 事件时由 ev.text 传入），供步骤列表渲染使用。 */
+  body?: string
+  /** 完整步骤列表（PLAN / PLAN_PROGRESS 事件由后端 plan_steps 投影传入）。 */
+  steps?: PlanStepView[]
 }
 
 // M10.4：每轮 Token 消耗明细（与 UsageSummary 合计后挂到 ResponseBlock.turnMeta）。
@@ -147,10 +177,11 @@ function newTextBlock(): TextBlock {
   return { key: '', type: 'text', role: 'assistant', content: '', reasoning: '', final: false, streaming: false }
 }
 
-/** 控制类工具：被循环拦截在 _exec_tools 之前（ask_clarification / present_plan），
- * 只会收到模型流式 `tool_call_delta`、永远不会收到 `tool_use`/`tool_result`，
- * 因此其 ToolBlock 必须被显式丢弃，否则会永久停留在「运行中」且暴露原始 deltaArgs。 */
-const INTERCEPTED_CONTROL_TOOLS = new Set(['ask_clarification', 'present_plan'])
+/** 控制类工具中被循环拦截但前端仍需保留其块以展示「生成中」反馈的工具。
+ * - `present_plan`：计划生成期间保留呼吸动画块，与 PLAN 事件块共存。
+ * - `ask_clarification`/`update_plan`：无有用渲染，必须在对应事件到达时丢弃，
+ *   否则永久停留在「运行中」且暴露原始 deltaArgs。 */
+const INTERCEPTED_CONTROL_TOOLS = new Set(['ask_clarification', 'update_plan'])
 
 /** 把一段「同一 subsession」的事件归约为可渲染的块列表（纯函数、独立状态）。
  *
@@ -253,8 +284,23 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
       case 'tool_call_delta': {
         flushText()
         const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
+        // 跨轮检测（同父会话逻辑）：已有块 → 两种「新轮」信号
+        const exD = toolOrder[idx]
+        if (
+          exD &&
+          (
+            // ① 旧块已收尾（有 result）→ 新轮开始
+            (!exD.running && exD.result !== null) ||
+            // ② 旧块名称与新工具不同（如 present_plan 永远 running，新轮 update_plan 同名撞 slot）
+            (ev.tc_name && exD.name !== ev.tc_name)
+          )
+        ) {
+          toolOrder.length = 0
+          toolById.clear()
+          toolUseSeen = 0
+        }
         const tb = ensureToolAt(idx)
-        if (ev.tc_args) tb.deltaArgs = ev.tc_args
+        if (ev.tc_args) tb.deltaArgs += ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
         break
       }
@@ -262,6 +308,19 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         flushText()
         const tc = ev.tool_use
         if (!tc) break
+        // 跨轮检测（同父会话逻辑）
+        const exU = toolOrder[toolUseSeen]
+        if (
+          exU &&
+          (
+            (!exU.running && exU.result !== null) ||
+            (tc.name && exU.name !== tc.name)
+          )
+        ) {
+          toolOrder.length = 0
+          toolById.clear()
+          toolUseSeen = 0
+        }
         const tb = ensureToolAt(toolUseSeen)
         toolUseSeen += 1
         tb.toolCallId = tc.id
@@ -300,14 +359,27 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
       case 'plan':
       case 'plan_progress': {
         flushText()
-        blocks.push({
-          key: `${prefix}b${n++}`,
-          type: 'plan',
-          planPath: ev.plan_path ?? null,
-          stepId: ev.plan_update?.step_id,
-          status: ev.plan_update?.status,
-          note: ev.plan_update?.note,
-        })
+        // 合并连续的 plan/progress：找到最后一个 plan 块，更新其属性
+        const lastPlan = blocks.findLast((b) => b.type === 'plan') as PlanBlock | undefined
+        if (lastPlan) {
+          if (ev.plan_path != null) lastPlan.planPath = ev.plan_path
+          if (ev.plan_update?.step_id != null) lastPlan.stepId = ev.plan_update.step_id
+          if (ev.plan_update?.status != null) lastPlan.status = ev.plan_update.status
+          if (ev.plan_update?.note != null) lastPlan.note = ev.plan_update.note
+          if (ev.text != null) lastPlan.body = ev.text
+          lastPlan.steps = mergePlanSteps(lastPlan.steps, ev.plan_steps, ev.plan_update)
+        } else {
+          blocks.push({
+            key: `${prefix}b${n++}`,
+            type: 'plan',
+            planPath: ev.plan_path ?? null,
+            stepId: ev.plan_update?.step_id,
+            status: ev.plan_update?.status,
+            note: ev.plan_update?.note,
+            body: ev.text ?? undefined,
+            steps: mergePlanSteps(undefined, ev.plan_steps, ev.plan_update),
+          })
+        }
         break
       }
       default:
@@ -479,8 +551,23 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
       case 'tool_call_delta': {
         flushText()
         const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
+        // 跨轮检测：如果该 slot 已有块且满足以下任一条件→新轮开始，擦除旧定位状态：
+        //   ① 旧块已收尾（有 result、非 running）
+        //   ② 旧块名称与新工具不同（present_plan 永远 running，新轮同名撞 slot 会误写）
+        const exD = toolOrder[idx]
+        if (
+          exD &&
+          (
+            (!exD.running && exD.result !== null) ||
+            (ev.tc_name && exD.name !== ev.tc_name)
+          )
+        ) {
+          toolOrder.length = 0
+          toolById.clear()
+          toolUseSeen = 0
+        }
         const tb = ensureToolAt(idx)
-        if (ev.tc_args) tb.deltaArgs = ev.tc_args
+        if (ev.tc_args) tb.deltaArgs += ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
         break
       }
@@ -488,6 +575,19 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         flushText()
         const tc = ev.tool_use
         if (!tc) break
+        // 跨轮检测（处理回放场景，回放无 tool_call_delta）
+        const exU = toolOrder[toolUseSeen]
+        if (
+          exU &&
+          (
+            (!exU.running && exU.result !== null) ||
+            (tc.name && exU.name !== tc.name)
+          )
+        ) {
+          toolOrder.length = 0
+          toolById.clear()
+          toolUseSeen = 0
+        }
         const tb = ensureToolAt(toolUseSeen)
         toolUseSeen += 1
         tb.toolCallId = tc.id
@@ -529,15 +629,54 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
       case 'plan':
       case 'plan_progress': {
         flushText()
-        dropInterceptedControl('present_plan')
-        top.push({
-          key: `${n++}`,
-          type: 'plan',
-          planPath: ev.plan_path ?? null,
-          stepId: ev.plan_update?.step_id,
-          status: ev.plan_update?.status,
-          note: ev.plan_update?.note,
-        })
+        dropInterceptedControl('update_plan')
+        // 合并连续的 plan/progress：找到最后一个 plan 块，更新其属性
+        const lastPlan = top.findLast((b) => b.type === 'plan') as PlanBlock | undefined
+        if (lastPlan) {
+          if (ev.plan_path != null) lastPlan.planPath = ev.plan_path
+          if (ev.plan_update?.step_id != null) lastPlan.stepId = ev.plan_update.step_id
+          if (ev.plan_update?.status != null) lastPlan.status = ev.plan_update.status
+          if (ev.plan_update?.note != null) lastPlan.note = ev.plan_update.note
+          if (ev.text != null) lastPlan.body = ev.text
+          lastPlan.steps = mergePlanSteps(lastPlan.steps, ev.plan_steps, ev.plan_update)
+        } else {
+          top.push({
+            key: `${n++}`,
+            type: 'plan',
+            planPath: ev.plan_path ?? null,
+            stepId: ev.plan_update?.step_id,
+            status: ev.plan_update?.status,
+            note: ev.plan_update?.note,
+            body: ev.text ?? undefined,
+            steps: mergePlanSteps(undefined, ev.plan_steps, ev.plan_update),
+          })
+        }
+        // 把完整计划列表 + 本次更新定位回填到「进行中、尚未收到结果」的 update_plan 工具块，
+        // 由 ToolBlock 渲染完整步骤列表（而非丑陋的 JSON 参数块）。
+        if (ev.plan_steps || ev.plan_update) {
+          for (let k = top.length - 1; k >= 0; k--) {
+            const b = top[k]
+            if (
+              b.type === 'tool' &&
+              b.name === 'update_plan' &&
+              b.running &&
+              b.result === null
+            ) {
+              const tb = b as ToolBlock
+              tb.planSteps = ev.plan_steps
+                ? ev.plan_steps.map((s) => ({ ...s }))
+                : tb.planSteps
+              if (ev.plan_update) {
+                tb.planUpdate = {
+                  stepId: ev.plan_update.step_id,
+                  status: ev.plan_update.status,
+                  note: ev.plan_update.note,
+                }
+              }
+              break
+            }
+          }
+        }
         break
       }
       case 'usage': {

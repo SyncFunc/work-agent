@@ -6,6 +6,7 @@ import type { ChatBlock } from './useEventReducer'
 import { Markdown } from './Markdown'
 import { Avatar } from '../../components'
 import { AlertTriangle, ChevronRight, ClipboardList, HelpCircle } from 'lucide-react'
+import { PlanStepList, STATUS_LABEL } from './PlanStepList'
 
 export function MessageItem({
   block,
@@ -149,14 +150,22 @@ export function MessageItem({
       return bare ? alert : <div className="wa-msg">{alert}</div>
     }
     case 'plan': {
+      // 完整步骤列表优先用后端回传的 steps（plan_steps 投影）；有则展示完整计划。
+      const showStepList = !!block.steps && block.steps.length > 0
       const alert = (
         <div className="wa-alert wa-alert--plan">
           <span className="wa-alert__icon">
             <ClipboardList size={16} />
           </span>
           <div>
-            <strong>计划{block.status ? ` · ${block.status}` : ''}</strong>
+            <strong>
+              计划
+              {block.status ? ` · ${STATUS_LABEL[block.status] ?? block.status}` : ''}
+            </strong>
             {block.note ? `：${block.note}` : ''}
+            {showStepList ? (
+              <PlanStepList steps={block.steps!} highlightId={block.stepId} />
+            ) : null}
             {block.planPath ? (
               <div style={{ fontSize: 'var(--wa-f-sm)', opacity: 0.85, marginTop: 2 }}>{block.planPath}</div>
             ) : null}

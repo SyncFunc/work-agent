@@ -283,7 +283,11 @@ export default function App(): React.ReactElement {
       setSessionInfo({ planMode: Boolean(p.plan_mode), model: String(p.model ?? '') })
     })
     const offCancelled = client.onMessage('task.cancelled', () => finishTurn())
-    const offAttached = client.onMessage('attached', () => finishTurn())
+    const offAttached = client.onMessage('attached', () => {
+      // 切换会话时重置 planMode，避免残留旧会话的模式；正确的值将由后续 session.info 更新。
+      setSessionInfo({ planMode: false, model: '' })
+      finishTurn()
+    })
     const offEvent = client.onEvent((ev) => {
       if (ev.type === 'decision') finishTurn()
       // M10.3：usage 现随 event(usage) 子类型下发，不再有独立 usage 消息。

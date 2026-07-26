@@ -357,8 +357,8 @@ export class DaemonClient {
   }
 
   /** M9.9 彻底删除会话（含事件/记忆/trace），后端级联清理。 */
-  deleteSession(id: string): void {
-    this.send('session.delete', { session_id: id })
+  deleteSession(id: string, projectRoot?: string): void {
+    this.send('session.delete', { session_id: id, project_root: projectRoot })
   }
 
   // --------------------------------------------------------------------------- //

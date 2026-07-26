@@ -349,6 +349,8 @@ async def _task_send(
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
                 res, _err = await session.step(text, transport, yes=yes, fatal_plan_decline=False)
             duration = time.time() - t0
+            # step 内可能切换了 plan_mode（计划批准后 → False），通知前端更新
+            await _send_session_info(conn, handle, sid)
             # 等待所有在飞事件转发完成，保证 FINAL 等事件先于 CLOSE 落地（顺序正确性）。
             await transport.flush()
             if res is not None:
@@ -566,7 +568,7 @@ def create_ws_server(registry: SessionRegistry, host: str, port: int):
     async def _h(ws: WsConnection):
         await _handler(ws, registry)
 
-    return websockets.serve(_h, host, port)
+    return websockets.serve(_h, host, port, reuse_address=True)
 
 
 class _HealthHandler(BaseHTTPRequestHandler):

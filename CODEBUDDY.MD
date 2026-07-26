@@ -76,7 +76,7 @@
 - 里程碑总览：`milestones/README.md`
 - 里程碑模板：`milestones/template.md`
 - 里程碑目录：`milestones/<Mx-名称>/`（每步一个 `.md` 文件，均含三要素）
-- 知识库：`knowledge/INDEX.md`
+- 知识库：`knowledge/INDEX.md`（含桌面端/React 踩坑，如 `toolOrder` 跨轮复用致工具块错乱）
 - **Daemon 接口文档**：`docs/daemon-api.md`（前端/后端经 WebSocket 通信的**权威接口参考**；后端改 daemon 接口须同步更新本文件 + `agent/daemon/protocol.py` + `desktop/src/protocol/types.ts`；前端交互前必须先查）
 - 环境变量：`AGENT_PROJECT_ROOT` / `AGENT_USER_CONFIG_DIR`（覆盖配置目录；`AGENT_PROJECT_ROOT` 也用于从其他目录启动）。密钥 `llm.api_key` 写在 `<项目根>/.agent/settings.yaml`（已被 `.gitignore` 忽略），**不读 `.env`**
 

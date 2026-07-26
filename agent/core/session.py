@@ -357,7 +357,9 @@ class Session:
                         ),
                     )
                 )
-                current_task = task
+                # 清空续跑 task，避免 loop.run 再发一条重复的 USER 事件到 EventStream。
+                # 系统确认消息已在 self.messages 中传达给模型，无需额外用户输入。
+                current_task = ""
                 continue
 
             # ③ 最终答案

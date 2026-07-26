@@ -5,6 +5,7 @@ import type {
   AgentEvent,
   Decision,
   EventTypeStr,
+  PlanStepView,
   PlanUpdate,
   Question,
   ToolCall,
@@ -72,6 +73,7 @@ function parseToolResult(v: unknown): ToolResult | null {
     ok: d.ok,
     output: asOptString(d.output),
     error: asOptString(d.error),
+    diff: asOptString(d.diff),
   }
 }
 
@@ -93,6 +95,22 @@ function parsePlanUpdate(v: unknown): PlanUpdate | null {
   const d = v as Record<string, unknown>
   if (typeof d.step_id !== 'string' || typeof d.status !== 'string') return null
   return { step_id: d.step_id, status: d.status, note: asOptString(d.note) }
+}
+
+function parsePlanSteps(v: unknown): PlanStepView[] | undefined {
+  if (!Array.isArray(v)) return undefined
+  const out: PlanStepView[] = []
+  for (const s of v) {
+    if (!s || typeof s !== 'object') continue
+    const d = s as Record<string, unknown>
+    if (typeof d.id !== 'string' || typeof d.status !== 'string') continue
+    out.push({
+      id: d.id,
+      status: d.status,
+      title: typeof d.title === 'string' ? d.title : '',
+    })
+  }
+  return out
 }
 
 /** 把任意 JSON 解析为强类型 AgentEvent；非法输入抛出 TypeError。 */
@@ -136,6 +154,7 @@ export function parseEvent(raw: unknown): AgentEvent {
     questions,
     plan_path: asOptString(d.plan_path),
     plan_update: d.plan_update === undefined ? undefined : parsePlanUpdate(d.plan_update),
+    plan_steps: d.plan_steps === undefined ? undefined : parsePlanSteps(d.plan_steps),
     usage:
       d.usage === undefined || d.usage === null
         ? undefined
@@ -164,6 +183,7 @@ export function eventToDict(ev: AgentEvent): Record<string, unknown> {
   if (ev.questions !== undefined) d.questions = ev.questions
   if (ev.plan_path !== undefined) d.plan_path = ev.plan_path
   if (ev.plan_update !== undefined) d.plan_update = ev.plan_update
+  if (ev.plan_steps !== undefined) d.plan_steps = ev.plan_steps
   if (ev.usage !== undefined) d.usage = ev.usage
   if (ev.estimated !== undefined) d.estimated = ev.estimated
   if (ev.duration !== undefined) d.duration = ev.duration

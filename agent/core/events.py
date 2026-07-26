@@ -71,11 +71,13 @@ def _decision_from_dict(d: dict[str, Any]) -> Decision:
 
 
 def _tool_result_to_dict(r: ToolResult) -> dict[str, Any]:
-    return {"ok": r.ok, "output": r.output, "error": r.error}
+    return {"ok": r.ok, "output": r.output, "error": r.error, "diff": r.diff}
 
 
 def _tool_result_from_dict(d: dict[str, Any]) -> ToolResult:
-    return ToolResult(ok=d["ok"], output=d.get("output", ""), error=d.get("error"))
+    return ToolResult(
+        ok=d["ok"], output=d.get("output", ""), error=d.get("error"), diff=d.get("diff")
+    )
 
 
 @dataclass
@@ -109,6 +111,9 @@ class Event:
     )
     plan_path: str | None = None  # plan / plan_progress 事件：计划文件句柄
     plan_update: dict[str, Any] | None = None  # plan_progress 事件：{step_id, status, note}
+    # PLAN / PLAN_PROGRESS 事件携带的完整步骤列表（[{id,title,status}]），
+    # 供前端直接渲染完整计划列表，无需再回源解析落盘文件。
+    plan_steps: list[dict[str, Any]] | None = None
     seq: int = (
         -1
     )  # 构造时留空，append 时由 EventStream 自动写入（放最后以满足 dataclass 默认值顺序约束）
@@ -151,6 +156,8 @@ class Event:
             d["plan_path"] = self.plan_path
         if self.plan_update is not None:
             d["plan_update"] = self.plan_update
+        if self.plan_steps is not None:
+            d["plan_steps"] = self.plan_steps
         return d
 
     @classmethod
@@ -177,6 +184,7 @@ class Event:
             questions=d.get("questions"),
             plan_path=d.get("plan_path"),
             plan_update=d.get("plan_update"),
+            plan_steps=d.get("plan_steps"),
         )
 
 

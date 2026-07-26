@@ -272,6 +272,24 @@ def _resolve_shell() -> tuple[list[str], bool]:
     return (["/bin/sh", "-c"], True)
 
 
+def shell_flavor() -> str:
+    """返回执行器实际使用 shell 的风格标识，供系统提示告知模型命令风格。
+
+    必须与 ``LocalExecutor``/``ExternalExecutor`` 实际使用的 shell 保持一致
+    （二者均经 ``_resolve_shell()`` 决定），否则提示与真实执行环境不符，
+    模型会按错误风格发命令。
+
+    返回值：``"git-bash"`` / ``"windows-cmd"`` / ``"posix-sh"``。
+    """
+    prefix, _ = _resolve_shell()
+    cmd = os.path.basename(prefix[0]).lower() if prefix else ""
+    if cmd == "cmd.exe":
+        return "windows-cmd"
+    if "bash" in cmd:
+        return "git-bash"
+    return "posix-sh"
+
+
 def _decode(b: bytes) -> str:
     if not b:
         return ""

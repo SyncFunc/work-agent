@@ -135,6 +135,15 @@ class AgentLoop:
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
+        # M9：计划文件统一解析到**工作目录（self.cwd）**，而非进程 cwd。
+        # present_plan 在 os.chdir(self.cwd) 之前执行，且 daemon 单进程多会话各自有
+        # 独立项目根；若用相对路径会落到启动目录或互相覆盖。绝对路径原样保留。
+        if pp:
+            bp = Path(pp)
+            pp = str(bp if bp.is_absolute() else self.cwd / bp)
+        else:
+            fp = Path(self.settings.plan.file)
+            pp = str(fp if fp.is_absolute() else self.cwd / fp)
         self._run_pm = pm
         self._run_pp = pp
         self._transport = transport
@@ -145,7 +154,10 @@ class AgentLoop:
         self._context_mgr = context_mgr
 
         conv = list(messages) if messages else []
-        conv.append(Message(role="user", content=task))
+        # 在 plan 批准后的续跑轮次中，current_task 被设为 "" 以避免 USER 事件重复。
+        # 此时消息上下文（含 system 确认消息）已传达指令，无需再添加空 user 行。
+        if task:
+            conv.append(Message(role="user", content=task))
 
         # M4.5：每轮 _decide 前执行零成本 Microcompact（清除较旧的 tool 结果，保留最近 N 个）。
         # 作用于本次 run 的 conv 投影，绝不触碰 EventStream（审计真相不可变）。
@@ -165,7 +177,9 @@ class AgentLoop:
             stream.subscribe(event_sink)  # M6 会话持久化：append 即落盘（瞬时不落）
         # M6.2 会话恢复：把本轮用户输入作为 USER 事件入档，使 EventStream 成为完整可重放
         # 转录（与 conv 中的 user 消息一一对应），恢复时可据此重建 messages 的用户轮次。
-        stream.append(Event(type=EventType.USER, text=task))
+        # 空 task 表示续跑轮次（plan 批准后），跳过 USER 事件避免前端显示重复。
+        if task:
+            stream.append(Event(type=EventType.USER, text=task))
         usage_total: dict[str, int] = {}
 
         last_callset: frozenset[tuple[str, str]] | None = None
@@ -235,8 +249,15 @@ class AgentLoop:
                             for s in ppp.get("steps", [])
                         ],
                     )
-                    path = PlanStore.write_plan(plan, self.settings.plan.file)
-                    stream.append(Event(type=EventType.PLAN, text=plan.body, plan_path=path))
+                    path = PlanStore.write_plan(plan, self._run_pp)
+                    stream.append(
+                        Event(
+                            type=EventType.PLAN,
+                            text=plan.body,
+                            plan_path=path,
+                            plan_steps=self._plan_steps_view(plan),
+                        )
+                    )
                     present_calls = [
                         tc for tc in decision.tool_calls if tc.name == PRESENT_PLAN_TOOL_NAME
                     ]
@@ -435,6 +456,11 @@ class AgentLoop:
                 return tc.arguments
         return None
 
+    @staticmethod
+    def _plan_steps_view(plan: Plan) -> list[dict[str, Any]]:
+        """把 Plan 的步骤投影为前端可直接渲染的精简列表（[{id,title,status}]）。"""
+        return [{"id": s.id, "title": s.title, "status": s.status} for s in plan.steps]
+
     async def _exec_tools(
         self,
         calls: list[ToolCall],
@@ -459,16 +485,15 @@ class AgentLoop:
                     if not step_id:
                         return ToolResult(ok=False, error="update_plan requires step_id")
                     try:
-                        PlanStore.update_step(
-                            self._run_pp or self.settings.plan.file, step_id, status, note
-                        )
+                        plan = PlanStore.update_step(self._run_pp, step_id, status, note)
                     except (KeyError, ValueError) as e:
                         return ToolResult(ok=False, error=str(e))
                     stream.append(
                         Event(
                             type=EventType.PLAN_PROGRESS,
-                            plan_path=self._run_pp or self.settings.plan.file,
+                            plan_path=self._run_pp,
                             plan_update={"step_id": step_id, "status": status, "note": note},
+                            plan_steps=self._plan_steps_view(plan),
                         )
                     )
                     return ToolResult(ok=True, output="progress updated")
@@ -524,18 +549,28 @@ class AgentLoop:
                             tool_span.log("exec_error", f"{type(e).__name__}: {e}", level="error")
                         return ToolResult(ok=False, error=f"{type(e).__name__}: {e}")
 
-        for tc in calls:
-            stream.append(Event(type=EventType.TOOL_USE, tool_use=tc))
-        results = list(await asyncio.gather(*(_one(tc) for tc in calls)))
-
-        # M4.5：记录 read/write/edit 的文件访问，供压缩防漂移（_anti_drift 重读最近文件）。
-        if context_mgr is not None:
+        # 切换 cwd 到会话项目根（self.cwd），确保文件工具（read/write/edit）路径
+        # 相对于项目根解析而非 daemon 进程的 cwd（desktop/）。
+        old_exec_cwd: str | None = None
+        if self.cwd:
+            old_exec_cwd = os.getcwd()
+            os.chdir(self.cwd)
+        try:
             for tc in calls:
-                if tc.name in ("read", "write", "edit"):
-                    p = (tc.arguments or {}).get("path")
-                    if p:
-                        context_mgr.track_file_access(p)
-        return results
+                stream.append(Event(type=EventType.TOOL_USE, tool_use=tc))
+            results = list(await asyncio.gather(*(_one(tc) for tc in calls)))
+
+            # M4.5：记录 read/write/edit 的文件访问，供压缩防漂移（_anti_drift 重读最近文件）。
+            if context_mgr is not None:
+                for tc in calls:
+                    if tc.name in ("read", "write", "edit"):
+                        p = (tc.arguments or {}).get("path")
+                        if p:
+                            context_mgr.track_file_access(p)
+            return results
+        finally:
+            if old_exec_cwd is not None:
+                os.chdir(old_exec_cwd)
 
     # ------------------------------------------------------------------ #
     # 控制工具实现：use_skill / spawn_subagent

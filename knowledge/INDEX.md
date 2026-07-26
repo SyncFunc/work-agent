@@ -139,6 +139,8 @@
 - **`js-yaml` v4 用具名导入** `load`/`dump`（无 default 导出，否则 rollup 报 "default is not exported"）；`mergeSettings` 深合并（对象递归、数组整体替换）。
 - **daemon 发现日志解析**：正则须用 `[^\s]+` 匹配整条 health URL（旧 `[^\s/]+` 拒绝斜杠导致 `http://.../health` 匹配失败）。
 - **契约测试（TS↔Python）**：TS 解析正则须兼容单/双引号（`/["']([^"']+)["']/g`）；Python 端 subprocess 捕获用 `encoding='utf-8'`（node 输出含中文，默认 gbk 会 `UnicodeDecodeError`）。
+- **toolOrder 跨轮复用致工具块「名实不符」**：`buildChatModel` 中 `toolOrder[]` 按 `tc_index` 定位同一轮工具块，只在 `USER` 事件时清空。当模型**自动连续调用多轮工具**（无用户输入间隔），旧轮已完成的工具块仍躺在 `toolOrder`，新轮 `tool_call_delta`/`tool_use` 的 `ensureToolAt(idx)` 直接复用了它——覆盖其 `name` 但保留了旧 `result`。表现为「历史第一个工具块变成最后一个工具的渲染类型，但内容还是原来的」。**修复**：在 `tool_call_delta` 和 `tool_use` 处理时，检测若 `toolOrder[slot]` 已有**已完成（有 result、非 running）**的块，主动清空 `toolOrder`/`toolById`/`toolUseSeen`，确保新轮创建全新块。详见 `buildChatModel` 中 `case 'tool_call_delta'` 的跨轮检测注释。
+- **`present_plan` 不可通过 `dropInterceptedControl` 丢弃**：后端对 `present_plan` 拦截前**不发送 `TOOL_USE`**，因此其 `toolCallId` 永远为 `null`。但该工具块是前端展示「计划生成中」呼吸动画的唯一载体，必须保留。若将它加入 `INTERCEPTED_CONTROL_TOOLS`，`dropInterceptedControl` 会在 `PLAN` 事件到达时匹配并移除它，导致呼吸动画丢失。**区分**：`ask_clarification`/`update_plan` 仍走丢弃逻辑（无有用渲染），`present_plan` 独立不参与清理。详见 `INTERCEPTED_CONTROL_TOOLS` 注释。
 
 ### Textual TUI（M8，basedpyright 类型检查铁律）
 - 不要用 `self._log` 缓存日志容器（`App` 基类已有 `_log` 方法，覆盖会触发 `reportAttributeAccessIssue`）→ 改名 `self._log_container`。

@@ -380,3 +380,276 @@
 .wa-diff-ctx {
   color: var(--wa-text-muted);
 }
+
+/* —— bash 终端块 —— */
+.wa-tool-bash .wa-tool__head {
+  background: var(--wa-code-bg);
+}
+.wa-tool-bash__cmd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-md);
+  color: var(--wa-text);
+}
+.wa-tool-bash__output {
+  margin: 0;
+  padding: var(--wa-s2) var(--wa-s3);
+  background: var(--wa-code-bg);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-md);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow-x: auto;
+  color: var(--wa-text);
+  border-top: 1px solid var(--wa-border);
+}
+
+/* —— 编辑块（write/edit） —— */
+.wa-tool-diff__path {
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  margin-left: -4px;
+}
+.wa-tool-diff__status {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+.wa-tool-diff__status-text {
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+}
+.wa-tool-diff__body {
+  max-height: 300px;
+  overflow-y: auto;
+  padding: var(--wa-s2) var(--wa-s3);
+}
+.wa-tool-diff__out {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-md);
+}
+
+/* —— 读取块（read） —— */
+.wa-tool-read__path {
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+.wa-tool-read__range {
+  font-size: var(--wa-f-xs);
+  color: var(--wa-text-faint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+/* —— 生成计划呼吸动画 —— */
+.wa-plan-gen {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
+  padding: var(--wa-s3) var(--wa-s4);
+}
+.wa-plan-gen__pulse {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--wa-primary);
+  animation: wa-pulse 1.5s ease-in-out infinite;
+  flex: none;
+}
+@keyframes wa-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 0.5;
+    transform: scale(1.3);
+  }
+}
+.wa-plan-gen__text {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  color: var(--wa-text-muted);
+  font-size: var(--wa-f-md);
+}
+.wa-plan-gen__dots span {
+  animation: wa-dot-blink 1.4s infinite;
+  opacity: 0;
+}
+.wa-plan-gen__dots span:nth-child(2) {
+  animation-delay: 0.2s;
+}
+.wa-plan-gen__dots span:nth-child(3) {
+  animation-delay: 0.4s;
+}
+@keyframes wa-dot-blink {
+  0%,
+  100% {
+    opacity: 0;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* —— 计划步骤列表 —— */
+.wa-plan-steps {
+  margin: var(--wa-s1) 0 0;
+  list-style: none;
+  padding: 0;
+}
+.wa-plan-step {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s1);
+  padding: 3px 0;
+  font-size: var(--wa-f-md);
+}
+.wa-plan-ic {
+  flex: none;
+}
+.wa-plan-step__id {
+  flex: none;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
+  min-width: 2.5ch;
+}
+.wa-plan-step__title {
+  min-width: 0;
+}
+.wa-plan-step--done {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+.wa-plan-step--done .wa-plan-step__title {
+  color: var(--wa-text-muted);
+}
+.wa-plan-step--in_progress {
+  font-weight: 600;
+}
+.wa-plan-step--blocked .wa-plan-step__title {
+  color: var(--wa-danger);
+}
+.wa-plan-step--skipped {
+  opacity: 0.6;
+}
+.wa-plan-step--hl {
+  background: var(--wa-primary-weak);
+  border-radius: var(--wa-r-sm);
+  box-shadow: inset 2px 0 0 var(--wa-primary);
+  padding-left: var(--wa-s1);
+  padding-right: var(--wa-s1);
+  margin-left: calc(-1 * var(--wa-s1));
+  margin-right: calc(-1 * var(--wa-s1));
+}
+.wa-plan-ic--done {
+  color: var(--wa-success);
+}
+.wa-plan-ic--active {
+  color: var(--wa-primary);
+  animation: wa-spin 1.1s linear infinite;
+}
+.wa-plan-ic--blocked {
+  color: var(--wa-danger);
+}
+.wa-plan-ic--skipped {
+  color: var(--wa-text-faint);
+}
+.wa-plan-ic--pending {
+  color: var(--wa-text-faint);
+}
+@keyframes wa-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* —— update_plan 进度卡 —— */
+.wa-plan-progress {
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  margin: var(--wa-s2) 0;
+  overflow: hidden;
+  background: var(--wa-bg-elevated);
+  border-left: 3px solid var(--wa-primary);
+}
+.wa-plan-progress__head {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
+  padding: var(--wa-s2) var(--wa-s3);
+  background: var(--wa-bg-subtle);
+}
+.wa-plan-progress__icon {
+  color: var(--wa-primary);
+  flex: none;
+}
+.wa-plan-progress__head .wa-tool__name {
+  color: var(--wa-primary);
+}
+.wa-plan-progress__note {
+  padding: 0 var(--wa-s3) var(--wa-s2);
+  font-size: var(--wa-f-md);
+  color: var(--wa-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.wa-plan-progress__body {
+  padding: 0 var(--wa-s3) var(--wa-s2);
+  border-top: 1px dashed var(--wa-border);
+}
+
+/* —— 计划状态徽标（update_plan 头部 / 计划告警复用）—— */
+.wa-badge {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--wa-f-xs);
+  font-weight: 600;
+  padding: 1px var(--wa-s2);
+  border-radius: 999px;
+  border: 1px solid transparent;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0.2px;
+}
+.wa-badge--done {
+  color: var(--wa-success);
+  background: var(--wa-success-weak);
+  border-color: var(--wa-success);
+}
+.wa-badge--in_progress {
+  color: var(--wa-primary);
+  background: var(--wa-primary-weak);
+  border-color: var(--wa-primary);
+}
+.wa-badge--blocked {
+  color: var(--wa-danger);
+  background: var(--wa-danger-weak);
+  border-color: var(--wa-danger);
+}
+.wa-badge--skipped {
+  color: var(--wa-text-muted);
+  background: var(--wa-bg-subtle);
+  border-color: var(--wa-border);
+}
+.wa-badge--pending {
+  color: var(--wa-text-muted);
+  background: var(--wa-bg-subtle);
+  border-color: var(--wa-border);
+}
+
+/* —— 颜色工具类 —— */
+.wa-clr-success {
+  color: var(--wa-success);
+}
+.wa-clr-danger {
+  color: var(--wa-danger);
+}
+.wa-clr-pending {
+  color: var(--wa-text-faint);
+}

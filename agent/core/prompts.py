@@ -25,7 +25,7 @@ from typing import Any
 import yaml
 from jinja2 import StrictUndefined, Template
 
-from agent.runtime.sandbox import SandboxProfile
+from agent.runtime.sandbox import SandboxProfile, shell_flavor
 
 # 包内 prompts 目录：agent/prompts/（随包发布，hatchling 打包 agent 时一并包含）
 _PROMPTS_DIR = Path(__file__).resolve().parent.parent / "prompts"
@@ -107,6 +107,35 @@ def _read_agents_md(settings, cwd: Path | None = None) -> str | None:
     return None
 
 
+def _shell_environment_block() -> str:
+    """生成面向模型的 Shell 环境风格说明，纠正 Windows 盘符路径引发的 cmd 联想。
+
+    风格必须与执行器真实使用的 shell 一致（见 ``shell_flavor``）。
+    """
+    flavor = shell_flavor()
+    if flavor == "windows-cmd":
+        body = (
+            "你通过 `bash` 工具执行的命令运行在 **Windows cmd.exe** 中。\n"
+            "- 使用 Windows cmd 命令：`dir`、`type`、`copy`、`del`、`move`、`cls`、`echo`。\n"
+            "- 不要使用 POSIX 命令（`ls`/`cat`/`rm`/`grep` 等在此不可用）。"
+        )
+    elif flavor == "git-bash":
+        body = (
+            "你通过 `bash` 工具执行的命令运行在 **Git Bash（POSIX/MINGW shell，"
+            "不是 Windows cmd.exe）** 中。\n"
+            "- 使用 GNU/POSIX 命令：`ls`、`cat`、`rm`、`grep`、`find`、`cp`、`mv`、`mkdir`。\n"
+            "- 不要使用 Windows cmd 命令：`dir`、`type`、`copy`、`del`、`move`、`cls`。\n"
+            "  （`dir` 在此虽能跑，但输出 coreutils 格式，请统一用 `ls`。）"
+        )
+    else:
+        body = (
+            "你通过 `bash` 工具执行的命令运行在 **POSIX shell (/bin/sh)** 中。\n"
+            "- 使用 GNU/POSIX 命令：`ls`、`cat`、`rm`、`grep`、`find`、`cp`、`mv`、`mkdir`。\n"
+            "- 不要使用 Windows cmd 命令：`dir`、`type`、`copy`、`del` 等。"
+        )
+    return f"## Shell 环境\n{body}\n"
+
+
 def _build_dynamic_segment(settings, cwd: Path | None = None) -> str:
     """构建 System Prompt 动态段（每轮更新，不进 prompt cache）。
 
@@ -137,6 +166,10 @@ def _build_dynamic_segment(settings, cwd: Path | None = None) -> str:
         parts.append(f"## 当前工作目录\n{cwd}\n项目根目录（AGENT_PROJECT_ROOT）：{proj_root_env}\n")
     else:
         parts.append(f"## 当前工作目录\n{cwd}\n")
+
+    # ②.5 Shell 环境风格（紧跟 cwd，抵消盘符路径引发的 Windows cmd 联想）：
+    #     明确告诉模型命令应按哪种风格书写，且与执行器真实 shell 一致。
+    parts.append(_shell_environment_block())
 
     # ③ 当前日期（当日不变，午夜自然轮换，排第三位）。
     parts.append(f"## 当前日期\n{date.today().isoformat()}\n")

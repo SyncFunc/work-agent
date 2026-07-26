@@ -74,6 +74,8 @@ export interface ToolResult {
   ok: boolean
   output?: string | null
   error?: string | null
+  /** write/edit 等工具的 unified-diff 文本，供 UI 展示改动。 */
+  diff?: string | null
 }
 
 export interface Question {
@@ -86,6 +88,13 @@ export interface PlanUpdate {
   step_id: string
   status: string
   note?: string | null
+}
+
+/** 一个计划步骤（前端渲染用，对齐后端 PlanStore 步骤投影）。 */
+export interface PlanStepView {
+  id: string
+  title: string
+  status: string
 }
 
 export type EventTypeStr =
@@ -123,6 +132,8 @@ export interface AgentEvent {
   questions?: Question[] | null
   plan_path?: string | null
   plan_update?: PlanUpdate | null
+  /** PLAN / PLAN_PROGRESS 事件携带的完整步骤列表（对齐后端 Event.plan_steps）。 */
+  plan_steps?: PlanStepView[] | null
   /** M10.3：USAGE 事件的 usage 字典（token 用量，经 event 消息承载）。 */
   usage?: UsageEvent['usage'] | null
   /** M10.3：本事件归属的 message（逐 message 归集用量）。 */
