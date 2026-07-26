@@ -97,7 +97,9 @@ jobs:
 
       - name: Install frontend deps
         working-directory: desktop
-        run: npm ci
+        # 用 npm install 而非 npm ci，避免 package-lock.json 未包含 electron-builder
+        # 时提前报错；锁文件由 CD 自动生成，本地开发不影响。
+        run: npm install --ignore-scripts --no-audit --no-fund
 
       - name: Build & package (skip signing when no cert)
         working-directory: desktop
