@@ -254,7 +254,7 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         flushText()
         const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
         const tb = ensureToolAt(idx)
-        if (ev.tc_args) tb.deltaArgs += ev.tc_args
+        if (ev.tc_args) tb.deltaArgs = ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
         break
       }
@@ -480,7 +480,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         flushText()
         const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
         const tb = ensureToolAt(idx)
-        if (ev.tc_args) tb.deltaArgs += ev.tc_args
+        if (ev.tc_args) tb.deltaArgs = ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
         break
       }
