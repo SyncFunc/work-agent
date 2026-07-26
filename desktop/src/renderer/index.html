@@ -4,9 +4,179 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Work Agent</title>
+    <!-- 早期套用持久化主题：避免 React 挂载前因默认白底产生的主题闪动（与 tokens.css 的暗色变量对齐）。 -->
+    <script>
+      try {
+        var t = localStorage.getItem('workagent.theme')
+        if (t === 'dark' || t === 'light') document.documentElement.dataset.theme = t
+      } catch (e) {}
+    </script>
+    <style>
+      html,
+      body {
+        margin: 0;
+        padding: 0;
+        height: 100%;
+        background: #0e1117;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'PingFang SC',
+          'Microsoft YaHei', sans-serif;
+      }
+      /* 静态启动遮罩：JS 解析/挂载前的空窗期即时显示，消除首屏白屏；
+         React 挂载后由 SplashScreen 接管并移除本节点。样式与 SplashScreen 对齐。 */
+      .wa-splash {
+        position: fixed;
+        inset: 0;
+        z-index: 9999;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        overflow: hidden;
+        color: #eef1f7;
+        background:
+          radial-gradient(1100px 560px at 50% -12%, rgba(91, 140, 255, 0.16), transparent 60%),
+          linear-gradient(160deg, #0e1117, #171c28);
+      }
+      .wa-splash__glow {
+        position: absolute;
+        width: 440px;
+        height: 440px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(138, 107, 255, 0.28), transparent 70%);
+        filter: blur(24px);
+        animation: wa-splash-float 6s ease-in-out infinite;
+      }
+      .wa-splash__card {
+        position: relative;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 14px;
+        padding: 36px 48px;
+      }
+      .wa-splash__logo {
+        filter: drop-shadow(0 10px 24px rgba(91, 140, 255, 0.45));
+        animation: wa-splash-pop 380ms cubic-bezier(0.2, 0.8, 0.2, 1);
+      }
+      .wa-splash__name {
+        font-size: 28px;
+        font-weight: 800;
+        letter-spacing: 0.4px;
+        background: linear-gradient(90deg, #ffffff, #cdd7ff);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      .wa-splash__tagline {
+        margin-top: 5px;
+        font-size: 12px;
+        letter-spacing: 3px;
+        color: #8b94a7;
+      }
+      .wa-splash__version {
+        font-size: 11px;
+        color: #8b94a7;
+        margin-top: -2px;
+      }
+      .wa-splash__bar {
+        width: 248px;
+        height: 4px;
+        border-radius: 999px;
+        background: rgba(255, 255, 255, 0.08);
+        overflow: hidden;
+        margin-top: 6px;
+      }
+      .wa-splash__bar-fill {
+        height: 100%;
+        width: 36%;
+        border-radius: 999px;
+        background: linear-gradient(90deg, #5b8cff, #9a6bff);
+        animation: wa-splash-slide 1.3s ease-in-out infinite;
+      }
+      .wa-splash__tip {
+        font-size: 12px;
+        color: #8b94a7;
+      }
+      html[data-theme='light'] body,
+      html[data-theme='light'] .wa-splash {
+        background:
+          radial-gradient(1100px 560px at 50% -12%, rgba(91, 140, 255, 0.12), transparent 60%),
+          linear-gradient(160deg, #f4f7fc, #e7ecf6);
+        color: #1c2230;
+      }
+      html[data-theme='light'] .wa-splash__name {
+        background: linear-gradient(90deg, #1c2230, #3a4a86);
+        -webkit-background-clip: text;
+        background-clip: text;
+        color: transparent;
+      }
+      html[data-theme='light'] .wa-splash__tagline,
+      html[data-theme='light'] .wa-splash__version,
+      html[data-theme='light'] .wa-splash__tip {
+        color: #6b7280;
+      }
+      html[data-theme='light'] .wa-splash__bar {
+        background: rgba(0, 0, 0, 0.08);
+      }
+      @keyframes wa-splash-float {
+        0%,
+        100% {
+          transform: translateY(-10px) scale(1);
+          opacity: 0.85;
+        }
+        50% {
+          transform: translateY(10px) scale(1.06);
+          opacity: 1;
+        }
+      }
+      @keyframes wa-splash-pop {
+        from {
+          opacity: 0;
+          transform: scale(0.7) translateY(8px);
+        }
+        to {
+          opacity: 1;
+          transform: scale(1) translateY(0);
+        }
+      }
+      @keyframes wa-splash-slide {
+        0% {
+          transform: translateX(-120%);
+        }
+        100% {
+          transform: translateX(320%);
+        }
+      }
+    </style>
   </head>
   <body>
     <div id="root"></div>
+    <!-- 静态启动遮罩：JS 解析/挂载前的空窗期即时显示，消除首屏白屏；React 挂载后由 SplashScreen 接管并移除本节点。 -->
+    <div id="splash" class="wa-splash">
+      <div class="wa-splash__glow" aria-hidden></div>
+      <div class="wa-splash__card">
+        <div class="wa-splash__logo" aria-hidden>
+          <svg viewBox="0 0 48 48" width="56" height="56" role="img" aria-label="Work Agent 标志">
+            <defs>
+              <linearGradient id="waSplashLogoStatic" x1="0" y1="0" x2="1" y2="1">
+                <stop offset="0" stop-color="#5b8cff" />
+                <stop offset="1" stop-color="#9a6bff" />
+              </linearGradient>
+            </defs>
+            <rect x="2" y="2" width="44" height="44" rx="13" fill="url(#waSplashLogoStatic)" />
+            <path d="M17 18 L11 24 L17 30" fill="none" stroke="#fff" stroke-width="3"
+              stroke-linecap="round" stroke-linejoin="round" />
+            <path d="M31 18 L37 24 L31 30" fill="none" stroke="#fff" stroke-width="3"
+              stroke-linecap="round" stroke-linejoin="round" />
+            <line x1="26" y1="15" x2="22" y2="33" stroke="#fff" stroke-width="3" stroke-linecap="round" />
+          </svg>
+        </div>
+        <div class="wa-splash__name">Work Agent</div>
+        <div class="wa-splash__tagline">通用编码智能体</div>
+        <div class="wa-splash__version">v0.9</div>
+        <div class="wa-splash__bar"><div class="wa-splash__bar-fill" /></div>
+        <div class="wa-splash__tip">正在启动，请稍候…</div>
+      </div>
+    </div>
     <script type="module" src="./main.tsx"></script>
   </body>
 </html>

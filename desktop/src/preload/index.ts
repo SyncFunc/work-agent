@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { DaemonConfig } from '../shared/daemon-config'
+import type { DaemonConfig, DaemonStage } from '../shared/daemon-config'
 import type { SkillInfo } from '../main/skills'
 
 // 仅暴露只读的 daemon 连接配置给渲染进程（contextBridge），
@@ -7,6 +7,14 @@ import type { SkillInfo } from '../main/skills'
 const api = {
   getDaemonConfig: (): Promise<DaemonConfig | null> =>
     ipcRenderer.invoke('daemon:config'),
+  // 启动遮罩：取当前后台启动阶段 / 订阅阶段推送（连接进度展示）。
+  getDaemonStage: (): Promise<DaemonStage | null> =>
+    ipcRenderer.invoke('daemon:progress-stage'),
+  onDaemonProgress: (cb: (stage: DaemonStage) => void): (() => void) => {
+    const handler = (_e: unknown, stage: DaemonStage): void => cb(stage)
+    ipcRenderer.on('daemon:progress', handler)
+    return () => ipcRenderer.removeListener('daemon:progress', handler)
+  },
   readSettings: (projectRoot: string): Promise<Record<string, unknown>> =>
     ipcRenderer.invoke('settings:read', projectRoot),
   writeSettings: (

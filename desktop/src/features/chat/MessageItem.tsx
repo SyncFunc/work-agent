@@ -27,10 +27,13 @@ export interface TurnMeta {
 export function MessageItem({
   block,
   turnMeta = null,
+  bare = false,
 }: {
   block: ChatBlock
   /** 仅最后一条助手消息携带：本轮累计 Token / 耗时。 */
   turnMeta?: TurnMeta | null
+  /** 在整轮响应组(ResponseGroup)内渲染时为真：不重复渲染外层头像/角色头，由组容器统一提供。 */
+  bare?: boolean
 }): React.ReactElement | null {
   switch (block.type) {
     case 'text': {
@@ -64,48 +67,54 @@ export function MessageItem({
           caretRef.current.parentElement.removeChild(caretRef.current)
         }
       }, [block.content, streaming, contentEmpty])
+      const main = (
+        <>
+          {!bare && (
+            <div className="wa-msg__head">
+              <span className="wa-msg__role">助手</span>
+            </div>
+          )}
+          {hasReason && !streaming && (
+            <button
+              type="button"
+              className={`wa-reason-toggle ${showReason ? 'wa-reason-toggle--open' : ''}`}
+              onClick={() => setShowReason((v) => !v)}
+            >
+              <ChevronRight size={14} className="wa-reason-toggle__chev" />
+              {showReason ? '收起思考过程' : '查看思考过程'}
+            </button>
+          )}
+          {streaming && contentEmpty ? (
+            // 纯思考阶段（尚无正文）：自动展开思考，光标跟随思考末尾
+            hasReason ? (
+              <div className="wa-reasoning">
+                {block.reasoning}
+                <span className="wa-cursor" aria-label="生成中" />
+              </div>
+            ) : (
+              <span className="wa-cursor" aria-label="生成中" />
+            )
+          ) : (
+            <>
+              {showReasoning && hasReason && <div className="wa-reasoning">{block.reasoning}</div>}
+              {!contentEmpty && (
+                <div ref={mdWrapRef}>
+                  <Markdown text={block.content} />
+                </div>
+              )}
+            </>
+          )}
+          {/* M9.9 步骤7：响应工具条（复制/赞/踩）+ Token 胶囊（悬浮看消耗明细） */}
+          <ResponseToolbar text={block.content} turnMeta={turnMeta} />
+        </>
+      )
+      if (bare) return main
       return (
         <div className="wa-msg">
           <span className="wa-msg__avatar">
             <Avatar kind="assistant" size={26} />
           </span>
-          <div className="wa-msg__main">
-            <div className="wa-msg__head">
-              <span className="wa-msg__role">助手</span>
-            </div>
-            {hasReason && !streaming && (
-              <button
-                type="button"
-                className={`wa-reason-toggle ${showReason ? 'wa-reason-toggle--open' : ''}`}
-                onClick={() => setShowReason((v) => !v)}
-              >
-                <ChevronRight size={14} className="wa-reason-toggle__chev" />
-                {showReason ? '收起思考过程' : '查看思考过程'}
-              </button>
-            )}
-            {streaming && contentEmpty ? (
-              // 纯思考阶段（尚无正文）：自动展开思考，光标跟随思考末尾
-              hasReason ? (
-                <div className="wa-reasoning">
-                  {block.reasoning}
-                  <span className="wa-cursor" aria-label="生成中" />
-                </div>
-              ) : (
-                <span className="wa-cursor" aria-label="生成中" />
-              )
-            ) : (
-              <>
-                {showReasoning && hasReason && <div className="wa-reasoning">{block.reasoning}</div>}
-                {!contentEmpty && (
-                  <div ref={mdWrapRef}>
-                    <Markdown text={block.content} />
-                  </div>
-                )}
-              </>
-            )}
-            {/* M9.9 步骤7：响应工具条（复制/赞/踩）+ Token 胶囊（悬浮看消耗明细） */}
-            <ResponseToolbar text={block.content} turnMeta={turnMeta} />
-          </div>
+          <div className="wa-msg__main">{main}</div>
         </div>
       )
     }
@@ -123,61 +132,61 @@ export function MessageItem({
           </div>
         </div>
       )
-    case 'error':
-      return (
-        <div className="wa-msg">
-          <div className="wa-alert wa-alert--error" role="alert">
-            <span className="wa-alert__icon">
-              <AlertTriangle size={16} />
-            </span>
-            <div>{block.text}</div>
+    case 'error': {
+      const alert = (
+        <div className="wa-alert wa-alert--error" role="alert">
+          <span className="wa-alert__icon">
+            <AlertTriangle size={16} />
+          </span>
+          <div>{block.text}</div>
+        </div>
+      )
+      return bare ? alert : <div className="wa-msg">{alert}</div>
+    }
+    case 'clarify': {
+      const alert = (
+        <div className="wa-alert wa-alert--clarify">
+          <span className="wa-alert__icon">
+            <HelpCircle size={16} />
+          </span>
+          <div>
+            <strong>需要澄清</strong>
+            <ul>
+              {block.questions.map((q, i) => (
+                <li key={i}>
+                  {q.question}
+                  {q.options && q.options.length > 0 ? `（选项：${q.options.join(' / ')}）` : ''}
+                </li>
+              ))}
+            </ul>
+            {block.answer !== undefined ? (
+              <div className="wa-clarify__answer">
+                <strong>您的回答：</strong>
+                {block.answer}
+              </div>
+            ) : null}
           </div>
         </div>
       )
-    case 'clarify':
-      return (
-        <div className="wa-msg">
-          <div className="wa-alert wa-alert--clarify">
-            <span className="wa-alert__icon">
-              <HelpCircle size={16} />
-            </span>
-            <div>
-              <strong>需要澄清</strong>
-              <ul>
-                {block.questions.map((q, i) => (
-                  <li key={i}>
-                    {q.question}
-                    {q.options && q.options.length > 0 ? `（选项：${q.options.join(' / ')}）` : ''}
-                  </li>
-                ))}
-              </ul>
-              {block.answer !== undefined ? (
-                <div className="wa-clarify__answer">
-                  <strong>您的回答：</strong>
-                  {block.answer}
-                </div>
-              ) : null}
-            </div>
+      return bare ? alert : <div className="wa-msg">{alert}</div>
+    }
+    case 'plan': {
+      const alert = (
+        <div className="wa-alert wa-alert--plan">
+          <span className="wa-alert__icon">
+            <ClipboardList size={16} />
+          </span>
+          <div>
+            <strong>计划{block.status ? ` · ${block.status}` : ''}</strong>
+            {block.note ? `：${block.note}` : ''}
+            {block.planPath ? (
+              <div style={{ fontSize: 'var(--wa-f-sm)', opacity: 0.85, marginTop: 2 }}>{block.planPath}</div>
+            ) : null}
           </div>
         </div>
       )
-    case 'plan':
-      return (
-        <div className="wa-msg">
-          <div className="wa-alert wa-alert--plan">
-            <span className="wa-alert__icon">
-              <ClipboardList size={16} />
-            </span>
-            <div>
-              <strong>计划{block.status ? ` · ${block.status}` : ''}</strong>
-              {block.note ? `：${block.note}` : ''}
-              {block.planPath ? (
-                <div style={{ fontSize: 'var(--wa-f-sm)', opacity: 0.85, marginTop: 2 }}>{block.planPath}</div>
-              ) : null}
-            </div>
-          </div>
-        </div>
-      )
+      return bare ? alert : <div className="wa-msg">{alert}</div>
+    }
     default:
       return null
   }
