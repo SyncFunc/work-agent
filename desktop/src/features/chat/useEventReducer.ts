@@ -72,6 +72,21 @@ export interface PlanBlock {
   note?: string | null
 }
 
+// M10.4：每轮 Token 消耗明细（与 UsageSummary 合计后挂到 ResponseBlock.turnMeta）。
+export interface UsageSummary {
+  prompt_tokens: number
+  completion_tokens: number
+  reasoning_tokens: number
+  cache_hit_tokens: number
+  cache_miss_tokens: number
+  cache_write_tokens: number
+  total_tokens: number
+}
+export interface TurnMeta {
+  duration: number
+  usage: UsageSummary
+}
+
 /** 子 agent（subsession）独立块：在主聊天区以卡片呈现，内部是它自己的事件归约视图。 */
 export interface SubagentBlock {
   key: string
@@ -91,6 +106,8 @@ export interface ResponseBlock {
   type: 'response'
   role: 'assistant'
   blocks: ChatBlock[]
+  /** M10.4：本响应组的 Token 消耗与耗时（由 USAGE 事件归集，子 agent 消耗已向上累加）。 */
+  turnMeta?: TurnMeta | null
 }
 
 export type ChatBlock =
@@ -314,6 +331,20 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
 且 spawn_subagent 的 TOOL_USE/TOOL_RESULT 能跨子 agent 段配对，结果回填到发起块。
 */
 export function buildChatModel(events: AgentEvent[]): ChatModel {
+  // M10.4 debug: 打印收到的 USAGE 事件（用于排查前端用量不显示问题；提交前可保留）。
+  const usageEvents = events.filter((e) => e.type === 'usage')
+  if (usageEvents.length > 0) {
+    console.log(
+      '[M10.4-debug] USAGE events:',
+      usageEvents.map((e) => ({
+        message_id: e.message_id,
+        parent_message_id: e.parent_message_id,
+        usage: e.usage,
+        duration: e.duration,
+        estimated: e.estimated,
+      })),
+    )
+  }
   let top: ChatBlock[] = []
   // 父会话归约状态（跨 subsession 段持续，仅定位类状态在段边界重置，toolById 始终保留）。
   let n = 0
@@ -324,6 +355,12 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   let hasStreamedText = false
   let lastDecisionText: string | null = null
   let subSeq = 0
+
+  // M10.4：用量归集——子 agent(subession) 与父会话 USAGE 事件均累加到 root ResponseBlock 的 turnMeta。
+  // "队列"机制：每个 USER 事件标记新一轮，flush 上一轮用量。
+  const usageQueue: TurnMeta[] = []
+  let currentUsage: TurnMeta | null = null
+  let usageDirty = false
 
   const flushText = (): void => {
     if (cur && (cur.content || cur.reasoning)) {
@@ -431,6 +468,12 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         } else {
           top.push({ key: `${n++}`, type: 'user', text: ev.text ?? '' })
         }
+        // M10.4：USER 事件标记新一轮：flush 上一轮的用量到队列。
+        if (usageDirty && currentUsage) {
+          usageQueue.push(currentUsage)
+          currentUsage = null
+          usageDirty = false
+        }
         break
       }
       case 'tool_call_delta': {
@@ -497,6 +540,33 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         })
         break
       }
+      case 'usage': {
+        const u = ev.usage ?? {}
+        if (!currentUsage) {
+          currentUsage = {
+            duration: 0,
+            usage: {
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              reasoning_tokens: 0,
+              cache_hit_tokens: 0,
+              cache_miss_tokens: 0,
+              cache_write_tokens: 0,
+              total_tokens: 0,
+            },
+          }
+        }
+        currentUsage.duration += ev.duration ?? 0
+        currentUsage.usage.prompt_tokens += u.prompt_tokens ?? 0
+        currentUsage.usage.completion_tokens += u.completion_tokens ?? 0
+        currentUsage.usage.reasoning_tokens += u.reasoning_tokens ?? 0
+        currentUsage.usage.cache_hit_tokens += u.cache_hit_tokens ?? 0
+        currentUsage.usage.cache_miss_tokens += u.cache_miss_tokens ?? 0
+        currentUsage.usage.cache_write_tokens += u.cache_write_tokens ?? 0
+        currentUsage.usage.total_tokens += u.total_tokens ?? 0
+        usageDirty = true
+        break
+      }
       default:
         break
     }
@@ -517,6 +587,34 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
       while (j < events.length && (events[j].subsession_id ?? null) === sub) {
         segEvents.push(events[j])
         j++
+      }
+      // M10.4：提取子 agent 段内的 USAGE 事件，累积到父会话的用量（子 agent 块不渲染消耗）。
+      for (const sev of segEvents) {
+        if (sev.type !== 'usage') continue
+        if (!currentUsage) {
+          currentUsage = {
+            duration: 0,
+            usage: {
+              prompt_tokens: 0,
+              completion_tokens: 0,
+              reasoning_tokens: 0,
+              cache_hit_tokens: 0,
+              cache_miss_tokens: 0,
+              cache_write_tokens: 0,
+              total_tokens: 0,
+            },
+          }
+        }
+        const u = sev.usage ?? {}
+        currentUsage.duration += sev.duration ?? 0
+        currentUsage.usage.prompt_tokens += u.prompt_tokens ?? 0
+        currentUsage.usage.completion_tokens += u.completion_tokens ?? 0
+        currentUsage.usage.reasoning_tokens += u.reasoning_tokens ?? 0
+        currentUsage.usage.cache_hit_tokens += u.cache_hit_tokens ?? 0
+        currentUsage.usage.cache_miss_tokens += u.cache_miss_tokens ?? 0
+        currentUsage.usage.cache_write_tokens += u.cache_write_tokens ?? 0
+        currentUsage.usage.total_tokens += u.total_tokens ?? 0
+        usageDirty = true
       }
       top.push({
         key: `sub-${sub}`,
@@ -545,6 +643,13 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   // 末轮兜底：丢弃任何仍悬空的控制工具块（如澄清轮次超出上限未发 clarify 事件等边界情形）。
   for (const name of INTERCEPTED_CONTROL_TOOLS) dropInterceptedControl(name)
 
+  // M10.4：flush 最后累积的用量。
+  if (usageDirty && currentUsage) {
+    usageQueue.push(currentUsage)
+    currentUsage = null
+    usageDirty = false
+  }
+
   // 整轮响应分组（Bug4 修复核心机制）：把顶层「连续的非 user 块」归并为一个
   // ResponseBlock，主聊天区统一共享一个助手头像。user 块作为独立分隔符不进组
   // （每个用户输入开启新一轮）。这样子 agent 段之后的父层总结 text 与 subagent 卡
@@ -569,6 +674,29 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   }
   flushGroup()
   top = grouped
+
+  // M10.4：按顺序把用量挂到 ResponseBlock 的 turnMeta。
+  {
+    let idx = 0
+    for (const g of top) {
+      if (g.type === 'response') {
+        if (idx < usageQueue.length) {
+          (g as ResponseBlock).turnMeta = usageQueue[idx]
+        }
+        idx++
+      }
+    }
+  }
+
+  // M10.4 debug: 打印 ResponseBlock 与 turnMeta（用于排查前端用量不显示；提交前可保留）。
+  {
+    const metas = top
+      .filter((g): g is ResponseBlock => g.type === 'response')
+      .map((r) => ({ key: r.key, turnMeta: r.turnMeta }))
+    if (metas.some((m) => m.turnMeta !== undefined)) {
+      console.log('[M10.4-debug] ResponseBlock turnMeta:', JSON.stringify(metas))
+    }
+  }
 
   // —— 调试钩子（仅用户主动开启；不影响生产/测试）——
   // 开启方式：Electron DevTools 控制台执行 localStorage.setItem('chat-debug','1') 后重新触发对话，

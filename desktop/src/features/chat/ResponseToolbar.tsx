@@ -9,7 +9,7 @@ import {
   ThumbsUp,
   Zap,
 } from 'lucide-react'
-import type { TurnMeta } from './MessageItem'
+import type { TurnMeta } from './useEventReducer'
 import './ResponseToolbar.css'
 
 interface Props {

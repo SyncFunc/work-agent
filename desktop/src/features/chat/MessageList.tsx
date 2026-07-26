@@ -5,20 +5,22 @@
 
 import React, { useEffect, useRef, useState } from 'react'
 import type { ChatBlock, ChatModel, ResponseBlock } from './useEventReducer'
-import type { TurnMeta } from './MessageItem'
 import { MessageItem } from './MessageItem'
 import { ToolBlock } from './ToolBlock'
 import { SubagentCard } from './SubagentCard'
+import { ResponseToolbar } from './ResponseToolbar'
 import { Avatar } from '../../components'
 import { IconButton } from '../../components'
 import { ArrowDown } from 'lucide-react'
 import './chat.css'
 
+// M10.4：ResponseBlock 自带 turnMeta（由 useEventReducer 归集 USAGE 事件而来），不再从 MessageList prop 传入。
+
 /** 共享的单块渲染：顶层与 ResponseGroup 组内都用它，保证 tool/subagent/response 处理逻辑一致。
  * inGroup=true 时文本/警示块以 bare 模式渲染（不重复头像/外层），由组容器统一提供。 */
 function renderBlock(
   b: ChatBlock,
-  opts: { inGroup: boolean; turnMeta: TurnMeta | null; defaultToolCollapsed: boolean },
+  opts: { inGroup: boolean; defaultToolCollapsed: boolean },
 ): React.ReactElement {
   switch (b.type) {
     case 'subagent':
@@ -26,36 +28,34 @@ function renderBlock(
     case 'tool':
       return <ToolBlock key={b.key} block={b} defaultCollapsed={opts.defaultToolCollapsed} />
     case 'user':
-      return <MessageItem key={b.key} block={b} turnMeta={opts.turnMeta} />
+      return <MessageItem key={b.key} block={b} />
     case 'response':
       return (
         <ResponseGroup
           key={b.key}
           block={b}
-          turnMeta={opts.turnMeta}
           defaultToolCollapsed={opts.defaultToolCollapsed}
         />
       )
     default:
-      return <MessageItem key={b.key} block={b} bare={opts.inGroup} turnMeta={opts.turnMeta} />
+      return <MessageItem key={b.key} block={b} bare={opts.inGroup} />
   }
 }
 
 /** 整轮响应组：统一一个助手头像 + 角色头，组内按序渲染 text/tool/subagent/error/clarify/plan。
- * turnMeta 仅挂到组内最后一条文本块（单轮 Token/耗时）。 */
+ * turnMeta 由 ResponseBlock.turnMeta 提供，工具条（复制/赞/踩/用量）在组尾部统一条目。 */
 function ResponseGroup({
   block,
-  turnMeta,
   defaultToolCollapsed,
 }: {
   block: ResponseBlock
-  turnMeta: TurnMeta | null
   defaultToolCollapsed: boolean
 }): React.ReactElement {
-  let lastTextIdx = -1
-  block.blocks.forEach((b, i) => {
-    if (b.type === 'text') lastTextIdx = i
-  })
+  // 收集组内所有文本块内容，供工具条「复制整条消息」。
+  const fullText = block.blocks
+    .filter((b): b is ChatBlock & { content: string } => b.type === 'text')
+    .map((b) => b.content)
+    .join('\n')
   return (
     <div className="wa-msg">
       <span className="wa-msg__avatar">
@@ -65,13 +65,10 @@ function ResponseGroup({
         <div className="wa-msg__head">
           <span className="wa-msg__role">助手</span>
         </div>
-        {block.blocks.map((b, i) =>
-          renderBlock(b, {
-            inGroup: true,
-            turnMeta: i === lastTextIdx ? turnMeta : null,
-            defaultToolCollapsed,
-          }),
+        {block.blocks.map((b) =>
+          renderBlock(b, { inGroup: true, defaultToolCollapsed }),
         )}
+        <ResponseToolbar text={fullText} turnMeta={block.turnMeta ?? null} />
       </div>
     </div>
   )
@@ -81,25 +78,16 @@ export function MessageList({
   model,
   defaultToolCollapsed = false,
   autoScroll = false,
-  turnMeta = null,
 }: {
   model: ChatModel
   /** 工具调用默认折叠（子 agent 块内为 true）。 */
   defaultToolCollapsed?: boolean
   /** 主聊天区启用自动滚动（子 agent 卡内为 false）。 */
   autoScroll?: boolean
-  /** M9.9 步骤7：单轮 Token / 耗时，仅挂到最后一条助手响应组的最后一条文本块。 */
-  turnMeta?: TurnMeta | null
 }): React.ReactElement {
   const scrollRef = useRef<HTMLDivElement>(null)
   const atBottomRef = useRef(true)
   const [showJump, setShowJump] = useState(false)
-
-  // M9.9 步骤7：定位最后一个「助手响应组」，把 Token/耗时 仅挂到它内部的最后一条文本块。
-  let lastRespKey: string | null = null
-  model.blocks.forEach((b) => {
-    if (b.type === 'response') lastRespKey = b.key
-  })
 
   const scrollToBottom = (): void => {
     const el = scrollRef.current
@@ -121,10 +109,9 @@ export function MessageList({
 
   const content = (
     <div className="wa-chat">
-      {model.blocks.map((b) => {
-        const tm = b.type === 'response' && b.key === lastRespKey ? turnMeta : null
-        return renderBlock(b, { inGroup: false, turnMeta: tm, defaultToolCollapsed })
-      })}
+      {model.blocks.map((b) =>
+        renderBlock(b, { inGroup: false, defaultToolCollapsed }),
+      )}
     </div>
   )
 

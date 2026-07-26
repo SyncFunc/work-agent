@@ -23,6 +23,7 @@ const EVENT_TYPES: readonly EventTypeStr[] = [
   'text',
   'tool_call_delta',
   'user',
+  'usage',
 ]
 
 function asOptString(v: unknown): string | null | undefined {

@@ -5,33 +5,13 @@ import React, { useLayoutEffect, useRef, useState } from 'react'
 import type { ChatBlock } from './useEventReducer'
 import { Markdown } from './Markdown'
 import { Avatar } from '../../components'
-import { ResponseToolbar } from './ResponseToolbar'
 import { AlertTriangle, ChevronRight, ClipboardList, HelpCircle } from 'lucide-react'
-
-/** M9.9 步骤7：单轮响应元信息（Token 明细 / 耗时），由主聊天区在最后一条助手消息上挂载。 */
-export interface UsageSummary {
-  prompt_tokens: number
-  completion_tokens: number
-  reasoning_tokens: number
-  cache_hit_tokens: number
-  cache_miss_tokens: number
-  cache_write_tokens: number
-  total_tokens: number
-}
-
-export interface TurnMeta {
-  duration: number
-  usage: UsageSummary
-}
 
 export function MessageItem({
   block,
-  turnMeta = null,
   bare = false,
 }: {
   block: ChatBlock
-  /** 仅最后一条助手消息携带：本轮累计 Token / 耗时。 */
-  turnMeta?: TurnMeta | null
   /** 在整轮响应组(ResponseGroup)内渲染时为真：不重复渲染外层头像/角色头，由组容器统一提供。 */
   bare?: boolean
 }): React.ReactElement | null {
@@ -104,8 +84,6 @@ export function MessageItem({
               )}
             </>
           )}
-          {/* M9.9 步骤7：响应工具条（复制/赞/踩）+ Token 胶囊（悬浮看消耗明细） */}
-          <ResponseToolbar text={block.content} turnMeta={turnMeta} />
         </>
       )
       if (bare) return main

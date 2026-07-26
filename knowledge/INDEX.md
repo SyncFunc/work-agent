@@ -129,6 +129,7 @@
 - **`_emit_subagent_usage(self, stream, result, duration, *, parent_message_id)` 的 `parent_message_id` 是 keyword-only**：调用必须 `parent_message_id=...` 关键字传参，位置传参会 `TypeError: takes 3 positional arguments but 4 were given`。
 - 前端归集（M10.4）：桌面端 `useEventReducer` 按 `parent_message_id` 链把子 agent 用量累加回派生子 agent 的那条 message。
 - **M10.3：删 `MsgType.USAGE`**：用量从独立 `usage` 消息改为 `event` 消息内的 `USAGE` 事件子类型。契约四处（protocol.py / types.ts / check-msgtype.mjs / docs/daemon-api.md）已同步；`EventTypeStr`/`EVENT_TYPES` 补 `'usage'`。**线格式**：`Event.usage` 仅含 token 字典，`estimated`/`duration`/`message_id`/`parent_message_id` 为 Event 顶层兄弟字段（前端 `AgentEvent` 的 `usage` 为内层字典、`estimated`/`duration` 顶层）。CLI/TUI transport 经 `_on_event` 的 `EventType.USAGE` 分支调 `report_usage` 渲染（与旧 `MsgType.USAGE` 显示等价）；前端只读 `event(USAGE)`，不再有独立 `usage` 消息。
+- **M10.4：前端归集**：`useEventReducer` 在 `buildChatModel` 中处理 `'usage'` 事件，累积到 `usageQueue`，USER 事件触发 flush，最终按顺序挂到 `ResponseBlock.turnMeta`。子 agent 段内的 `USAGE` 事件在 main loop `else` 分支提取同样累积到父会话用量（子 agent 块 `SubagentCard` 不渲染 `turnMeta`）。`App.tsx` 不再维护内存版 `turnMeta`/`turnUsageRef`/`turnStartRef`/`estimatedRef`；`MessageList` 不再传 `turnMeta` prop，`ResponseGroup` 直接从 `block.turnMeta` 读取。回放路径与实时路径共享同一 reducer，重启后用量可通过回放 `USAGE` 事件恢复。
 
 ### 桌面端（React / TS）
 - **reducer 跨轮兜底重复渲染**：`lastDecisionText`（收尾兜底）**不可跨轮残留**。修复用 `hasStreamedText` 守卫：`text` 事件置位并丢弃残留兜底；`flushText` 仅在本轮完全无流式 TEXT 时消费兜底；`user` 事件重置守卫。**判据**：每个 assistant 轮次应有且仅有「一个文本气泡」，无重复。

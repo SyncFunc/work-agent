@@ -35,7 +35,7 @@ const TABS: { id: Tab; label: ReactNode }[] = [
 
 export function ObsPanel({ client, projectRoot, sessionId, contextWindow, onClose, drawer, width, onResizeStart }: Props) {
   const [tab, setTab] = useState<Tab>('trace')
-  const obs = useObs(client)
+  const obs = useObs(client, sessionId)
 
   return (
     <>

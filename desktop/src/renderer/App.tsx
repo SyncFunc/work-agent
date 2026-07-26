@@ -8,7 +8,6 @@ import { SessionTabs } from '../features/sessions/SessionTabs'
 import { useSessions } from '../features/sessions/useSessions'
 import { MessageList } from '../features/chat/MessageList'
 import { Composer } from '../features/chat/Composer'
-import type { TurnMeta, UsageSummary } from '../features/chat/MessageItem'
 import { useChatModel } from '../features/chat/useEventReducer'
 import { HitlModalHost } from '../features/hitl/HitlModalHost'
 import { useHitl } from '../features/hitl/useHitl'
@@ -60,40 +59,13 @@ export default function App(): React.ReactElement {
   // M9.9 步骤4：会话级 plan_mode / model（来自 SESSION_INFO），与生成中状态（running）。
   const [sessionInfo, setSessionInfo] = useState<{ planMode: boolean; model: string }>({ planMode: false, model: '' })
   const [running, setRunning] = useState(false)
-  // M9.9 步骤7：单轮 Token 明细 / 耗时，挂到会话最后一条助手文本块。
-  const [turnMeta, setTurnMeta] = useState<TurnMeta | null>(null)
-  const turnStartRef = useRef<number>(0)
-  const turnUsageRef = useRef<UsageSummary>(emptyUsage())
-  const estimatedRef = useRef<boolean>(false)
+  // M10.4：单轮 token/耗时 由 useEventReducer 归集 USAGE 事件到 ResponseBlock.turnMeta，
+  // 不再由 App.tsx 维护内存版 turnMeta/turnUsageRef/turnStartRef/estimatedRef。
   const runningRef = useRef<boolean>(false)
   useEffect(() => {
     runningRef.current = running
   }, [running])
-  const finishTurn = useCallback(() => {
-    setRunning(false)
-    setTurnMeta({ duration: (Date.now() - turnStartRef.current) / 1000, usage: { ...turnUsageRef.current } })
-  }, [])
-
-  function emptyUsage(): UsageSummary {
-    return {
-      prompt_tokens: 0,
-      completion_tokens: 0,
-      reasoning_tokens: 0,
-      cache_hit_tokens: 0,
-      cache_miss_tokens: 0,
-      cache_write_tokens: 0,
-      total_tokens: 0,
-    }
-  }
-  function addUsage(acc: UsageSummary, u: Partial<UsageSummary>): void {
-    acc.prompt_tokens += u.prompt_tokens ?? 0
-    acc.completion_tokens += u.completion_tokens ?? 0
-    acc.reasoning_tokens += u.reasoning_tokens ?? 0
-    acc.cache_hit_tokens += u.cache_hit_tokens ?? 0
-    acc.cache_miss_tokens += u.cache_miss_tokens ?? 0
-    acc.cache_write_tokens += u.cache_write_tokens ?? 0
-    acc.total_tokens += u.total_tokens ?? 0
-  }
+  const finishTurn = useCallback(() => setRunning(false), [])
 
   // 应用启动时套用持久化主题。
   useEffect(() => {
@@ -266,11 +238,11 @@ export default function App(): React.ReactElement {
   const commands = useCommands(client)
   const skills = useSkills(projectRoot)
   const notices = useNotices(client)
-  const obs = useObs(client)
+  const obs = useObs(client, active?.id ?? null)
 
-  // M9.9 步骤7：切换会话时清掉上一轮的 Token/耗时 信息。
+  // M10.4：会话切换时清除进行中状态（用量由 reducer 基于 events 重建）。
   useEffect(() => {
-    setTurnMeta(null)
+    // no-op：reducer 事件驱动，无需显式清 turnMeta
   }, [active?.id])
 
   // 统一 toast 堆叠：通知（来自 daemon）与瞬时提示（如保存成功）共用一个右下角堆叠，避免重叠。
@@ -286,7 +258,7 @@ export default function App(): React.ReactElement {
     if (!client) return
     const off = client.onMessage('session.delete_resp', (env) => {
       const ok = Boolean(env.payload['ok'])
-      const err = (env.payload['error'] as string | undefined) ?? '未知错误'
+      const err = (env.payload['message'] as string | undefined) ?? (ok ? '' : '未知错误')
       pushToast(ok ? 'success' : 'error', ok ? '会话已彻底删除' : `删除失败：${err}`)
     })
     return off
@@ -315,15 +287,8 @@ export default function App(): React.ReactElement {
     const offEvent = client.onEvent((ev) => {
       if (ev.type === 'decision') finishTurn()
       // M10.3：usage 现随 event(usage) 子类型下发，不再有独立 usage 消息。
-      if (ev.type === 'usage' && ev.usage) {
-        if (!runningRef.current) return
-        addUsage(turnUsageRef.current, ev.usage ?? {})
-        if (ev.estimated) estimatedRef.current = true
-        setTurnMeta({
-          duration: ev.duration ?? (Date.now() - turnStartRef.current) / 1000,
-          usage: { ...turnUsageRef.current },
-        })
-      }
+      // M10.4：usage 由 useEventReducer 归集到 ResponseBlock.turnMeta，
+      // App.tsx 不再逐事件累积 turnMeta。
     })
     return () => {
       offInfo()
@@ -358,10 +323,6 @@ export default function App(): React.ReactElement {
       if (skillName) {
         client.command('skill', skillName)
         if (prompt) {
-          turnStartRef.current = Date.now()
-          turnUsageRef.current = emptyUsage()
-          estimatedRef.current = false
-          setTurnMeta(null)
           sessions.sendTask(prompt)
           setRunning(true)
         } else {
@@ -372,10 +333,6 @@ export default function App(): React.ReactElement {
       }
       client.command(slash.name, slash.args ? slash.args : null)
     } else {
-      turnStartRef.current = Date.now()
-      turnUsageRef.current = emptyUsage()
-      estimatedRef.current = false
-      setTurnMeta(null)
       sessions.sendTask(text)
       setRunning(true)
     }
@@ -484,7 +441,7 @@ export default function App(): React.ReactElement {
                     会话 <code>{active.name}</code> · {active.events.length} 条事件
                     {sessions.state.replaying ? '（回放中…）' : ''}
                   </p>
-                  <MessageList model={model} autoScroll turnMeta={turnMeta} />
+                  <MessageList model={model} autoScroll />
                 </div>
               )}
             </section>
@@ -498,7 +455,7 @@ export default function App(): React.ReactElement {
                 planMode={sessionInfo.planMode}
                 onTogglePlan={handleTogglePlan}
                 model={sessionInfo.model}
-                contextTokens={obs.usage?.prompt_tokens}
+                contextTokens={obs.usage?.prompt_tokens ?? obs.usage?.total_tokens ?? obs.usage?.estimated_tokens ?? 0}
                 contextWindow={contextWindow}
                 onShowSkills={() => setLeftNav('skills')}
                 commands={commands.commands}
