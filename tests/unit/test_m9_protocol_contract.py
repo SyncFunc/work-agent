@@ -51,9 +51,15 @@ def test_python_msgtype_nonempty_and_sorted_stable() -> None:
     需同步更新此处计数并确认 TS 侧一致（check-msgtype.mjs 会兜住漂移）。
     """
     values = [m.value for m in MsgType]
-    assert len(values) == 37
+    assert len(values) == 36
     assert "hello" in values
     assert "event" in values
     assert "error" in values
     # 无重复值
     assert len(set(values)) == len(values)
+
+
+def test_python_msgtype_no_usage() -> None:
+    """M10.3：MsgType.USAGE 已删除，用量改由 event(USAGE 子类型) 承载。"""
+    values = [m.value for m in MsgType]
+    assert "usage" not in values

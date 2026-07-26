@@ -81,6 +81,9 @@ class TextualTransport(AgentTransport):
         elif t == EventType.DECISION:
             # 一轮模型决策结束收尾（澄清/计划闸门提前返回时工具回调不触发，统一在此定稿）
             self._bridge(self._app.finalize_stream)
+        elif t == EventType.USAGE:
+            # M10.3：用量随 USAGE 事件下发（替代已删除的 MsgType.USAGE）。
+            self.report_usage(ev.usage, ev.text)
         # clarify / plan / final 由 HITL（show_questions/show_plan）或已流式文本覆盖，忽略
 
     def _bridge(self, target, *args) -> None:

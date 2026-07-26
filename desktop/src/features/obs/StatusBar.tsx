@@ -1,13 +1,13 @@
 // StatusBar：底部状态栏——上下文 token 用量、窗口占比、当前模式、项目根、会话 id。
 
-import type { UsagePayload } from '../../protocol/types'
+import type { UsageEvent } from '../../protocol/types'
 import type { ObsMode } from './useObs'
 import { Badge } from '../../components'
 
 interface Props {
   projectRoot: string
   sessionId: string | null
-  usage: UsagePayload['usage'] | null
+  usage: UsageEvent['usage'] | null
   estimated: boolean
   mode: ObsMode
   contextWindow?: number

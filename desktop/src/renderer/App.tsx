@@ -314,25 +314,22 @@ export default function App(): React.ReactElement {
     const offAttached = client.onMessage('attached', () => finishTurn())
     const offEvent = client.onEvent((ev) => {
       if (ev.type === 'decision') finishTurn()
-    })
-    // M9.9 步骤7：累计单轮完整用量明细，并实时刷新耗时。
-    const offUsage = client.onMessage('usage', (env) => {
-      if (!runningRef.current) return
-      const payload = env.payload as { usage?: Partial<UsageSummary>; estimated?: boolean }
-      const u = payload.usage ?? {}
-      addUsage(turnUsageRef.current, u)
-      if (payload.estimated) estimatedRef.current = true
-      setTurnMeta({
-        duration: (Date.now() - turnStartRef.current) / 1000,
-        usage: { ...turnUsageRef.current },
-      })
+      // M10.3：usage 现随 event(usage) 子类型下发，不再有独立 usage 消息。
+      if (ev.type === 'usage' && ev.usage) {
+        if (!runningRef.current) return
+        addUsage(turnUsageRef.current, ev.usage ?? {})
+        if (ev.estimated) estimatedRef.current = true
+        setTurnMeta({
+          duration: ev.duration ?? (Date.now() - turnStartRef.current) / 1000,
+          usage: { ...turnUsageRef.current },
+        })
+      }
     })
     return () => {
       offInfo()
       offCancelled()
       offAttached()
       offEvent()
-      offUsage()
     }
   }, [client])
 

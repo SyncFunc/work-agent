@@ -36,7 +36,6 @@ export const ALL_MSG_TYPES = [
   'show_skills',
   'show_agents',
   'notify',
-  'usage',
   'close',
   'error',
   'task.cancelled', // M9.9 已停止生成
@@ -101,6 +100,7 @@ export type EventTypeStr =
   | 'text'
   | 'tool_call_delta'
   | 'user'
+  | 'usage'
 
 /** 一条事件（即 Event.to_dict 的强类型投影）。这是 M9.4 渲染的数据源。 */
 export interface AgentEvent {
@@ -123,6 +123,16 @@ export interface AgentEvent {
   questions?: Question[] | null
   plan_path?: string | null
   plan_update?: PlanUpdate | null
+  /** M10.3：USAGE 事件的 usage 字典（token 用量，经 event 消息承载）。 */
+  usage?: UsageEvent['usage'] | null
+  /** M10.3：本事件归属的 message（逐 message 归集用量）。 */
+  message_id?: string | null
+  /** M10.3：父 message（子 agent 用量归集回派生子 agent 的 message）。 */
+  parent_message_id?: string | null
+  /** M10.3：USAGE 事件：无真实用量时为 true。 */
+  estimated?: boolean | null
+  /** M10.3：USAGE 事件：本次响应墙钟耗时（秒，含 HITL 等待）。 */
+  duration?: number | null
 }
 
 /** 会话列表项（对齐 daemon registry.list_info 的响应：键为 `id`）。 */
@@ -188,8 +198,8 @@ export interface TraceTreeResponse {
   spans: SpanNode[]
 }
 
-/** usage 消息 payload（对齐 agent/daemon/bridge.py 的 report_usage）。 */
-export interface UsagePayload {
+/** USAGE 事件 payload（对齐 M10.3 EventType.USAGE：message 体含 usage/estimated/duration/message_id/parent_message_id）。 */
+export interface UsageEvent {
   usage: {
     prompt_tokens?: number
     completion_tokens?: number
@@ -205,6 +215,12 @@ export interface UsagePayload {
     estimated_tokens?: number
   }
   estimated: boolean
+  /** 本次响应墙钟耗时（秒，含 HITL 等待）。 */
+  duration?: number | null
+  /** 归属 message（逐 message 归集用量）。 */
+  message_id?: string | null
+  /** 父 message（子 agent 用量归集回派生子 agent 的 message）。 */
+  parent_message_id?: string | null
 }
 
 /** notify 消息 payload。 */

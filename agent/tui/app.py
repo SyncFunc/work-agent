@@ -29,6 +29,7 @@ from agent.tui.render import MessageRenderer, SubagentBlock, _StaticLine
 
 if TYPE_CHECKING:
     from agent.config.settings import Settings
+    from agent.core.loop import AgentResult
     from agent.core.session import Session
 
 
@@ -399,9 +400,49 @@ class ChatApp(MessageRenderer, App):
                 res = None
             else:
                 if res is not None:
-                    transport.report_usage(res.usage, res.text)
+                    # M10.3：不再走 transport.report_usage（MsgType.USAGE 已删除）；
+                    # 改为向 session 事件流 append USAGE 事件，由 TextualTransport.on_event
+                    # 统一经 event 消息/本地渲染消费（与 daemon 路径一致）。
+                    self._append_usage_event(session, res)
             # 一轮结束：收尾 transport（退订当前流、刷通知）
             transport.close()
+
+    # ------------------------------------------------------------------ #
+    # M10.3：USAGE 事件落盘（替代已删除的 MsgType.USAGE）
+    # ------------------------------------------------------------------ #
+    def _append_usage_event(self, session: Session, res: AgentResult) -> None:
+        """把一次响应的 token 用量作为 USAGE 事件落盘（替代已删除的 MsgType.USAGE）。
+
+        ``TextualTransport`` 订阅 ``session.event_stream``，会经 ``on_event`` 捕获并渲染用量；
+        usage 为空时退化为估算 token 数并标 ``estimated=True``（与旧 report_usage 一致）。
+        """
+        from agent.context.tokens import _estimate_tokens
+        from agent.core.events import Event, EventType
+
+        mid = res.message_id or session.event_stream.current_message_id
+        if mid is None:
+            return
+        usage = res.usage
+        if not usage:
+            session.event_stream.append(
+                Event(
+                    type=EventType.USAGE,
+                    message_id=mid,
+                    usage={"estimated_tokens": _estimate_tokens(res.text or "")},
+                    duration=None,
+                    estimated=True,
+                )
+            )
+            return
+        session.event_stream.append(
+            Event(
+                type=EventType.USAGE,
+                message_id=mid,
+                usage=dict(usage),
+                duration=None,
+                estimated=False,
+            )
+        )
 
     # ------------------------------------------------------------------ #
     # 内部工具：挂载部件 + 自动吸底（#log 引用在 on_mount 缓存，避免并发查询竞态）

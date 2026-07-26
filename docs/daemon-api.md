@@ -84,7 +84,6 @@
 | `show_skills` | S→C | 展示可用技能 |
 | `show_agents` | S→C | 展示可用子 Agent |
 | `notify` | S→C | 轻量通知文本 |
-| `usage` | S→C | token 用量 |
 | `close` | S→C | 一轮任务结束 |
 | `error` | S→C | 错误 |
 
@@ -222,11 +221,12 @@
 - **payload**：`{ "specs": [ { "name": string, "title": string, "description": string, ... } ] }`
   - 各 spec 字段由后端对象 `to_dict()`（或公开属性）决定，至少含 `name/title/description`。
 
-### 5.14 `notify` / `usage` / `close` / `task.cancelled`
+### 5.14 `notify` / `close` / `task.cancelled`
 - `notify`：`{ "message": string }`。
-- `usage`：`{ "usage": {...}, "estimated": bool }`（见 6.7）。
 - `close`：`{}`（信封带 `session`），表示一轮 `task.send` 运行结束（含正常完成 / 计划拒绝中止 / 取消后清理）。前端须保证在收到 `close` 后再处理最终 `event`，以避免顺序错乱（服务端已用发送锁保证 FINAL 先到）。
 - `task.cancelled`：`{}`，生成被 `task.cancel` 真实中断后下发。
+
+> **M10.3**：`usage` 不再是独立消息类型，改为随 `event` 消息下发 `USAGE` 子类型事件（见 5.6 / 6.1 / 6.7）。前端经 `event` 消息的 `event.type === "usage"` 读取，payload 见 6.7。
 
 ### 5.15 `session.info`（M9.9）
 - **payload**：`{ "plan_mode": bool, "model": string }`，attach/switch 后下发，供前端顶栏与输入区展示。
@@ -252,7 +252,7 @@
 
 ### 6.1 Event（`event` 消息体内的 `event` 字段，`Event.to_dict()`）
 固定字段：`seq`(int)、`type`(EventType 字符串)、`ts`(float，Unix 秒)。`type` 取值：
-`decision` / `clarify` / `plan` / `plan_progress` / `tool_use` / `tool_result` / `final` / `error` / `text` / `tool_call_delta` / `user`。
+`decision` / `clarify` / `plan` / `plan_progress` / `tool_use` / `tool_result` / `final` / `error` / `text` / `tool_call_delta` / `user` / `usage`。
 
 按类型出现的可选字段（仅非空时包含）：
 | 字段 | 类型 | 出现于 |
@@ -270,6 +270,11 @@
 | `plan_update` | `{ step_id, status, note? }` | `plan_progress` |
 | `subsession_id` | string\|null | 任意（子会话事件在信封层已带，结构体本身不重复） |
 | `transient` | bool | 仅瞬时事件标记（delta 类），不进回放缓冲 |
+| `usage` | `{...}`（见 6.7） | `usage`（USAGE 事件，非瞬时，入档并回放） |
+| `estimated` | bool | `usage` |
+| `duration` | float（秒，墙钟，含 HITL 等待） | `usage` |
+| `message_id` | string | `usage`（逐 message 归集用量） |
+| `parent_message_id` | string\|null | `usage`（子 agent 用量归集回派生子 agent 的 message） |
 
 > `tool_call_delta` 为瞬时事件：实时转发但不入档、不回放。
 
@@ -299,14 +304,19 @@
 ### 6.6 SessionInfo（`session_list.sessions`）
 见 5.5。
 
-### 6.7 Usage（`usage`）
+### 6.7 Usage（`event` 的 `USAGE` 子类型，M10.3 起取代独立 `usage` 消息）
+随 `event` 消息下发（`payload.event.type === "usage"`），非瞬时（入档并回放）。
 ```jsonc
-{ "usage": {
+{ "type": "usage",
+  "usage": {
     "prompt_tokens"?: int, "completion_tokens"?: int, "total_tokens"?: int,
     "reasoning_tokens"?: int,
     "cache_hit_tokens"?: int, "cache_miss_tokens"?: int, "cache_write_tokens"?: int,
     "estimated_tokens"?: int },   // 无真实用量时为估算值
-  "estimated": bool }
+  "estimated": bool,             // 无真实用量时为 true
+  "duration": float,             // 本次响应墙钟耗时（秒，含 HITL 等待）
+  "message_id": string,          // 归属 message（逐 message 归集用量）
+  "parent_message_id"?: string } // 子 agent 指向派生子 agent 的 message（message 树）
 ```
 
 ### 6.8 SpanNode（`trace_tree.spans`）

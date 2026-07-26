@@ -3,7 +3,7 @@
 
 import { useEffect, useState } from 'react'
 import { DaemonClient } from '../../protocol/client'
-import type { UsagePayload } from '../../protocol/types'
+import type { UsageEvent } from '../../protocol/types'
 
 export type ObsMode = 'plan' | 'exec'
 
@@ -14,7 +14,7 @@ export interface ObsLog {
 }
 
 export interface UseObs {
-  usage: UsagePayload['usage'] | null
+  usage: UsageEvent['usage'] | null
   estimated: boolean
   mode: ObsMode
   logs: ObsLog[]
@@ -24,18 +24,13 @@ export interface UseObs {
 let logSeq = 0
 
 export function useObs(client: DaemonClient | null): UseObs {
-  const [usage, setUsage] = useState<UsagePayload['usage'] | null>(null)
+  const [usage, setUsage] = useState<UsageEvent['usage'] | null>(null)
   const [estimated, setEstimated] = useState(false)
   const [mode, setMode] = useState<ObsMode>('exec')
   const [logs, setLogs] = useState<ObsLog[]>([])
 
   useEffect(() => {
     if (!client) return
-    const offUsage = client.onMessage('usage', (env) => {
-      const p = env.payload as unknown as UsagePayload
-      setUsage(p.usage ?? null)
-      setEstimated(Boolean(p.estimated))
-    })
     const offNotify = client.onMessage('notify', (env) => {
       const p = env.payload as { message?: string }
       setLogs((prev) => [...prev, { id: ++logSeq, ts: Date.now(), message: String(p.message ?? '') }])
@@ -47,9 +42,13 @@ export function useObs(client: DaemonClient | null): UseObs {
       if (ev.type === 'decision' && ev.decision && ev.decision.tool_calls.length > 0) {
         setMode('exec')
       }
+      // M10.3：usage 现随 event(usage) 子类型下发，不再有独立 usage 消息。
+      if (ev.type === 'usage' && ev.usage) {
+        setUsage(ev.usage ?? null)
+        setEstimated(Boolean(ev.estimated))
+      }
     })
     return () => {
-      offUsage()
       offNotify()
       offShowPlan()
       offConfirmPlan()

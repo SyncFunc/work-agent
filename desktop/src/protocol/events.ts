@@ -135,6 +135,14 @@ export function parseEvent(raw: unknown): AgentEvent {
     questions,
     plan_path: asOptString(d.plan_path),
     plan_update: d.plan_update === undefined ? undefined : parsePlanUpdate(d.plan_update),
+    usage:
+      d.usage === undefined || d.usage === null
+        ? undefined
+        : ((d.usage as unknown) as AgentEvent['usage']),
+    estimated: typeof d.estimated === 'boolean' ? d.estimated : undefined,
+    duration: asOptNumber(d.duration),
+    message_id: asOptString(d.message_id),
+    parent_message_id: asOptString(d.parent_message_id),
   }
 }
 
@@ -155,5 +163,10 @@ export function eventToDict(ev: AgentEvent): Record<string, unknown> {
   if (ev.questions !== undefined) d.questions = ev.questions
   if (ev.plan_path !== undefined) d.plan_path = ev.plan_path
   if (ev.plan_update !== undefined) d.plan_update = ev.plan_update
+  if (ev.usage !== undefined) d.usage = ev.usage
+  if (ev.estimated !== undefined) d.estimated = ev.estimated
+  if (ev.duration !== undefined) d.duration = ev.duration
+  if (ev.message_id !== undefined) d.message_id = ev.message_id
+  if (ev.parent_message_id !== undefined) d.parent_message_id = ev.parent_message_id
   return d
 }
