@@ -88,11 +88,12 @@ jobs:
           path: desktop/build/daemon/${{ matrix.platform }}
 
       # 把当前平台二进制暂存到固定目录，供 electron-builder extraResources 统一拷贝。
+      # 注意：只复制 daemon 二进制（daemon / daemon.exe），跳过 _spec / _work 子目录。
       - name: Stage bundle dir
         shell: bash
         run: |
           mkdir -p desktop/build/daemon/bundle
-          cp desktop/build/daemon/${{ matrix.platform }}/* desktop/build/daemon/bundle/
+          cp desktop/build/daemon/${{ matrix.platform }}/daemon* desktop/build/daemon/bundle/
 
       - name: Install frontend deps
         working-directory: desktop
