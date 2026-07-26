@@ -1,0 +1,29 @@
+# electron-builder 配置（方案 A：冻结 daemon 二进制随安装包分发）。
+#
+# 关键：extraResources 把 CD 流水线构建好的冻结 daemon 二进制
+# （desktop/build/daemon/bundle/daemon[.exe]）打入安装包的 resources/daemon/，
+# 运行时由 desktop/src/main/daemon.ts 在打包态优先拉起该二进制，
+# 从而脱离主机 Python 环境。本地开发（electron-vite dev）不走此路径。
+appId: com.workagent.app
+productName: Work Agent
+directories:
+  output: dist
+files:
+  - "out/**/*"
+  - "package.json"
+extraResources:
+  - from: "build/daemon/bundle"
+    to: "daemon"
+win:
+  target:
+    - nsis
+  artifactName: "${productName}-${version}-setup.${ext}"
+mac:
+  target:
+    - dmg
+  category: public.app-category.developer-tools
+linux:
+  target:
+    - AppImage
+  category: Development
+  artifactName: "${productName}-${version}.${ext}"

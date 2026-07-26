@@ -423,4 +423,17 @@ C→S trace.get {trace_id}           → S→C trace_tree {spans}
 
 ---
 
+## 11. Daemon 进程分发（方案 A：冻结二进制）
+
+WebSocket 协议本身不变；本节仅说明**前端如何拉起 daemon 子进程**。
+
+- **本地开发**：仍走 `python -m agent.cli daemon`（由 `desktop/src/main/daemon.ts` 在 `app.isPackaged === false` 时调用 `locatePython()`）。
+- **打包分发（方案 A）**：CD 流水线用 PyInstaller 把 `agent.cli daemon`（`agent/daemon_launcher.py` 入口）冻结为独立二进制 `daemon[.exe]`，经 `electron-builder` 的 `extraResources` 打入安装包 `resources/daemon/`。打包态下 Electron 优先拉起该二进制，**无需主机安装 Python**。
+- **优先级**：`AGENT_DAEMON_BIN`（显式覆盖） > 打包态冻结二进制（`app.isPackaged` 且文件存在） > 本地 Python 路径。
+- **启动日志契约不变**：冻结二进制仍打印 `ws=... health=...`，故 `parseDaemonLog` 与 `/health` 轮询逻辑无需改动。
+
+构建与分发流水线见 `.github/workflows/cd.yml`；冻结脚本见 `scripts/build_daemon.py`。
+
+---
+
 *维护人：后端 daemon 负责同学。任何接口变更请同步：本文件 + `agent/daemon/protocol.py` + `desktop/src/protocol/types.ts` + 契约测试。*
