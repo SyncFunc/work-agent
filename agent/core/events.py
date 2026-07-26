@@ -42,6 +42,7 @@ class EventType(StrEnum):
     TEXT = "text"
     TOOL_CALL_DELTA = "tool_call_delta"
     USER = "user"
+    USAGE = "usage"  # 每 message 的用量/耗时事件（落盘 + 可回放）
 
 
 # --------------------------------------------------------------------------- #
@@ -84,6 +85,13 @@ class Event:
     type: EventType  # 事件类型，强类型枚举（见 EventType）
     transient: bool = False  # 瞬时事件标记：emit 路径置 True，不进 to_dict/from_dict，不进回放缓冲
     ts: float = 0.0  # 写入时由 EventStream 填充（from_json 重建时保留原值）
+    message_id: str | None = (
+        None  # 归属的 message（一次响应：顶层=一轮 task.send / 子agent=一次 spawn）
+    )
+    parent_message_id: str | None = None  # 子 agent 指向直接父 message；顶层为 None
+    usage: dict[str, int] | None = None  # USAGE 事件：token 明细
+    duration: float | None = None  # USAGE 事件：耗时（秒，墙钟）
+    estimated: bool = False  # USAGE 事件：用量是否估算
 
     decision: Decision | None = None
     tool_use: ToolCall | None = None
@@ -107,6 +115,16 @@ class Event:
 
     def to_dict(self) -> dict[str, Any]:
         d: dict[str, Any] = {"seq": self.seq, "type": self.type.value, "ts": self.ts}
+        if self.message_id is not None:
+            d["message_id"] = self.message_id
+        if self.parent_message_id is not None:
+            d["parent_message_id"] = self.parent_message_id
+        if self.usage is not None:
+            d["usage"] = self.usage
+        if self.duration is not None:
+            d["duration"] = self.duration
+        if self.estimated:
+            d["estimated"] = True
         if self.decision is not None:
             d["decision"] = _decision_to_dict(self.decision)
         if self.tool_use is not None:
@@ -141,6 +159,11 @@ class Event:
             seq=d["seq"],
             type=EventType(d["type"]),
             ts=d.get("ts", 0.0),
+            message_id=d.get("message_id"),
+            parent_message_id=d.get("parent_message_id"),
+            usage=d.get("usage"),
+            duration=d.get("duration"),
+            estimated=bool(d.get("estimated", False)),
             decision=_decision_from_dict(d["decision"]) if "decision" in d else None,
             tool_use=_tool_call_from_dict(d["tool_use"]) if "tool_use" in d else None,
             tool_result=_tool_result_from_dict(d["tool_result"]) if "tool_result" in d else None,
@@ -175,6 +198,11 @@ class EventStream:
         # 单调计数器：seq 全局唯一，与列表长度解耦。即使因 maxlen 截断列表，
         # seq 也不会回退/复用（否则会与历史事件冲突、重演 Step A 消灭的 seq 重复 bug）。
         self._seq = 0
+        # 当前 message 上下文：未显式标注 message_id 的事件经 append 自动继承（唯一打标点）。
+        # 顶层 message 由 session.step / subagent.spawn 调用 loop.run(message_id=) 时设置；
+        # 子 agent message 由 sub_stream.current_message_id 设置。
+        self.current_message_id: str | None = None
+        self.current_parent_message_id: str | None = None
         # 内存上限（防 OOM）：非 None 时 _events 仅保留最近 maxlen 条。
         # 持久化不受影响（SessionStoreSink 仍全量落盘 sqlite）。
         self.maxlen = maxlen
@@ -201,6 +229,11 @@ class EventStream:
         self._seq += 1
         if ev.ts == 0.0:
             ev.ts = time.time()
+        # 唯一打标点：未显式标注 message_id 的事件自动继承当前 message 上下文
+        if ev.message_id is None:
+            ev.message_id = self.current_message_id
+        if ev.parent_message_id is None:
+            ev.parent_message_id = self.current_parent_message_id
         self._events.append(ev)
         if self.maxlen is not None and len(self._events) > self.maxlen:
             self._events.pop(0)

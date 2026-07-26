@@ -67,6 +67,7 @@ class AgentResult:
     plan_steps: list[PlanStep] | None = None
     needs_plan_confirm: bool = False
     usage: dict[str, int] = field(default_factory=dict)
+    message_id: str | None = None  # 归属的 message（顶层=一轮 task.send / 子agent=一次 spawn）
     soft_limit_hit: bool = False
 
 
@@ -127,6 +128,7 @@ class AgentLoop:
         name: str = "",
         event_sink: Callable[[Event], None] | None = None,
         stream: EventStream | None = None,
+        message_id: str | None = None,
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
@@ -149,6 +151,8 @@ class AgentLoop:
         # bind/subscribe——EventStream.subscribe 幂等，跨轮复用同一 stream 不会重复订阅。
         if stream is None:
             stream = EventStream()
+        if message_id is not None:
+            stream.current_message_id = message_id
         if transport is not None:
             transport.bind(stream)
         if event_sink is not None:
@@ -178,7 +182,8 @@ class AgentLoop:
                 stream.append(Event(type=EventType.DECISION, decision=decision))
 
                 # ① 澄清闸门
-                if self.settings.clarify.enabled and (cq := extract_clarify(decision)) is not None:
+                cq = extract_clarify(decision) if self.settings.clarify.enabled else None
+                if cq is not None:
                     ct += 1
                     if self._agent_span is not None:
                         self._agent_span.log("clarify", f"round {ct}: {len(cq)} questions")
@@ -209,6 +214,7 @@ class AgentLoop:
                             messages=conv,
                             clarify_total=ct,
                             usage=usage_total,
+                            message_id=message_id,
                         )
 
                 # ② 计划闸门
@@ -248,6 +254,7 @@ class AgentLoop:
                         messages=conv,
                         clarify_total=ct,
                         usage=usage_total,
+                        message_id=message_id,
                     )
 
                 if decision.is_final:
@@ -261,6 +268,7 @@ class AgentLoop:
                         messages=conv,
                         clarify_total=ct,
                         usage=usage_total,
+                        message_id=message_id,
                     )
 
                 results = await self._exec_tools(
@@ -317,6 +325,7 @@ class AgentLoop:
             clarify_total=ct,
             usage=usage_total,
             soft_limit_hit=True,
+            message_id=message_id,
         )
 
     async def _decide(
