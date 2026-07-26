@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 from unittest import mock
 
+import pytest
 from rich.syntax import Syntax
 from textual.widgets import Collapsible, Static, TextArea
 
@@ -24,6 +25,10 @@ from agent.runtime.textual_transport import TextualTransport
 from agent.tui.app import AgentCommandProvider, ChatApp, SubagentBlock, _StaticLine
 from agent.tui.screens import ApproveScreen, AskScreen, PlanScreen
 from agent.tui.widgets import AssistantMessage, ToolBlock, UserMessage
+
+# 全部为 Textual headless（run_test / Pilot）测试：在 CI / 非交互环境下可能因事件循环
+# 不退出而永久挂起，默认排除；需单独验证时用 `pytest -m tui` 运行。
+pytestmark = pytest.mark.tui
 
 
 async def test_app_boots():
