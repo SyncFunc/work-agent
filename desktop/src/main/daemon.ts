@@ -1,4 +1,7 @@
+import { app } from 'electron'
 import { spawn, type ChildProcess } from 'node:child_process'
+import { existsSync } from 'node:fs'
+import { join } from 'node:path'
 import http from 'node:http'
 import { locatePython } from './python'
 import type { DaemonConfig, DaemonStage } from '../shared/daemon-config'
@@ -7,6 +10,11 @@ const DEFAULT_HOST = '127.0.0.1'
 const DEFAULT_HEALTH_PORT = 18790
 const START_TIMEOUT_MS = 15000
 const HEALTH_POLL_INTERVAL_MS = 200
+
+/** 打包态下随安装包分发的冻结 daemon 二进制文件名（按平台区分扩展名）。 */
+function bundledDaemonName(): string {
+  return process.platform === 'win32' ? 'daemon.exe' : 'daemon'
+}
 
 /**
  * 全局单一 daemon 生命周期管理：spawn / 解析启动日志 / 轮询 /health / kill。
@@ -20,8 +28,8 @@ export class DaemonManager {
   private crashed = false
 
   async start(onStage?: (stage: DaemonStage) => void): Promise<DaemonConfig> {
-    const python = await locatePython()
-    const child = spawn(python, ['-m', 'agent.cli', 'daemon'], {
+    const { command, args } = await this.resolveDaemonCommand()
+    const child = spawn(command, args, {
       stdio: ['ignore', 'pipe', 'pipe'],
     })
     this.child = child
@@ -46,6 +54,30 @@ export class DaemonManager {
     onStage?.('ready')
     this.config = config
     return config
+  }
+
+  /**
+   * 解析 daemon 启动命令：三档优先级，决定「用什么拉起子进程」。
+   *
+   * 1. `AGENT_DAEMON_BIN` 环境变量指向的冻结二进制（本地联调冻结产物用）；
+   * 2. 打包态（`app.isPackaged`）：随安装包分发的冻结二进制
+   *    `resources/daemon/daemon[.exe]`，**脱离主机 Python 环境**（方案 A）；
+   * 3. 本地开发态（未打包）：走原有 `python -m agent.cli daemon` 路径。
+   */
+  private async resolveDaemonCommand(): Promise<{ command: string; args: string[] }> {
+    const override = process.env.AGENT_DAEMON_BIN
+    if (override && existsSync(override)) {
+      return { command: override, args: [] }
+    }
+    if (app.isPackaged) {
+      const bin = join(process.resourcesPath, 'daemon', bundledDaemonName())
+      if (existsSync(bin)) {
+        return { command: bin, args: [] }
+      }
+      console.warn('[daemon] 打包态未找到冻结二进制，回退系统 Python:', bin)
+    }
+    const python = await locatePython()
+    return { command: python, args: ['-m', 'agent.cli', 'daemon'] }
   }
 
   /** 从 daemon 启动日志（stderr/stdout）解析 ws / health 地址。 */
@@ -82,7 +114,7 @@ export class DaemonManager {
       }
       if (this.crashed) {
         throw new Error(
-          'agentrunner daemon 进程异常退出，请检查 Python 环境与依赖（pip install -e ".[dev]"）。',
+          'agentrunner daemon 进程异常退出。请检查 daemon 二进制（打包态）或 Python 环境与依赖（pip install -e ".[dev]"）。',
         )
       }
       await delay(HEALTH_POLL_INTERVAL_MS)

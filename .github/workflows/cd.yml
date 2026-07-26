@@ -1,0 +1,128 @@
+name: CD
+
+# 方案 A：把 agentrunner daemon 冻结为脱离主机 Python 环境的独立二进制，并随
+# Electron 安装包分发；本地开发仍走 `python -m agent.cli daemon`（见 desktop/src/main/daemon.ts）。
+#
+# 流程：
+#   1) build-daemon（矩阵 ubuntu/windows/macos）：用 PyInstaller 冻结 daemon 二进制，上传为 artifact。
+#   2) build-electron（矩阵）：下载对应平台二进制 → 暂存为 build/daemon/bundle →
+#      electron-vite build + electron-builder 打包（extraResources 把二进制打入 resources/daemon），上传安装包。
+#   3) release（仅打 tag 时）：把安装包作为 GitHub Release 资产发布。
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch: {}
+
+concurrency:
+  group: cd-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: write # 供 release job 发布资产
+
+jobs:
+  build-daemon:
+    name: freeze daemon (${{ matrix.platform }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install agent + pyinstaller
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[bundle]"
+
+      - name: Freeze daemon binary
+        run: python scripts/build_daemon.py --dist desktop/build/daemon/${{ matrix.platform }}
+
+      - name: Upload frozen daemon
+        uses: actions/upload-artifact@v4
+        with:
+          name: daemon-${{ matrix.platform }}
+          path: desktop/build/daemon/${{ matrix.platform }}
+
+  build-electron:
+    name: package electron (${{ matrix.platform }})
+    needs: build-daemon
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux
+          - os: windows-latest
+            platform: windows
+          - os: macos-latest
+            platform: mac
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Node 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Download frozen daemon (${{ matrix.platform }})
+        uses: actions/download-artifact@v4
+        with:
+          name: daemon-${{ matrix.platform }}
+          path: desktop/build/daemon/${{ matrix.platform }}
+
+      # 把当前平台二进制暂存到固定目录，供 electron-builder extraResources 统一拷贝。
+      - name: Stage bundle dir
+        shell: bash
+        run: |
+          mkdir -p desktop/build/daemon/bundle
+          cp desktop/build/daemon/${{ matrix.platform }}/* desktop/build/daemon/bundle/
+
+      - name: Install frontend deps
+        working-directory: desktop
+        run: npm ci
+
+      - name: Build & package (skip signing when no cert)
+        working-directory: desktop
+        env:
+          # macOS 无证书时关闭自动签名发现，避免构建卡在证书弹窗。
+          CSC_IDENTITY_AUTO_DISCOVERY: ${{ matrix.platform == 'mac' && 'false' || 'true' }}
+        run: npm run dist -- --${{ matrix.platform }} --publish=never
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ matrix.platform }}
+          path: desktop/dist/*
+
+  release:
+    name: publish release (tag only)
+    needs: build-electron
+    if: ${{ startsWith(github.ref, 'refs/tags/') }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all installers
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          pattern: installer-*
+          merge-multiple: true
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
