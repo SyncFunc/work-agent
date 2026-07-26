@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { Minus, Square, X } from 'lucide-react'
+import { Logo } from './Logo'
 import './TitleBar.css'
 
 export interface TitleBarProps {
@@ -70,9 +71,9 @@ export function TitleBar({ appName, clearDisabled, onClear, onHelp }: TitleBarPr
   return (
     <div className="wa-titlebar" ref={barRef} onDoubleClick={() => api.toggleMaximizeWindow()}>
       <div className="wa-titlebar__left">
-        {/* CSS 绘制 Logo（无图片资源） */}
+        {/* 品牌 Logo（与开屏一致：渐变圆角 + 代码括号字形） */}
         <span className="wa-logo" aria-hidden>
-          <span className="wa-logo__mark" />
+          <Logo size={20} />
         </span>
         <span className="wa-titlebar__name">{appName}</span>
         <nav className="wa-menubar">

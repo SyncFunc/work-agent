@@ -26,6 +26,9 @@ import type { LeftNav } from '../features/sidebar/Sidebar'
 import { SkillsPanel, AgentsPanel } from '../features/sidebar/SpecPanels'
 import { ToastStack, TitleBar } from '../components'
 import type { ToastData, ToastKind } from '../components'
+import { SplashScreen } from '../components/SplashScreen'
+import type { SplashStep } from '../components/SplashScreen'
+import type { DaemonStage } from '../shared/daemon-config'
 
 const APP_NAME = 'Work Agent'
 const APP_VERSION = '0.9'
@@ -42,6 +45,10 @@ export default function App(): React.ReactElement {
   const [config, setConfig] = useState<DaemonConfig | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [client, setClient] = useState<DaemonClient | null>(null)
+  // 启动遮罩状态：后台启动阶段、WebSocket 是否已连上、遮罩是否仍可见（连上后淡出）。
+  const [stage, setStage] = useState<DaemonStage>('spawning')
+  const [wsConnected, setWsConnected] = useState(false)
+  const [splashVisible, setSplashVisible] = useState(true)
   const [projectRoot, setProjectRoot] = useState<string>('')
   const [draft, setDraft] = useState<string>('')
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -93,30 +100,84 @@ export default function App(): React.ReactElement {
     applyTheme(loadTheme())
   }, [])
 
-  // 拉取 daemon 配置并建连。
+  // 启动遮罩：React 挂载后移除静态 #splash，改由 SplashScreen 接管（无缝衔接，无白屏）。
+  // 订阅主进程推送的后台启动阶段，驱动连接进度展示。
+  useEffect(() => {
+    document.getElementById('splash')?.remove()
+    const api = window.agentApi
+    if (api?.getDaemonStage) {
+      void api
+        .getDaemonStage()
+        .then((s) => {
+          if (s) setStage(s)
+        })
+        .catch(() => {})
+    }
+    const off = api?.onDaemonProgress?.((s) => setStage(s))
+    return () => off?.()
+  }, [])
+
+  // 拉取 daemon 配置并建连（轮询：daemon 未就绪时窗口已可见，显示「正在连接…」而非白屏）。
   useEffect(() => {
     let cancelled = false
-    if (!window.agentApi) {
-      setError(
-        '未检测到客户端桥接（agentApi）。请通过 npm run dev 弹出的 Electron 窗口打开，' +
-          '不要在普通浏览器中直接访问 localhost:5173。',
-      )
-      return
+    let timer: ReturnType<typeof setTimeout> | undefined
+    const tryConfig = (): void => {
+      if (cancelled) return
+      if (!window.agentApi) {
+        setError(
+          '未检测到客户端桥接（agentApi）。请通过 npm run dev 弹出的 Electron 窗口打开，' +
+            '不要在普通浏览器中直接访问 localhost:5173。',
+        )
+        return
+      }
+      window.agentApi
+        .getDaemonConfig()
+        .then((cfg) => {
+          if (cancelled) return
+          if (cfg) {
+            setConfig(cfg)
+            const c = new DaemonClient(cfg.wsUrl, { token: cfg.token })
+            void c
+              .connect()
+              .then(() => setWsConnected(true))
+              .catch((e: unknown) => setError(String(e)))
+            setClient(c)
+          } else {
+            timer = setTimeout(tryConfig, 400)
+          }
+        })
+        .catch(() => {
+          if (!cancelled) timer = setTimeout(tryConfig, 400)
+        })
     }
-    window.agentApi
-      .getDaemonConfig()
-      .then((cfg) => {
-        if (cancelled || !cfg) return
-        setConfig(cfg)
-        const c = new DaemonClient(cfg.wsUrl, { token: cfg.token })
-        void c.connect().catch((e: unknown) => setError(String(e)))
-        setClient(c)
-      })
-      .catch((e: unknown) => setError(String(e)))
+    tryConfig()
     return () => {
       cancelled = true
+      if (timer) clearTimeout(timer)
     }
   }, [])
+
+  // WebSocket 连上后，延迟淡出遮罩，露出工作台。
+  useEffect(() => {
+    if (!wsConnected) return
+    const t = setTimeout(() => setSplashVisible(false), 450)
+    return () => clearTimeout(t)
+  }, [wsConnected])
+
+  // 启动看门狗：若长时间未能连上后台（如 daemon 冷启动失败 / 环境缺失依赖），
+  // 避免无尽「加载中」，给出明确错误与重试入口，而不是让用户干等。
+  useEffect(() => {
+    if (wsConnected || error) return
+    const t = setTimeout(() => {
+      if (!wsConnected && !error) {
+        setError(
+          '连接后台服务超时。请确认 Python 环境已安装依赖（pip install -e ".[dev]"），' +
+            '并在开发者工具控制台查看 daemon 启动日志。',
+        )
+      }
+    }, 20000)
+    return () => clearTimeout(t)
+  }, [wsConnected, error])
 
   useEffect(() => {
     if (!config) return
@@ -344,8 +405,30 @@ export default function App(): React.ReactElement {
   }
   const helpPlaceholder = (): void => pushToast('info', '帮助即将上线（占位）')
 
+  // 启动遮罩进度步骤：随后台阶段 / 配置就绪 / WebSocket 连上推进。
+  const splashSteps: SplashStep[] | undefined = error
+    ? undefined
+    : [
+        { label: '启动后台进程', state: stage === 'spawning' ? 'active' : 'done' },
+        {
+          label: '等待后台就绪',
+          state: config || stage === 'ready' ? 'done' : stage === 'waiting' ? 'active' : 'pending',
+        },
+        { label: '建立实时连接', state: wsConnected ? 'done' : config ? 'active' : 'pending' },
+      ]
+
   return (
     <div className="wa-app">
+      {/* 启动遮罩：后台未连上前全屏覆盖，展示 Logo / 产品名 / 连接进度（消除白屏）。连上后淡出。 */}
+      {splashVisible && (
+        <SplashScreen
+          productName={APP_NAME}
+          version={APP_VERSION}
+          steps={splashSteps}
+          error={error}
+          onRetry={() => window.location.reload()}
+        />
+      )}
       {/* M9.9 自绘顶栏：Logo + 应用名 + 真实功能菜单 + 窗口控制 */}
       <TitleBar
         appName={APP_NAME}

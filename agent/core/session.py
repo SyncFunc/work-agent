@@ -408,6 +408,7 @@ class Session:
                     spec,
                     task,
                     depth=0,
+                    parent_messages=self.messages,
                     parent_span=parent_span or self.root_span,
                     base_registry=self.loop.registry,
                     base_model=self.loop.model,

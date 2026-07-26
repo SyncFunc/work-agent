@@ -1,7 +1,7 @@
 import React, { useState } from 'react'
 import { Sparkles, Bot, BarChart2, Search, Plus, Settings, PanelLeft, GitBranch, Trash2, Check, X } from 'lucide-react'
 import type { SessionInfo } from '../../protocol/types'
-import { IconButton } from '../../components'
+import { IconButton, Logo } from '../../components'
 import './Sidebar.css'
 
 export type LeftNav = 'chat' | 'skills' | 'agents' | 'traces'
@@ -92,7 +92,9 @@ export function Sidebar(props: SidebarProps): React.ReactElement {
   return (
     <aside className="wa-sidebar" style={{ width }}>
       <div className="wa-brand">
-        <span className="wa-brand__logo" aria-hidden />
+        <span className="wa-brand__logo" aria-hidden>
+          <Logo size={26} />
+        </span>
         <div className="wa-brand__text">
           <span className="wa-brand__title-text">{appName}</span>
           <span className="wa-brand__version">v{version}</span>

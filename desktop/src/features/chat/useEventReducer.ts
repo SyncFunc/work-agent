@@ -83,6 +83,16 @@ export interface SubagentBlock {
   blocks: ChatBlock[]
 }
 
+/** 整轮模型响应分组：把同一轮模型响应里的 text/tool/subagent/error/clarify/plan
+ * 归并到一个组，主聊天区统一共享一个助手头像。这样「子 agent 之后的父层总结 text」
+ * 与 subagent 卡自然同属一轮、共享头像，而 subagent 卡本身保持完整不被拆开。 */
+export interface ResponseBlock {
+  key: string
+  type: 'response'
+  role: 'assistant'
+  blocks: ChatBlock[]
+}
+
 export type ChatBlock =
   | TextBlock
   | ToolBlock
@@ -91,6 +101,7 @@ export type ChatBlock =
   | ClarifyBlock
   | PlanBlock
   | SubagentBlock
+  | ResponseBlock
 
 export interface ChatModel {
   blocks: ChatBlock[]
@@ -303,7 +314,7 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
 且 spawn_subagent 的 TOOL_USE/TOOL_RESULT 能跨子 agent 段配对，结果回填到发起块。
 */
 export function buildChatModel(events: AgentEvent[]): ChatModel {
-  const top: ChatBlock[] = []
+  let top: ChatBlock[] = []
   // 父会话归约状态（跨 subsession 段持续，仅定位类状态在段边界重置，toolById 始终保留）。
   let n = 0
   let cur: TextBlock | null = null as TextBlock | null
@@ -320,11 +331,11 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
       top.push(cur)
       cur = null
     } else if (!hasStreamedText && lastDecisionText) {
+      // 不立即 push：先保留在 cur，等待紧随其后的 text/final 归并到同一气泡，
+      // 避免「decision 兜底块」与后续 text 各自成块（子 agent 前后多出助手头像）。
       cur = newTextBlock()
       cur.content = lastDecisionText
       cur.key = `${n++}`
-      top.push(cur)
-      cur = null
     }
     lastDecisionText = null
   }
@@ -527,15 +538,116 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   // 标记 streaming 供光标渲染；被工具/决策/终态冲刷出的中间思考段保持 false（折叠、无光标）。
   // 注意：此处即完成冲刷，不要再于此前单独 flushText()，否则 streaming 标记会丢失。
   if (cur) {
-    cur.streaming = true
+    // 仅当本轮确有流式文本时才显示光标；纯 decision 兜底块（无真实文本）视为已收尾。
+    cur.streaming = hasStreamedText
     flushText()
   }
   // 末轮兜底：丢弃任何仍悬空的控制工具块（如澄清轮次超出上限未发 clarify 事件等边界情形）。
   for (const name of INTERCEPTED_CONTROL_TOOLS) dropInterceptedControl(name)
+
+  // 整轮响应分组（Bug4 修复核心机制）：把顶层「连续的非 user 块」归并为一个
+  // ResponseBlock，主聊天区统一共享一个助手头像。user 块作为独立分隔符不进组
+  // （每个用户输入开启新一轮）。这样子 agent 段之后的父层总结 text 与 subagent 卡
+  // 自然同属一轮、共享头像，而 subagent 卡本身保持完整不被拆开；澄清答案回填
+  // clarify 块、其 user 已在归约期被消费而不产生新顶层 user，故澄清块连同答案同属一轮。
+  const grouped: ChatBlock[] = []
+  let curGroup: ChatBlock[] = []
+  let gi = 0
+  const flushGroup = (): void => {
+    if (curGroup.length > 0) {
+      grouped.push({ key: `r${gi++}`, type: 'response', role: 'assistant', blocks: curGroup })
+      curGroup = []
+    }
+  }
+  for (const b of top) {
+    if (b.type === 'user') {
+      flushGroup()
+      grouped.push(b)
+    } else {
+      curGroup.push(b)
+    }
+  }
+  flushGroup()
+  top = grouped
+
+  // —— 调试钩子（仅用户主动开启；不影响生产/测试）——
+  // 开启方式：Electron DevTools 控制台执行 localStorage.setItem('chat-debug','1') 后重新触发对话，
+  // 过滤日志前缀 [chat-debug] 即可看到「原始事件流(含 subsession_id)」与「归约后的块结构」。
+  // 用于定位「子 agent 之后多出助手头像」等问题：重点观察 blocks 里 subagent 之后的 text 是否已与
+  // subagent 同属一个 response 组（responses=N 表示主聊天区助手头像气泡数）。
+  if (typeof window !== 'undefined' && window.localStorage?.getItem('chat-debug') === '1') {
+    const evSummary = events.map((e) => {
+      const o: Record<string, unknown> = {
+        seq: e.seq,
+        type: e.type,
+        sub: (e as { subsession_id?: string | null }).subsession_id ?? null,
+      }
+      if (e.type === 'text' && typeof e.text === 'string') o.t = e.text.slice(0, 40)
+      if (e.type === 'tool_result')
+        o.res = String((e as { tool_result?: unknown }).tool_result ?? '').slice(0, 56)
+      return o
+    })
+    const sumBlocks = (bs: ChatBlock[]): unknown[] =>
+      bs.map((b) => {
+        if (b.type === 'text')
+          return {
+            type: 'text',
+            content: (b.content || '').slice(0, 40),
+            reasoning: (b.reasoning || '').slice(0, 12),
+            final: b.final,
+          }
+        if (b.type === 'tool')
+          return { type: 'tool', name: b.name, res: String(b.result ?? '').slice(0, 56) }
+        if (b.type === 'subagent')
+          return {
+            type: 'subagent',
+            sub: (b as SubagentBlock).subsessionId,
+            inner: (b as SubagentBlock).blocks.length,
+          }
+        if (b.type === 'response') return { type: 'response', blocks: sumBlocks((b as ResponseBlock).blocks) }
+        return { type: b.type }
+      })
+    const blSummary = sumBlocks(top)
+    const topResponses = top.filter((b) => b.type === 'response').length
+    const topTexts = top.filter((b) => b.type === 'text').length
+    const topUsers = top.filter((b) => b.type === 'user').length
+    console.log('[chat-debug] events', evSummary)
+    console.log(
+      `[chat-debug] blocks (responses=${topResponses}, topTexts=${topTexts}, users=${topUsers})`,
+      blSummary,
+    )
+    const walk = (bs: ChatBlock[]): void => {
+      for (const b of bs) {
+        if (b.type === 'subagent') {
+          const sb = b as SubagentBlock
+          const inner = sb.blocks.map((ib) => {
+            if (ib.type === 'text')
+              return { type: 'text', content: (ib.content || '').slice(0, 44), final: ib.final }
+            return { type: ib.type }
+          })
+          console.log(`[chat-debug] subagent(${sb.subsessionId}) inner(${sb.blocks.length})`, inner)
+        } else if (b.type === 'response') {
+          walk((b as ResponseBlock).blocks)
+        }
+      }
+    }
+    walk(top)
+  }
+
   return { blocks: top }
 }
 
 /** React 包装：memo 化归约（events 引用不变则不重算）。 */
+let _chatDebugHinted = false
 export function useChatModel(events: AgentEvent[]): ChatModel {
+  if (typeof window !== 'undefined' && !_chatDebugHinted) {
+    _chatDebugHinted = true
+    const on = window.localStorage?.getItem('chat-debug') === '1'
+    console.log(
+      `[chat-debug] 已加载。当前${on ? '已开启' : '未开启'}：在 DevTools 控制台执行 ` +
+        `localStorage.setItem('chat-debug','1') 后重新触发一次对话，` +
+        `过滤日志前缀 '[chat-debug]' 即可查看原始事件流与归约块结构。`,
+    )
+  }
   return useMemo(() => buildChatModel(events), [events])
 }

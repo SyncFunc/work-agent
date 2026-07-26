@@ -39,3 +39,5 @@ export type { ToastProps, ToastStackProps, ToastData, ToastKind } from './Toast'
 
 export { TitleBar } from './TitleBar'
 export type { TitleBarProps } from './TitleBar'
+
+export { Logo } from './Logo'

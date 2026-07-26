@@ -7,3 +7,6 @@ export interface DaemonConfig {
   /** 健康检查地址，如 http://127.0.0.1:18790/health */
   healthUrl: string
 }
+
+/** 后台 daemon 启动阶段，用于前端启动遮罩展示连接进度。 */
+export type DaemonStage = 'spawning' | 'waiting' | 'ready'

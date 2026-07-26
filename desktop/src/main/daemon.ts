@@ -1,7 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import http from 'node:http'
 import { locatePython } from './python'
-import type { DaemonConfig } from '../shared/daemon-config'
+import type { DaemonConfig, DaemonStage } from '../shared/daemon-config'
 
 const DEFAULT_HOST = '127.0.0.1'
 const DEFAULT_HEALTH_PORT = 18790
@@ -19,7 +19,7 @@ export class DaemonManager {
   private config: DaemonConfig | null = null
   private crashed = false
 
-  async start(): Promise<DaemonConfig> {
+  async start(onStage?: (stage: DaemonStage) => void): Promise<DaemonConfig> {
     const python = await locatePython()
     const child = spawn(python, ['-m', 'agent.cli', 'daemon'], {
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -40,7 +40,10 @@ export class DaemonManager {
       this.child = null
     })
 
+    onStage?.('spawning')
+    onStage?.('waiting')
     const config = await this.waitForReady()
+    onStage?.('ready')
     this.config = config
     return config
   }

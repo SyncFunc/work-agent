@@ -2,12 +2,15 @@ import { app, BrowserWindow, Menu, dialog, ipcMain, globalShortcut } from 'elect
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 import { DaemonManager } from './daemon'
+import type { DaemonStage } from '../shared/daemon-config'
 import { readSettings, readSettingsScoped, writeSettings, writeSettingsScoped } from './settings'
 import { listSkills } from './skills'
 
 // 全局单一 daemon：整个应用生命周期仅 spawn 一次。
 const daemon = new DaemonManager()
 let mainWindow: BrowserWindow | null = null
+// 后台 daemon 启动阶段，供前端启动遮罩展示连接进度；渲染进程经 daemon:progress-stage 取当前值。
+let lastStage: DaemonStage = 'spawning'
 
 app.whenReady().then(boot).catch((err: unknown) => {
   dialog.showErrorBox('无法启动 Work Agent', String(err))
@@ -15,8 +18,11 @@ app.whenReady().then(boot).catch((err: unknown) => {
 })
 
 async function boot(): Promise<void> {
-  await daemon.start()
+  // 先注册 IPC 处理并创建窗口：窗口立即可见并显示「正在连接 daemon…」，
+  // 避免 daemon 冷启动（等待 /health 就绪）期间整段白屏。
   ipcMain.handle('daemon:config', () => daemon.getConfig())
+  // 启动遮罩：渲染进程获取当前后台启动阶段（避免错过早期 webContents 推送）。
+  ipcMain.handle('daemon:progress-stage', () => lastStage)
   // 设置读写（M9.6）：仅在主进程访问 fs，渲染进程经 agentApi 调用。
   ipcMain.handle('settings:read', (_e, projectRoot: string) => readSettings(projectRoot))
   ipcMain.handle('settings:write', (_e, projectRoot: string, patch: Record<string, unknown>) =>
@@ -36,6 +42,12 @@ async function boot(): Promise<void> {
   registerWindowHandlers()
   registerDevToolsShortcut()
   createWindow()
+  // 窗口已可见后，再后台拉起 daemon（前端的 getDaemonConfig 会轮询直到其就绪）。
+  // 启动过程中持续向前端推送阶段，驱动启动遮罩的连接进度展示。
+  await daemon.start((stage) => {
+    lastStage = stage
+    mainWindow?.webContents.send('daemon:progress', stage)
+  })
 }
 
 // M9.9：移除原生菜单后，默认的 Ctrl+Shift+I / F12 也会失效，这里手动注册，

@@ -1,15 +1,24 @@
 import { describe, expect, it } from 'vitest'
-import { buildChatModel, deriveSubagentStatus, type ChatBlock } from './useEventReducer'
+import { buildChatModel, deriveSubagentStatus, type ChatBlock, type ResponseBlock, type SubagentBlock } from './useEventReducer'
 import type { AgentEvent } from '../../protocol/types'
 
+/** 解开整轮响应分组：把 ResponseBlock 展开为其内部块（子 agent 内部块不二次展开）。 */
+function flatten(blocks: ChatBlock[]): ChatBlock[] {
+  const out: ChatBlock[] = []
+  for (const b of blocks) {
+    if (b.type === 'response') out.push(...flatten(b.blocks))
+    else out.push(b)
+  }
+  return out
+}
 function toolBlocks(blocks: ChatBlock[]) {
-  return blocks.filter((b): b is Extract<ChatBlock, { type: 'tool' }> => b.type === 'tool')
+  return flatten(blocks).filter((b): b is Extract<ChatBlock, { type: 'tool' }> => b.type === 'tool')
 }
 function textBlocks(blocks: ChatBlock[]) {
-  return blocks.filter((b): b is Extract<ChatBlock, { type: 'text' }> => b.type === 'text')
+  return flatten(blocks).filter((b): b is Extract<ChatBlock, { type: 'text' }> => b.type === 'text')
 }
 function subBlocks(blocks: ChatBlock[]) {
-  return blocks.filter((b): b is Extract<ChatBlock, { type: 'subagent' }> => b.type === 'subagent')
+  return flatten(blocks).filter((b): b is Extract<ChatBlock, { type: 'subagent' }> => b.type === 'subagent')
 }
 
 describe('buildChatModel', () => {
@@ -54,9 +63,10 @@ describe('buildChatModel', () => {
     expect(tools[0].deltaArgs).toBe('{"cmd":"ls"}')
     expect(tools[0].result).toEqual({ ok: true, output: 'a\nb' })
     expect(tools[0].running).toBe(false)
-    // 文本块在工具块之前（顺序正确）
-    expect(blocks[0].type).toBe('text')
-    expect(blocks[1].type).toBe('tool')
+    // 文本块在工具块之前（顺序正确）；整轮响应分组后两者同属一个 response 组内
+    const flat = flatten(blocks)
+    expect(flat[0].type).toBe('text')
+    expect(flat[1].type).toBe('tool')
   })
 
   it('replay 一致性：不含 transient delta 的回放，工具最终参数/结果与带 delta 的实时一致', () => {
@@ -86,7 +96,7 @@ describe('buildChatModel', () => {
       { seq: 2, type: 'final', text: 'done', ts: 0 },
     ]
     const { blocks } = buildChatModel(events)
-    expect(blocks.map((b) => b.type)).toEqual(['user', 'error', 'text'])
+    expect(flatten(blocks).map((b) => b.type)).toEqual(['user', 'error', 'text'])
     const finalText = textBlocks(blocks)[0]
     expect(finalText.content).toBe('done')
     expect(finalText.final).toBe(true)
@@ -127,6 +137,54 @@ describe('buildChatModel', () => {
     expect(deriveSubagentStatus(subs[0].blocks)).toBe('done')
   })
 
+  it('Bug4：decision 携带文本后紧跟 text 时归并为同一气泡（不重复助手头像）', () => {
+    // 复现「子 agent 之后多出头像」：模型先发 decision（含 reasoning 文本）再发 text，
+    // 旧逻辑会各成一块导致重复头像；修复后归并到同一气泡。
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'decision', decision: { text: '我先汇总一下', tool_calls: [] }, ts: 0 },
+      { seq: 1, type: 'text', text: '结论如下', kind: 'content', ts: 0 },
+      { seq: 2, type: 'final', text: '结论如下', ts: 0 },
+    ]
+    const texts = textBlocks(buildChatModel(events).blocks)
+    expect(texts).toHaveLength(1)
+    expect(texts[0].content).toBe('我先汇总一下结论如下')
+  })
+
+  it('Bug4：子 agent 段后的父层总结 text 与 subagent 同属一个响应组（共享头像，subagent 卡完整）', () => {
+    const sub = 'sess/sub_explore_1_abc123'
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'tool_call_delta', tc_index: 0, tc_name: 'spawn_subagent', tc_args: '{"agent"', ts: 0 },
+      { seq: 1, type: 'tool_use', tool_use: { id: 'c1', name: 'spawn_subagent', arguments: { agent: 'explore', task: 't' } }, ts: 0 },
+      // 子 agent 段（subsession_id 非空）
+      { seq: 2, type: 'text', text: '子 agent 正在探索', kind: 'content', subsession_id: sub, ts: 0 },
+      { seq: 3, type: 'final', text: '子 agent 结论', subsession_id: sub, ts: 0 },
+      // 段后父层结果回填（spawn 工具块）
+      { seq: 4, type: 'tool_result', tool_call_id: 'c1', tool_result: { ok: true, output: '子 agent 结论' }, ts: 0 },
+      // 父 LLM 对子 agent 的总结（紧邻 subagent 段后，此前会作为独立助手头像气泡出现）
+      { seq: 5, type: 'text', text: '子 agent 返回结果：1+1=2', kind: 'content', ts: 0 },
+      { seq: 6, type: 'final', text: '子 agent 返回结果：1+1=2', ts: 0 },
+      // 下一轮 user（轮次结束信号）
+      { seq: 7, type: 'user', text: '好的', ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    // 顶层结构：一个响应组（含 spawn 工具、子 agent 卡、父层总结 text）+ 一个 user 分隔块。
+    expect(blocks.map((b) => b.type)).toEqual(['response', 'user'])
+    const resp = blocks.find((b) => b.type === 'response') as ResponseBlock
+    // 组内顺序：spawn 工具 → 子 agent 卡 → 父层总结 text（三者同轮、共享一个助手头像）。
+    expect(resp.blocks.map((b) => b.type)).toEqual(['tool', 'subagent', 'text'])
+    // 父层总结 text 确实在组内（与 subagent 同组、共享头像），而非顶层独立头像。
+    const summary = resp.blocks.find(
+      (b) => b.type === 'text' && (b as { content?: string }).content?.includes('返回结果'),
+    )
+    expect(summary).toBeDefined()
+    // 子 agent 卡保持完整：内部不含「返回结果」总结，且状态推导正常（未被拆开）。
+    const subBlock = resp.blocks.find((b) => b.type === 'subagent') as SubagentBlock
+    expect(
+      subBlock.blocks.some((b) => b.type === 'text' && (b as { content?: string }).content?.includes('返回结果')),
+    ).toBe(false)
+    expect(deriveSubagentStatus(subBlock.blocks)).toBe('done')
+  })
+
   it('ask_clarification 不会留下悬空「运行中」工具块（被澄清事件丢弃）', () => {
     const events: AgentEvent[] = [
       { seq: 0, type: 'tool_call_delta', tc_index: 0, tc_name: 'ask_clarification', tc_args: '{"questions":[{"question":"?"}]}', ts: 0 },
@@ -135,7 +193,7 @@ describe('buildChatModel', () => {
     const { blocks } = buildChatModel(events)
     // 没有 tool 块残留（delta 产生的悬空块被丢弃），只有澄清块。
     expect(toolBlocks(blocks)).toHaveLength(0)
-    const clarifies = blocks.filter((b) => b.type === 'clarify')
+    const clarifies = flatten(blocks).filter((b) => b.type === 'clarify')
     expect(clarifies).toHaveLength(1)
   })
 
@@ -145,11 +203,11 @@ describe('buildChatModel', () => {
       { seq: 1, type: 'user', text: '项目需求不明确', ts: 0 },
     ]
     const { blocks } = buildChatModel(events)
-    const clarifies = blocks.filter((b) => b.type === 'clarify')
+    const clarifies = flatten(blocks).filter((b) => b.type === 'clarify')
     expect(clarifies).toHaveLength(1)
     expect(clarifies[0].type === 'clarify' && clarifies[0].answer).toBe('项目需求不明确')
     // 回答未另成 user 块
-    expect(blocks.filter((b) => b.type === 'user')).toHaveLength(0)
+    expect(flatten(blocks).filter((b) => b.type === 'user')).toHaveLength(0)
   })
 
   it('正常 user 任务不误并入澄清块', () => {
@@ -158,8 +216,8 @@ describe('buildChatModel', () => {
       { seq: 1, type: 'clarify', questions: [{ question: '?' }], ts: 0 },
     ]
     const { blocks } = buildChatModel(events)
-    expect(blocks.filter((b) => b.type === 'user')).toHaveLength(1)
-    expect(blocks.filter((b) => b.type === 'clarify')).toHaveLength(1)
+    expect(flatten(blocks).filter((b) => b.type === 'user')).toHaveLength(1)
+    expect(flatten(blocks).filter((b) => b.type === 'clarify')).toHaveLength(1)
   })
 
   it('运行中的子 agent 推导为 running', () => {

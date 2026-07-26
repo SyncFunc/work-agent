@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
@@ -34,6 +35,8 @@ if TYPE_CHECKING:
     from agent.config.settings import Settings
     from agent.core.session import Session
     from agent.daemon.bridge import BridgeTransport
+
+log = logging.getLogger("agent.daemon")
 
 
 class Connection:
@@ -540,6 +543,34 @@ def _start_health_server(host: str, port: int) -> HTTPServer:
     return httpd
 
 
+async def _prewarm() -> None:
+    """后台预热：daemon 就绪后尽快加载注册表与默认模型客户端，
+
+    消除首次 attach 会话时的冷启动延迟（provider 模块导入 / 客户端构造 / 设置解析）。
+    任何失败（如缺少 api_key）仅记录调试日志，绝不影响主流程。
+    """
+
+    try:
+        from agent.config.settings import load_settings
+        from agent.core.model import create_model
+        from agent.runtime.registry import default_registry
+
+        _ = default_registry  # 触发内置工具/规格注册（进程级缓存）
+        try:
+            settings = load_settings()
+        except Exception as exc:  # 解析默认项目设置失败则跳过
+            log.debug("[daemon] 预热 load_settings 跳过: %s", exc)
+            settings = None
+        if settings is not None:
+            try:
+                create_model(settings, tracer=None)
+            except Exception as exc:  # 无 api_key 等情况：跳过模型预热
+                log.debug("[daemon] 预热 create_model 跳过: %s", exc)
+        log.info("[daemon] 预热完成：注册表与默认模型客户端已就绪")
+    except Exception as exc:  # 任何意外都不应阻断主流程
+        log.debug("[daemon] 预热跳过: %s", exc)
+
+
 async def _serve(settings: Settings, registry: SessionRegistry, stop_event: asyncio.Event) -> None:
     async with create_ws_server(registry, settings.daemon.host, settings.daemon.port):
         # 此处已进入 async with：WebSocket 服务真正开始监听后再宣告就绪，
@@ -549,6 +580,8 @@ async def _serve(settings: Settings, registry: SessionRegistry, stop_event: asyn
             f"health=http://{settings.daemon.host}:{settings.daemon.health_port}/health",
             err=True,
         )
+        # 后台预热：避免首次 attach 会话的冷启动延迟（见 _prewarm）。
+        asyncio.create_task(_prewarm())
         await stop_event.wait()
 
 
