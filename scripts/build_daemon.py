@@ -22,6 +22,7 @@
 from __future__ import annotations
 
 import argparse
+import subprocess
 import sys
 from pathlib import Path
 
@@ -34,14 +35,16 @@ def binary_name(platform: str) -> str:
 
 def build(dist_dir: Path) -> Path:
     # pyinstaller 仅属于 [bundle] 可选依赖（CD 构建环境安装），开发/CI 快门禁不装，
-    # 故用 try/except + type: ignore 让 basedpyright 在无 pyinstaller 时也能通过。
-    try:
-        from PyInstaller.main import run  # type: ignore[import-not-found]
-    except ImportError as exc:  # pragma: no cover - 仅在 `pip install -e ".[bundle]"` 后可用
+    # 故用 find_spec 探测 + type: ignore 让 basedpyright 在无 pyinstaller 时也能通过。
+    # 采用 `python -m PyInstaller` CLI 形式调用（版本无关，等价于 pyinstaller 命令）。
+    import importlib.util
+
+    if (
+        importlib.util.find_spec("PyInstaller") is None
+    ):  # pragma: no cover - 仅在装了 pyinstaller 后可达
         raise RuntimeError(
-            f"构建冻结 daemon 需要 pyinstaller（当前环境未找到：{exc}）。"
-            '请执行 `pip install -e ".[bundle]"` 或 `pip install pyinstaller`。',
-        ) from exc
+            '构建冻结 daemon 需要 pyinstaller，请执行 `pip install -e ".[bundle]"` 或 `pip install pyinstaller`。',
+        )
 
     dist_dir = dist_dir.resolve()
     dist_dir.mkdir(parents=True, exist_ok=True)
@@ -80,7 +83,10 @@ def build(dist_dir: Path) -> Path:
 
     print(f"[build_daemon] PyInstaller 入口: {entry}")
     print(f"[build_daemon] 产物目录: {dist_dir}")
-    run(cmd)
+    try:
+        subprocess.run([sys.executable, "-m", "PyInstaller", *cmd], check=True)
+    except subprocess.CalledProcessError as exc:
+        raise RuntimeError(f"PyInstaller 构建失败（退出码 {exc.returncode}）。") from exc
 
     # PyInstaller 在 <distpath>/<name> 产出二进制（onefile 直接落在 distpath 根）。
     produced = dist_dir / "daemon"
