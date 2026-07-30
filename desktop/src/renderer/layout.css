@@ -329,27 +329,66 @@
   display: flex;
   align-items: center;
   gap: var(--wa-s2);
-  padding: var(--wa-s2) var(--wa-s3);
+  padding: 6px var(--wa-s3);
   border-bottom: 1px solid var(--wa-border);
-  font-size: var(--wa-f-sm);
-}
-.wa-sessionbar select {
-  flex: 1;
-  max-width: 200px;
-  font-size: var(--wa-f-sm);
   background: var(--wa-bg-subtle);
-  border: 1px solid var(--wa-border);
-  border-radius: var(--wa-r-md);
-  padding: 2px var(--wa-s2);
-  color: var(--wa-text);
-  outline: none;
 }
-.wa-sessionbar select:focus {
-  border-color: var(--wa-primary);
+.wa-sessionbar__icon {
+  display: flex;
+  align-items: center;
+  color: var(--wa-text-muted);
+  flex: none;
+}
+.wa-sessionbar__icon svg {
+  width: 14px;
+  height: 14px;
 }
 .wa-sessionbar__label {
   color: var(--wa-text-muted);
+  font-size: var(--wa-f-xs);
+  font-weight: 500;
   white-space: nowrap;
+  margin-right: 2px;
+}
+.wa-sessionbar__select-wrap {
+  position: relative;
+  flex: 1;
+  max-width: 300px;
+}
+.wa-sessionbar__select-wrap select {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  font-size: var(--wa-f-sm);
+  background: var(--wa-bg);
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-md);
+  padding: 4px var(--wa-s4) 4px var(--wa-s2);
+  color: var(--wa-text);
+  outline: none;
+  cursor: pointer;
+  transition: border-color var(--wa-dur-fast), box-shadow var(--wa-dur-fast);
+}
+.wa-sessionbar__select-wrap select:hover {
+  border-color: var(--wa-border-strong);
+}
+.wa-sessionbar__select-wrap select:focus {
+  border-color: var(--wa-primary);
+  box-shadow: 0 0 0 2px var(--wa-primary-weak);
+}
+.wa-sessionbar__chevron {
+  position: absolute;
+  right: 6px;
+  top: 50%;
+  transform: translateY(-50%);
+  pointer-events: none;
+  color: var(--wa-text-faint);
+  display: flex;
+  align-items: center;
+}
+.wa-sessionbar__chevron svg {
+  width: 12px;
+  height: 12px;
 }
 
 /* —— TraceList 分页列表 —— */

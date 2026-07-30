@@ -698,7 +698,7 @@ def start_daemon(settings: Settings) -> None:
 
     def _build_session(project_root: str, session_id: str, store: SessionStore) -> Session:
         s = load_settings(project_root=project_root)
-        tracer = Tracer() if s.obs.enabled else None
+        tracer = Tracer(session_id=session_id) if s.obs.enabled else None
         model = create_model(s, tracer=tracer)
         trace_db = _anchor_path(s.obs.db_path, project_root)
         trace_store = TraceStore(trace_db) if s.obs.enabled else None
