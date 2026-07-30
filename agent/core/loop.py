@@ -633,7 +633,8 @@ class AgentLoop:
         env["LC_ALL"] = "C.UTF-8"
         profile = elevated_profile if elevated_profile is not None else sandbox.default_profile
         req = ExecRequest(cmd=cmd, cwd=self.cwd, env=env, timeout=timeout, profile=profile)
-        r = await sandbox.run(req)
+        with _span(self.tracer, "tool.sandbox", kind="sandbox"):
+            r = await sandbox.run(req)
         return ToolResult(ok=r.ok, output=r.output, error=r.error)
 
     @staticmethod

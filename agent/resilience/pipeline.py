@@ -13,15 +13,19 @@
 
 from __future__ import annotations
 
+import logging
 from collections.abc import AsyncIterator, Callable
 from typing import Any
 
+from agent.obs.tracer import Tracer, _span
 from agent.resilience.circuit_breaker import (
     CircuitBreaker,
     CircuitBreakerOpenError,
 )
 from agent.resilience.fallback import Fallback
 from agent.resilience.rate_limiter import RateLimiter, RateLimitError
+
+logger = logging.getLogger(__name__)
 
 
 class Pipeline:
@@ -35,12 +39,14 @@ class Pipeline:
         fallback: Fallback | None = None,
         name: str = "",
         rate_limit_key: str = "default",
+        tracer: Tracer | None = None,
     ) -> None:
         self._rate_limiter = rate_limiter
         self._circuit_breaker = circuit_breaker
         self._fallback = fallback
         self._name = name
         self._rate_limit_key = rate_limit_key
+        self._tracer = tracer
 
     @property
     def name(self) -> str:
@@ -48,29 +54,38 @@ class Pipeline:
 
     async def execute(self, fn: Callable, *args: Any, **kwargs: Any) -> Any:
         """按顺序执行：RateLimiter → CircuitBreaker → Fallback → 实际调用。"""
-        # 1. RateLimiter（只检查入口，不检查重试）
-        if self._rate_limiter is not None:
-            allowed = await self._rate_limiter.acquire(self._rate_limit_key)
-            if not allowed:
-                if self._fallback is not None:
-                    return await self._fallback.call(self._raise_rate_limited)
-                raise RateLimitError(f"rate limit exceeded for key '{self._rate_limit_key}'")
+        with _span(self._tracer, f"pipeline.{self._name}", kind="resilience"):
+            # 1. RateLimiter（只检查入口，不检查重试）
+            if self._rate_limiter is not None:
+                allowed = await self._rate_limiter.acquire(self._rate_limit_key)
+                if not allowed:
+                    if self._fallback is not None:
+                        logger.info(
+                            "decision=rate_limited action=fallback downstream=%s", self._name
+                        )
+                        return await self._fallback.call(self._raise_rate_limited)
+                    logger.warning("decision=rate_limited action=raise downstream=%s", self._name)
+                    raise RateLimitError(f"rate limit exceeded for key '{self._rate_limit_key}'")
 
-        # 2. CircuitBreaker
-        if self._circuit_breaker is not None:
-            try:
-                return await self._circuit_breaker.call(
-                    self._call_with_fallback, fn, *args, **kwargs
-                )
-            except CircuitBreakerOpenError:
-                if self._fallback is not None:
-                    return await self._fallback.call(self._raise_circuit_open)
-                raise
+            # 2. CircuitBreaker
+            if self._circuit_breaker is not None:
+                try:
+                    return await self._circuit_breaker.call(
+                        self._call_with_fallback, fn, *args, **kwargs
+                    )
+                except CircuitBreakerOpenError:
+                    if self._fallback is not None:
+                        logger.warning(
+                            "decision=circuit_open action=fallback downstream=%s", self._name
+                        )
+                        return await self._fallback.call(self._raise_circuit_open)
+                    logger.warning("decision=circuit_open action=raise downstream=%s", self._name)
+                    raise
 
-        # 3. 无熔断：直接走 Fallback → 调用
-        if self._fallback is not None:
-            return await self._fallback.call(fn, *args, **kwargs)
-        return await fn(*args, **kwargs)
+            # 3. 无熔断：直接走 Fallback → 调用
+            if self._fallback is not None:
+                return await self._fallback.call(fn, *args, **kwargs)
+            return await fn(*args, **kwargs)
 
     async def execute_stream(
         self, factory: Callable, *args: Any, **kwargs: Any
@@ -80,28 +95,32 @@ class Pipeline:
         保护「创建流」这个动作（限流+熔断+retry），流开始 yield 后不再重试。
         ``factory`` 是一个 async callable，调用后返回 ``AsyncIterator``。
         """
-        # 1. RateLimiter（入口限流）
-        if self._rate_limiter is not None:
-            allowed = await self._rate_limiter.acquire(self._rate_limit_key)
-            if not allowed:
-                if self._fallback is not None:
-                    result = await self._fallback.call(self._raise_rate_limited)
-                    if hasattr(result, "__aiter__"):
-                        async for item in result:
-                            yield item
-                    else:
-                        # 非迭代器结果（如 mock）直接返回
+        with _span(self._tracer, f"pipeline_stream.{self._name}", kind="resilience"):
+            # 1. RateLimiter（入口限流）
+            if self._rate_limiter is not None:
+                allowed = await self._rate_limiter.acquire(self._rate_limit_key)
+                if not allowed:
+                    if self._fallback is not None:
+                        logger.info(
+                            "decision=rate_limited action=fallback downstream=%s", self._name
+                        )
+                        result = await self._fallback.call(self._raise_rate_limited)
+                        if hasattr(result, "__aiter__"):
+                            async for item in result:
+                                yield item
+                        else:
+                            return
                         return
-                    return
-                raise RateLimitError(f"rate limit exceeded for key '{self._rate_limit_key}'")
+                    logger.warning("decision=rate_limited action=raise downstream=%s", self._name)
+                    raise RateLimitError(f"rate limit exceeded for key '{self._rate_limit_key}'")
 
-        # 2. 在 CircuitBreaker + Fallback 保护下创建流
-        stream_iter = await self._create_stream_protected(factory, *args, **kwargs)
+            # 2. 在 CircuitBreaker + Fallback 保护下创建流
+            stream_iter = await self._create_stream_protected(factory, *args, **kwargs)
 
-        # 3. 消费流（不重试）
-        if hasattr(stream_iter, "__aiter__"):
-            async for item in stream_iter:
-                yield item
+            # 3. 消费流（不重试）
+            if hasattr(stream_iter, "__aiter__"):
+                async for item in stream_iter:
+                    yield item
 
     async def _create_stream_protected(self, factory: Callable, *args: Any, **kwargs: Any) -> Any:
         """在 CircuitBreaker + Fallback 保护下创建流（返回 AsyncIterator）。
@@ -176,6 +195,7 @@ def build_pipeline(
     circuit_breaker: CircuitBreaker | None,
     fallback: Fallback | None,
     rate_limit_key: str = "default",
+    tracer: Tracer | None = None,
 ) -> Pipeline | None:
     """构建 Pipeline。若所有组件均为 None 则返回 None（零开销）。"""
     if rate_limiter is None and circuit_breaker is None and fallback is None:
@@ -186,10 +206,11 @@ def build_pipeline(
         fallback=fallback,
         name=name,
         rate_limit_key=rate_limit_key,
+        tracer=tracer,
     )
 
 
-def build_llm_pipeline(settings: Any) -> Pipeline | None:
+def build_llm_pipeline(settings: Any, *, tracer: Tracer | None = None) -> Pipeline | None:
     """从 Settings 构建 LLM 调用的 Pipeline。"""
     from agent.resilience import (
         CircuitBreaker as _CB,
@@ -249,10 +270,11 @@ def build_llm_pipeline(settings: Any) -> Pipeline | None:
         circuit_breaker=cb,
         fallback=fb,
         rate_limit_key=f"llm:{settings.llm.model}",
+        tracer=tracer,
     )
 
 
-def build_sandbox_pipeline(settings: Any) -> Pipeline | None:
+def build_sandbox_pipeline(settings: Any, *, tracer: Tracer | None = None) -> Pipeline | None:
     """从 Settings 构建 Sandbox 调用的 Pipeline。"""
     from agent.resilience import (
         CircuitBreaker as _CB,
@@ -313,4 +335,5 @@ def build_sandbox_pipeline(settings: Any) -> Pipeline | None:
         circuit_breaker=cb,
         fallback=fb,
         rate_limit_key="sandbox:local",
+        tracer=tracer,
     )

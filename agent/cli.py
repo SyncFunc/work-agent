@@ -204,7 +204,7 @@ def chat(
         tracer = Tracer() if settings.obs.enabled else None
         from agent.resilience.pipeline import build_llm_pipeline
 
-        llm_pipeline = build_llm_pipeline(settings)
+        llm_pipeline = build_llm_pipeline(settings, tracer=tracer)
         model = _build_model(settings, tracer=tracer, pipeline=llm_pipeline)
     except Exception as e:  # 配置错误（如缺 API key）优雅退出，不吐底层栈
         typer.echo(f"error: {type(e).__name__}: {e}", err=True)

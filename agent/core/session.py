@@ -125,7 +125,7 @@ class Session:
                 started_at=time.time(),
             )
             tracer.spans.append(self.root_span)
-        sandbox_pipeline = build_sandbox_pipeline(settings)
+        sandbox_pipeline = build_sandbox_pipeline(settings, tracer=tracer)
         sandbox = build_executor(
             settings.sandbox.mode,
             workspace=cwd,
