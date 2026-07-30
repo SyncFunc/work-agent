@@ -19,7 +19,7 @@ import time
 import uuid
 from contextlib import contextmanager
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, cast
 
 # 存储当前活跃 span（隐式 parent 传递）
 _CURRENT_SPAN: contextvars.ContextVar[Span | None] = contextvars.ContextVar(
@@ -51,6 +51,7 @@ class Span:
     parent_id: str | None
     started_at: float
     ended_at: float | None = None
+    status: str = "ok"  # ok / error（__exit__ 异常时自动标记）
     meta: dict[str, Any] = field(default_factory=dict)
     logs: list[LogEntry] = field(default_factory=list)
 
@@ -87,8 +88,13 @@ class _SpanCtx:
         self._token = _CURRENT_SPAN.set(self.span)
         return self.span
 
-    def __exit__(self, *exc: object) -> None:
+    def __exit__(self, exc_type: object, exc_val: object, exc_tb: object) -> None:
         self.span.ended_at = time.time()
+        if exc_type is not None and exc_type is not GeneratorExit:
+            self.span.status = "error"
+            self.span.meta["status"] = "error"
+            self.span.meta["error_type"] = cast(type[BaseException], exc_type).__name__
+            self.span.meta["error_msg"] = str(exc_val) if exc_val else ""
         if self._token is not None:
             _CURRENT_SPAN.reset(self._token)
             self._token = None

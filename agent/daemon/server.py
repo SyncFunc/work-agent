@@ -506,7 +506,7 @@ def _span_to_dict(s: Any) -> dict[str, Any]:
         "parent_id": s.parent_id,
         "started_at": s.started_at,
         "ended_at": s.ended_at,
-        "status": "open" if s.ended_at is None else "ok",
+        "status": "open" if s.ended_at is None else s.status,
         "meta": s.meta,
         "logs": [
             {"ts": lg.ts, "key": lg.key, "value": lg.value, "level": lg.level} for lg in s.logs

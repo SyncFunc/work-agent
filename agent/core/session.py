@@ -295,20 +295,26 @@ class Session:
                 self.context_mgr.set_conv(self.messages)
 
             # 复用 session 级唯一 sink/stream（__init__ 创建一次；loop.run 幂等订阅，跨轮不重复）。
-            res = await self.loop.run(
-                current_task,
-                self.messages,
-                clarify_total=self.clarify_total,
-                plan_mode=self.plan_mode,
-                plan_path=self.plan_path,
-                transport=transport,
-                parent_span=self.root_span,
-                context_mgr=self.context_mgr,
-                event_sink=self._event_sink,
-                stream=self.event_stream,
-                message_id=mid,
-                trace_id=trace_id,
-            )
+            try:
+                res = await self.loop.run(
+                    current_task,
+                    self.messages,
+                    clarify_total=self.clarify_total,
+                    plan_mode=self.plan_mode,
+                    plan_path=self.plan_path,
+                    transport=transport,
+                    parent_span=self.root_span,
+                    context_mgr=self.context_mgr,
+                    event_sink=self._event_sink,
+                    stream=self.event_stream,
+                    message_id=mid,
+                    trace_id=trace_id,
+                )
+            except BaseException:
+                # M5.5：异常路径也保存 trace（含 LoopStalled、CancelledError 等），
+                # 避免失败步骤完全无 trace 可查。此时 span 已有 error 历史 + _SpanCtx 标记。
+                self._save_trace()
+                raise
             if self.session_store is not None:
                 self.session_store.touch(self.session_id)
             self.messages = list(res.messages or self.messages)
