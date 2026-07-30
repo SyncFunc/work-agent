@@ -122,7 +122,7 @@ def make_message(
         msg["id"] = id
     if session is not None:
         msg["session"] = session
-    return json.dumps(msg, ensure_ascii=False)
+    return json.dumps(msg, ensure_ascii=False, default=str)
 
 
 def parse_message(raw: str) -> dict[str, Any]:
