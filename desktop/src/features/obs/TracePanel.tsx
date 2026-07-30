@@ -143,27 +143,38 @@ export function TracePanel({ client, projectRoot, sessionId }: TracePanelProps) 
     loadTraces()
   }, [loadTraces])
 
-  // 当 traces 加载完成后，确保 activeSessionId 是有效的（在 traces 中存在的 session）
+  // 当 sessionId prop 变化时（退出重进、切换会话），同步到 activeSessionId
+  useEffect(() => {
+    if (sessionId) {
+      setActiveSessionId(sessionId)
+      setPage(1)
+      setActiveTraceId(null)
+      setSpans([])
+      setTree([])
+      setSelectedSpanId(null)
+    }
+  }, [sessionId])
+
+  // 当 traces 加载完成后，如果 activeSessionId 在 traces 中不存在，
+  // 自动选有最多 span 的 session（保证 SessionBar 下拉至少有一个选项被选中）
   useEffect(() => {
     if (traces.length === 0) return
     const knownSessions = new Set(traces.map((t) => t.session_id))
-    if (!activeSessionId || !knownSessions.has(activeSessionId)) {
-      // 按 span_count 降序，选最大的 session
-      const sessionRank = new Map<string, number>()
-      for (const t of traces) {
-        sessionRank.set(t.session_id, (sessionRank.get(t.session_id) ?? 0) + t.span_count)
-      }
-      let best = traces[0].session_id
-      let max = 0
-      for (const [sid, count] of sessionRank) {
-        if (count > max) {
-          max = count
-          best = sid
-        }
-      }
-      setActiveSessionId(best)
+    if (activeSessionId && knownSessions.has(activeSessionId)) return
+    const sessionRank = new Map<string, number>()
+    for (const t of traces) {
+      sessionRank.set(t.session_id, (sessionRank.get(t.session_id) ?? 0) + t.span_count)
     }
-  }, [traces, activeSessionId])
+    let best = traces[0].session_id
+    let max = 0
+    for (const [sid, count] of sessionRank) {
+      if (count > max) {
+        max = count
+        best = sid
+      }
+    }
+    setActiveSessionId(best)
+  }, [traces, activeSessionId, sessionId])
 
   // 选中 trace 时加载 span 树
   useEffect(() => {
