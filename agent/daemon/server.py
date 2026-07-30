@@ -545,11 +545,15 @@ async def _trace_get(
     mid: str | None,
 ) -> None:
     if not trace_id:
-        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        await conn.send(
+            MsgType.TRACE_TREE, {"session_id": None, "trace_id": None, "spans": []}, id=mid
+        )
         return
     factory = getattr(registry, "_trace_store_factory", None)
     if factory is None:
-        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        await conn.send(
+            MsgType.TRACE_TREE, {"session_id": None, "trace_id": trace_id, "spans": []}, id=mid
+        )
         return
     try:
         tracer = factory(project_root).load_trace(trace_id)
@@ -557,10 +561,16 @@ async def _trace_get(
         await conn.send(MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid)
         return
     if tracer is None:
-        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        await conn.send(
+            MsgType.TRACE_TREE, {"session_id": None, "trace_id": trace_id, "spans": []}, id=mid
+        )
         return
     spans = [_span_to_dict(s) for s in tracer.spans]
-    await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": spans}, id=mid)
+    await conn.send(
+        MsgType.TRACE_TREE,
+        {"session_id": tracer.session_id, "trace_id": trace_id, "spans": spans},
+        id=mid,
+    )
 
 
 # --------------------------------------------------------------------------- #

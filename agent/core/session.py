@@ -22,7 +22,7 @@ from agent.core.loop import AgentLoop
 from agent.core.model import Message
 from agent.core.transport import AgentTransport
 from agent.obs.store import TraceStore
-from agent.obs.tracer import Span
+from agent.obs.tracer import Span, _span
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable
@@ -288,92 +288,99 @@ class Session:
     ) -> tuple[AgentResult, int | None]:
         current_task = task
         mid = message_id or uuid.uuid4().hex
-        # M10.6：把请求入口 trace_id 透传至 loop，记入 agent.run span meta
-        while True:
-            # M4.5：每轮 step 前把当前消息投影交给 ContextManager（压缩作用对象）。
-            if self.context_mgr is not None:
-                self.context_mgr.set_conv(self.messages)
+        # M5.1+M5.2：设置 tracer 的当前 trace_id（所有子 span 继承），
+        # 创建 user.op 根 span 包裹一轮用户交互完整生命周期（含所有 clarify/plan 子轮）。
+        if self.tracer is not None:
+            self.tracer._current_trace_id = trace_id or mid
+        with _span(self.tracer, "user.op", kind="interaction", parent=self.root_span) as user_op:
+            if user_op is not None:
+                user_op.meta["message_id"] = mid
+                user_op.meta["user_text"] = task[:80]
+            while True:
+                # M4.5：每轮 step 前把当前消息投影交给 ContextManager（压缩作用对象）。
+                if self.context_mgr is not None:
+                    self.context_mgr.set_conv(self.messages)
 
-            # 复用 session 级唯一 sink/stream（__init__ 创建一次；loop.run 幂等订阅，跨轮不重复）。
-            try:
-                res = await self.loop.run(
-                    current_task,
-                    self.messages,
-                    clarify_total=self.clarify_total,
-                    plan_mode=self.plan_mode,
-                    plan_path=self.plan_path,
-                    transport=transport,
-                    parent_span=self.root_span,
-                    context_mgr=self.context_mgr,
-                    event_sink=self._event_sink,
-                    stream=self.event_stream,
-                    message_id=mid,
-                    trace_id=trace_id,
-                )
-            except BaseException:
-                # M5.5：异常路径也保存 trace（含 LoopStalled、CancelledError 等），
-                # 避免失败步骤完全无 trace 可查。此时 span 已有 error 历史 + _SpanCtx 标记。
-                self._save_trace()
-                raise
-            if self.session_store is not None:
-                self.session_store.touch(self.session_id)
-            self.messages = list(res.messages or self.messages)
-            self.clarify_total = res.clarify_total
-
-            # 每轮 step 结束自动持久化 trace（若有 trace_store）
-            self._save_trace()
-
-            # M4.4：本轮结束后检查是否触发后台 Session Memory 增量更新（零成本首选）
-            self._maybe_trigger_session_memory(transport)
-
-            # M4.5：本轮结束后检查并触发压缩；压缩后自动以新 conv 替换会话历史。
-            if self.context_mgr is not None:
-                self.context_mgr.set_conv(self.messages)
-                if self.context_mgr.should_compact():
-                    await self.context_mgr.compact()
-                    self.messages = self.context_mgr.conv
-
-            # ① 澄清回填
-            if res.needs_clarification:
-                questions = res.questions or []
-                if not transport.interactive:
-                    transport.show_questions(questions)
-                    return res, 2
-                answers = [await transport.ask(q) for q in questions]
-                current_task = "; ".join(
-                    f"{q.question}: {a}" for q, a in zip(questions, answers, strict=True)
-                )
-                continue
-
-            # ② 计划确认 / 模式切换
-            if res.needs_plan_confirm:
-                transport.show_plan(res)
-                self.plan_path = res.plan_path
-                confirmed = yes or (transport.interactive and await transport.confirm_plan())
-                if not confirmed:
-                    if fatal_plan_decline:
-                        transport.notify("计划未确认，已退出。")
-                        return res, 1
-                    transport.notify("计划未确认，保持 PLAN 模式。用 /exec 或 /approve 继续。")
-                    return res, None
-                self.plan_mode = False
-                self.messages.append(
-                    Message(
-                        role="user",
-                        content=(
-                            "[System] 上方的计划已经由用户确认通过，现在进入执行（EXEC）模式。"
-                            "请直接按计划执行，用 update_plan 跟踪每步进度（in_progress→done）。"
-                            "不要再次调用 present_plan，也不要去检查任何计划状态文件（如 .plan_status）。"
-                        ),
+                # 复用 session 级唯一 sink/stream（__init__ 创建一次；loop.run 幂等订阅，跨轮不重复）。
+                try:
+                    res = await self.loop.run(
+                        current_task,
+                        self.messages,
+                        clarify_total=self.clarify_total,
+                        plan_mode=self.plan_mode,
+                        plan_path=self.plan_path,
+                        transport=transport,
+                        parent_span=user_op,
+                        context_mgr=self.context_mgr,
+                        event_sink=self._event_sink,
+                        stream=self.event_stream,
+                        message_id=mid,
+                        trace_id=trace_id,
                     )
-                )
-                # 清空续跑 task，避免 loop.run 再发一条重复的 USER 事件到 EventStream。
-                # 系统确认消息已在 self.messages 中传达给模型，无需额外用户输入。
-                current_task = ""
-                continue
+                except BaseException:
+                    # M5.5：异常路径也保存 trace（含 LoopStalled、CancelledError 等），
+                    # 避免失败步骤完全无 trace 可查。此时 span 已有 error 历史 + _SpanCtx 标记。
+                    self._save_trace()
+                    raise
+                if self.session_store is not None:
+                    self.session_store.touch(self.session_id)
+                self.messages = list(res.messages or self.messages)
+                self.clarify_total = res.clarify_total
 
-            # ③ 最终答案
-            return res, None
+                # 每轮 step 结束自动持久化 trace（若有 trace_store）
+                self._save_trace()
+
+                # M4.4：本轮结束后检查是否触发后台 Session Memory 增量更新（零成本首选）
+                self._maybe_trigger_session_memory(transport)
+
+                # M4.5：本轮结束后检查并触发压缩；压缩后自动以新 conv 替换会话历史。
+                if self.context_mgr is not None:
+                    self.context_mgr.set_conv(self.messages)
+                    if self.context_mgr.should_compact():
+                        await self.context_mgr.compact()
+                        self.messages = self.context_mgr.conv
+
+                # ① 澄清回填
+                if res.needs_clarification:
+                    questions = res.questions or []
+                    if not transport.interactive:
+                        transport.show_questions(questions)
+                        return res, 2
+                    answers = [await transport.ask(q) for q in questions]
+                    current_task = "; ".join(
+                        f"{q.question}: {a}" for q, a in zip(questions, answers, strict=True)
+                    )
+                    continue
+
+                # ② 计划确认 / 模式切换
+                if res.needs_plan_confirm:
+                    transport.show_plan(res)
+                    self.plan_path = res.plan_path
+                    confirmed = yes or (transport.interactive and await transport.confirm_plan())
+                    if not confirmed:
+                        if fatal_plan_decline:
+                            transport.notify("计划未确认，已退出。")
+                            return res, 1
+                        transport.notify("计划未确认，保持 PLAN 模式。用 /exec 或 /approve 继续。")
+                        return res, None
+                    self.plan_mode = False
+                    self.messages.append(
+                        Message(
+                            role="user",
+                            content=(
+                                "[System] 上方的计划已经由用户确认通过，现在进入执行（EXEC）模式。"
+                                "请直接按计划执行，用 update_plan 跟踪每步进度（in_progress→done）。"
+                                "不要再次调用 present_plan，也不要去检查任何计划状态文件（如 .plan_status）。"
+                            ),
+                        )
+                    )
+                    # 清空续跑 task，避免 loop.run 再发一条重复的 USER 事件到 EventStream。
+                    # 系统确认消息已在 self.messages 中传达给模型，无需额外用户输入。
+                    current_task = ""
+                    continue
+
+                # ③ 最终答案
+                return res, None
 
     def _save_trace(self) -> None:
         if self.tracer is not None and self.trace_store is not None:

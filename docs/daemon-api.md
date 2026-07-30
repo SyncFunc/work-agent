@@ -155,11 +155,11 @@
 
 ### 4.14 `trace.list`
 - **payload**：`{ "project_root": string, "session_id"?: string }`
-- **应答**：`trace_list`（见 5.15）。
+- **应答**：`trace_list`（见 5.17）。按 trace_id 分组返回（一个会话可能有多次用户操作，各一条）。
 
 ### 4.15 `trace.get`
-- **payload**：`{ "project_root": string, "trace_id": string }`
-- **应答**：`trace_tree`（见 5.16）。
+- **payload**：`{ "project_root": string, "trace_id": string }`（trace_id = message_id）
+- **应答**：`trace_tree`（见 5.18）。
 
 ---
 
@@ -237,10 +237,10 @@
 
 ### 5.17 `trace_list`
 - **payload**：`{ "project_root": string, "traces": TraceInfo[] }`
-  - `TraceInfo`：`{ "session_id": string, "span_count": number, "first_ts": number|null, "last_ts": number|null }`（`trace_id == session_id`）。
+  - `TraceInfo`：`{ "trace_id": string, "session_id": string, "span_count": number, "first_ts": number|null, "last_ts": number|null }`（trace_id = message_id，即一次用户操作的唯一标识）。
 
 ### 5.18 `trace_tree`
-- **payload**：`{ "session_id": string|null, "spans": SpanNode[] }`（见 6.8）。
+- **payload**：`{ "trace_id": string, "session_id": string|null, "spans": SpanNode[] }`（见 6.8）。trace_id 即请求时的 trace_id，session_id 从存储的 span 中还原。
 
 ### 5.19 `error`
 - **payload**：`{ "code": string, "message": string }`。

@@ -135,6 +135,9 @@ class Tracer:
     def __init__(self, session_id: str | None = None) -> None:
         self.spans: list[Span] = []
         self.session_id: str = session_id or uuid.uuid4().hex[:12]
+        # M5.1：当前 step 的 trace_id（= message_id）。由 session.step 在调用 loop.run 前设置，
+        # span() 自动将其注入 Span.meta，使得 trace_store 可以按 trace_id 检索。
+        self._current_trace_id: str = ""
 
     def span(self, name: str, kind: str = "span", parent: Span | None = None) -> _SpanCtx:
         s = Span(
@@ -144,6 +147,9 @@ class Tracer:
             parent_id=None,
             started_at=time.time(),
         )
+        # 继承当前 step 的 trace_id 到 meta（供 TraceStore.save_trace 提取）
+        if self._current_trace_id:
+            s.meta["trace_id"] = self._current_trace_id
         self.spans.append(s)
         return _SpanCtx(self, s, parent_override=parent)
 
