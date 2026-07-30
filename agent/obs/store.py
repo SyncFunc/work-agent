@@ -35,7 +35,6 @@ class TraceStore:
             conn.executescript("""
                 CREATE TABLE IF NOT EXISTS spans (
                     session_id TEXT NOT NULL,
-                    trace_id   TEXT NOT NULL DEFAULT '',
                     span_id    TEXT NOT NULL,
                     name       TEXT NOT NULL,
                     kind       TEXT NOT NULL DEFAULT 'span',
@@ -49,7 +48,6 @@ class TraceStore:
                 CREATE TABLE IF NOT EXISTS logs (
                     session_id TEXT NOT NULL,
                     span_id    TEXT NOT NULL,
-                    trace_id   TEXT NOT NULL DEFAULT '',
                     ts         REAL NOT NULL,
                     key        TEXT NOT NULL,
                     value      TEXT NOT NULL DEFAULT '',
@@ -57,11 +55,12 @@ class TraceStore:
                     PRIMARY KEY (session_id, span_id, ts, key)
                 );
                 CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id);
-                CREATE INDEX IF NOT EXISTS idx_spans_trace ON spans(trace_id);
                 CREATE INDEX IF NOT EXISTS idx_logs_session ON logs(session_id);
-                CREATE INDEX IF NOT EXISTS idx_logs_trace ON logs(trace_id);
             """)
-        # M5.8 迁移：为已有数据库补 trace_id 列
+        # M5.8 迁移：为已有数据库补 trace_id 列 + 索引。
+        # ！！必须与 CREATE TABLE 分离，否则对旧 DB 文件（无 trace_id 列）
+        #   执行 CREATE INDEX ON trace_id 会抛 "no such column" 异常，
+        #   整个 executescript 中断，迁移逻辑永远无法运行。
         self._migrate_add_trace_id()
 
     def _migrate_add_trace_id(self) -> None:
@@ -73,9 +72,12 @@ class TraceStore:
                     )
                 except sqlite3.OperationalError:
                     pass  # 列已存在
-            for idx in ("idx_spans_trace", "idx_logs_trace"):
+            for table, idx_name in (
+                ("spans", "idx_spans_trace"),
+                ("logs", "idx_logs_trace"),
+            ):
                 try:
-                    conn.execute(f"CREATE INDEX IF NOT EXISTS {idx} ON spans(trace_id)")
+                    conn.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table}(trace_id)")
                 except sqlite3.OperationalError:
                     pass
 
