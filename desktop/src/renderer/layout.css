@@ -324,8 +324,9 @@
   overflow: hidden;
 }
 
-/* —— SessionBar —— */
+/* —— SessionBar（自定义下拉） —— */
 .wa-sessionbar {
+  position: relative;
   display: flex;
   align-items: center;
   gap: var(--wa-s2);
@@ -350,45 +351,113 @@
   white-space: nowrap;
   margin-right: 2px;
 }
-.wa-sessionbar__select-wrap {
-  position: relative;
+.wa-sessionbar__trigger {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
   flex: 1;
-  max-width: 300px;
-}
-.wa-sessionbar__select-wrap select {
-  width: 100%;
-  appearance: none;
-  -webkit-appearance: none;
+  max-width: 320px;
+  font-family: inherit;
   font-size: var(--wa-f-sm);
   background: var(--wa-bg);
   border: 1px solid var(--wa-border);
   border-radius: var(--wa-r-md);
-  padding: 4px var(--wa-s4) 4px var(--wa-s2);
+  padding: 4px 8px;
   color: var(--wa-text);
-  outline: none;
   cursor: pointer;
+  outline: none;
   transition: border-color var(--wa-dur-fast), box-shadow var(--wa-dur-fast);
 }
-.wa-sessionbar__select-wrap select:hover {
+.wa-sessionbar__trigger:hover {
   border-color: var(--wa-border-strong);
 }
-.wa-sessionbar__select-wrap select:focus {
+.wa-sessionbar__trigger.is-open,
+.wa-sessionbar__trigger:focus-visible {
   border-color: var(--wa-primary);
   box-shadow: 0 0 0 2px var(--wa-primary-weak);
 }
-.wa-sessionbar__chevron {
-  position: absolute;
-  right: 6px;
-  top: 50%;
-  transform: translateY(-50%);
-  pointer-events: none;
+.wa-sessionbar__trigger-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  color: var(--wa-text);
+}
+.wa-sessionbar__trigger-meta {
   color: var(--wa-text-faint);
+  font-size: var(--wa-f-xs);
+  flex: 1;
+  text-align: right;
+}
+.wa-sessionbar__chevron {
   display: flex;
   align-items: center;
+  color: var(--wa-text-faint);
+  transition: transform var(--wa-dur-fast);
+  flex: none;
 }
 .wa-sessionbar__chevron svg {
   width: 12px;
   height: 12px;
+}
+.wa-sessionbar__trigger.is-open .wa-sessionbar__chevron {
+  transform: rotate(180deg);
+  color: var(--wa-primary);
+}
+
+.wa-sessionbar__menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: var(--wa-s3);
+  right: var(--wa-s3);
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  background: var(--wa-bg);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: var(--wa-r-md);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.18);
+  z-index: 100;
+  max-height: 280px;
+  overflow-y: auto;
+}
+.wa-sessionbar__empty {
+  padding: var(--wa-s3);
+  text-align: center;
+  color: var(--wa-text-faint);
+  font-size: var(--wa-f-xs);
+}
+.wa-sessionbar__item {
+  display: flex;
+  align-items: center;
+  gap: var(--wa-s2);
+  padding: 6px 8px;
+  border-radius: var(--wa-r-sm);
+  cursor: pointer;
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text);
+  transition: background var(--wa-dur-fast);
+}
+.wa-sessionbar__item:hover {
+  background: var(--wa-surface-hover);
+}
+.wa-sessionbar__item.is-active {
+  background: var(--wa-primary-weak);
+  color: var(--wa-text);
+}
+.wa-sessionbar__item-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-weight: 600;
+  color: var(--wa-text);
+  min-width: 70px;
+}
+.wa-sessionbar__item-meta {
+  color: var(--wa-text-muted);
+  font-size: var(--wa-f-xs);
+  flex: 1;
+}
+.wa-sessionbar__item-check {
+  color: var(--wa-primary);
+  font-weight: 600;
+  flex: none;
 }
 
 /* —— TraceList 分页列表 —— */
