@@ -87,7 +87,7 @@ class AutoCompact:
         ``tool_use`` / ``tool_result`` 配对中间（否则会孤立任一方）；本实现沿用上层
         约定，不在此处拆分配对。
         """
-        with _span(self.tracer, "compact.auto_compact", kind="compact") as ac_span:
+        with _span(self.tracer, "compact.auto_compact", kind="compact") as _:
             logger.info("boundary=%d conv_len=%d", boundary, len(conv))
             # 太短：不足以留出 recent_keep 条保留，原样返回。
             if len(conv) <= self.recent_keep:

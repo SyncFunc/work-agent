@@ -28,6 +28,7 @@ from agent.context.session_store import SessionStore
 from agent.core.model import create_model
 from agent.core.session import Session
 from agent.core.session_command import dispatch_command
+from agent.obs.span_log_handler import ensure_span_log_handler
 from agent.obs.store import TraceStore
 from agent.obs.tracer import Tracer
 from agent.runtime.registry import default_registry
@@ -130,7 +131,7 @@ def run(
 ) -> None:
     _ensure_scaffold()
     settings = load_settings(clarify_enabled=not no_clarify, plan_mode=plan)
-    from agent.obs.span_log_handler import ensure_span_log_handler; ensure_span_log_handler()
+    ensure_span_log_handler()
     tracer = None if no_trace else Tracer()
     model = _build_model(settings, tracer=tracer)
     trace_store = None if no_trace else TraceStore(settings.obs.db_path)
@@ -198,7 +199,7 @@ def chat(
     """
     _ensure_scaffold()
     settings = load_settings()
-    from agent.obs.span_log_handler import ensure_span_log_handler; ensure_span_log_handler()
+    ensure_span_log_handler()
     try:
         tracer = Tracer() if settings.obs.enabled else None
         from agent.resilience.pipeline import build_llm_pipeline

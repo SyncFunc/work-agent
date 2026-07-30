@@ -19,9 +19,6 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-logger = logging.getLogger(__name__)
-
-
 from agent.config.settings import Settings
 from agent.context.tokens import _estimate_tokens
 from agent.core.control_tools import (
@@ -47,6 +44,8 @@ if TYPE_CHECKING:
     from agent.context import ContextManager
     from agent.skills.loader import SkillLoader
     from agent.subagent import SubagentSpawner
+
+logger = logging.getLogger(__name__)
 
 
 class LoopMaxIteration(RuntimeError):
@@ -318,9 +317,7 @@ class AgentLoop:
                     repeat_count = 0
                 last_callset = callset
                 if repeat_count >= self.settings.loop.max_repeat_calls:
-                    logger.error(
-                        "stall=repeated %d times: %s", repeat_count + 1, sorted(callset)
-                    )
+                    logger.error("stall=repeated %d times: %s", repeat_count + 1, sorted(callset))
                     raise LoopStalled(
                         f"model repeated identical tool calls {repeat_count + 1} times; "
                         f"possible infinite loop on {sorted(callset)}"
@@ -471,8 +468,10 @@ class AgentLoop:
         sem = asyncio.Semaphore(self.settings.loop.max_tool_concurrency)
 
         async def _one(tc: ToolCall) -> ToolResult:
-            with _span(self.tracer, "tool.exec", kind="tool") as tool_span:
-                logger.info("tool=%s args=%s", tc.name, json.dumps(tc.arguments, ensure_ascii=False)[:200])
+            with _span(self.tracer, "tool.exec", kind="tool") as _:
+                logger.info(
+                    "tool=%s args=%s", tc.name, json.dumps(tc.arguments, ensure_ascii=False)[:200]
+                )
                 # 控制/虚拟工具
                 if tc.name == UPDATE_PLAN_TOOL_NAME:
                     a = tc.arguments

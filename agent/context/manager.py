@@ -20,14 +20,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import cast
 
-logger = logging.getLogger(__name__)
-
 from agent.context.compactors.auto_compact import AutoCompact
 from agent.context.compactors.microcompact import PLACEHOLDER, Microcompact
 from agent.context.compactors.session_memory import SessionMemory
 from agent.context.tokens import _estimate_tokens
 from agent.core.model import Message
 from agent.obs.tracer import Span, Tracer, _span
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -170,9 +170,7 @@ class ContextManager:
         """
         if not self.conv or self.microcompact is None:
             return self.conv
-        with _span(
-            self.tracer, "compact.microcompact", kind="compact", parent=self.root_span
-        ) as mc_span:
+        with _span(self.tracer, "compact.microcompact", kind="compact", parent=self.root_span):
             out = await self.microcompact.compact(self.conv, len(self.conv))
             repl = sum(1 for m in out if m.role == "tool" and m.content == PLACEHOLDER)
             logger.info("tool_results_replaced=%d", repl)
@@ -207,7 +205,7 @@ class ContextManager:
         ① Microcompact（零成本）→ ② 仍超阈值则 ③a 优先 Session Memory Compact
         （复用摘要，零 API 调用）；无摘要时 ③b 降级 Auto Compact（1 次调用）。
         """
-        with _span(self.tracer, "context.compact", kind="compact", parent=self.root_span) as cspan:
+        with _span(self.tracer, "context.compact", kind="compact", parent=self.root_span):
             logger.info("trigger_pct=%.4f", round(self.estimate_usage().used_pct, 4))
             # ① Microcompact（零成本）
             await self.apply_microcompact()
@@ -272,7 +270,7 @@ class ContextManager:
             )
             self.conv.append(Message(role="user", content=note))
             if self.tracer is not None:
-                with _span(self.tracer, "compact.anti_drift", kind="compact") as ad_span:
+                with _span(self.tracer, "compact.anti_drift", kind="compact"):
                     logger.info("files_reread=%d", len(read_files))
 
     def _estimate_conv_tokens(self) -> int:

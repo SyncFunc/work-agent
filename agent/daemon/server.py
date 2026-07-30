@@ -349,7 +349,9 @@ async def _task_send(
         try:
             t0 = time.time()
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
-                res, _err = await session.step(text, transport, yes=yes, fatal_plan_decline=False, trace_id=trace_id)
+                res, _err = await session.step(
+                    text, transport, yes=yes, fatal_plan_decline=False, trace_id=trace_id
+                )
             duration = time.time() - t0
             # step 内可能切换了 plan_mode（计划批准后 → False），通知前端更新
             await _send_session_info(conn, handle, sid)
