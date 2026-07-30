@@ -12,11 +12,15 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
+
+logger = logging.getLogger(__name__)
+
 
 from agent.config.settings import Settings
 from agent.context.tokens import _estimate_tokens
@@ -205,8 +209,7 @@ class AgentLoop:
                 cq = extract_clarify(decision) if self.settings.clarify.enabled else None
                 if cq is not None:
                     ct += 1
-                    if self._agent_span is not None:
-                        self._agent_span.log("clarify", f"round {ct}: {len(cq)} questions")
+                    logger.info("clarify=round %d: %d questions", ct, len(cq))
                     stream.append(
                         Event(type=EventType.CLARIFY, questions=[q.to_dict() for q in cq])
                     )
@@ -311,12 +314,9 @@ class AgentLoop:
                     repeat_count = 0
                 last_callset = callset
                 if repeat_count >= self.settings.loop.max_repeat_calls:
-                    if self._agent_span is not None:
-                        self._agent_span.log(
-                            "stall",
-                            f"repeated {repeat_count + 1} times: {sorted(callset)}",
-                            level="error",
-                        )
+                    logger.error(
+                        "stall=repeated %d times: %s", repeat_count + 1, sorted(callset)
+                    )
                     raise LoopStalled(
                         f"model repeated identical tool calls {repeat_count + 1} times; "
                         f"possible infinite loop on {sorted(callset)}"
@@ -341,8 +341,7 @@ class AgentLoop:
             f"⚠️ 已到达最大轮次上限（{self.settings.loop.max_iterations}），本轮未产出最终答案。"
             "上下文已保留，可继续输入指令（如「继续」）在现有基础上接棒执行。"
         )
-        if self._agent_span is not None:
-            self._agent_span.log("soft_limit", notice, level="warn")
+        logger.warning("soft_limit=%s", notice)
         stream.append(Event(type=EventType.FINAL, text=notice))
         return AgentResult(
             text=notice,
@@ -371,9 +370,7 @@ class AgentLoop:
         full = [Message(role="system", content=sys_content)] + conv
         decision: Decision | None = None
         with _span(self.tracer, "model.act", kind="model") as mspan:
-            if mspan is not None:
-                mspan.log("conv_len", len(conv))
-                mspan.log("plan_mode", plan_mode)
+            logger.info("conv_len=%d plan_mode=%s", len(conv), plan_mode)
             async for ev in self.model.stream(
                 full, tools=self._model_tools(plan_mode=plan_mode, plan_path=plan_path)
             ):
@@ -396,14 +393,12 @@ class AgentLoop:
                         mspan.meta["usage"] = decision.usage
         if decision is None:
             decision = Decision(text="")
-            if mspan is not None:
-                mspan.log("decision_empty", True, level="warn")
+            logger.warning("decision_empty=True")
         else:
             decision.tool_calls = [tc for tc in decision.tool_calls if tc.name and tc.name.strip()]
-            if mspan is not None:
-                mspan.log("tool_calls", len(decision.tool_calls))
-                if decision.is_final and decision.text:
-                    mspan.log("final_text_len", len(decision.text))
+            logger.info("tool_calls=%d", len(decision.tool_calls))
+            if decision.is_final and decision.text:
+                logger.info("final_text_len=%d", len(decision.text))
         return decision
 
     def _model_tools(self, *, plan_mode: bool = False, plan_path: str | None = None) -> list[dict]:
@@ -473,9 +468,7 @@ class AgentLoop:
 
         async def _one(tc: ToolCall) -> ToolResult:
             with _span(self.tracer, "tool.exec", kind="tool") as tool_span:
-                if tool_span is not None:
-                    tool_span.log("tool", tc.name)
-                    tool_span.log("args", json.dumps(tc.arguments, ensure_ascii=False)[:200])
+                logger.info("tool=%s args=%s", tc.name, json.dumps(tc.arguments, ensure_ascii=False)[:200])
                 # 控制/虚拟工具
                 if tc.name == UPDATE_PLAN_TOOL_NAME:
                     a = tc.arguments
@@ -509,8 +502,7 @@ class AgentLoop:
                 try:
                     spec = self.registry.get(tc.name)
                 except UnknownTool:
-                    if tool_span is not None:
-                        tool_span.log("unknown_tool", tc.name, level="warn")
+                    logger.warning("unknown_tool=%s", tc.name)
                     return ToolResult(ok=False, error=f"unknown tool: {tc.name}")
 
                 # 审批门：执行前过 ApprovalGate
@@ -525,12 +517,10 @@ class AgentLoop:
                     )
                     d = self.gate.decide(action)
                     if d.verdict == "ask":
-                        if tool_span is not None:
-                            tool_span.log("approval_ask", d.reason)
+                        logger.info("approval_ask=%s", d.reason)
                         ok = await self.gate.authorize(action, self._transport)
                         if not ok:
-                            if tool_span is not None:
-                                tool_span.log("approval_rejected", True, level="warn")
+                            logger.warning("approval_rejected=True")
                             return ToolResult(ok=False, error="rejected by user approval")
                         # 批准后自动提权（若命令需联网且当前 profile 不允许）
                         elevated = d.elevated_profile
@@ -545,8 +535,7 @@ class AgentLoop:
                             tc.name, tc.arguments, self.settings.loop.max_tool_output_chars
                         )
                     except Exception as e:
-                        if tool_span is not None:
-                            tool_span.log("exec_error", f"{type(e).__name__}: {e}", level="error")
+                        logger.error("exec_error=%s: %s", type(e).__name__, e)
                         return ToolResult(ok=False, error=f"{type(e).__name__}: {e}")
 
         # 切换 cwd 到会话项目根（self.cwd），确保文件工具（read/write/edit）路径
