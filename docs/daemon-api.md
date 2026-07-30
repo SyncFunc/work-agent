@@ -323,7 +323,8 @@
 ```jsonc
 { "span_id": string, "name": string, "kind": string,
   "parent_id": string|null, "started_at": number, "ended_at": number|null,
-  "status": "open"|"ok", "meta": object,
+  "status": "open"|"ok"|"error",               // M5.5: error 表异常退出
+  "meta": object,                               // 含 trace_id / message_id / user_text / usage 等
   "logs": [ { "ts": number, "key": string, "value": any, "level": string } ] }
 ```
 

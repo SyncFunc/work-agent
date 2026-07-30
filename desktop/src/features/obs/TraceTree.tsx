@@ -36,8 +36,9 @@ export function TraceTree({ client, projectRoot, sessionId }: Props) {
       .then((resp) => {
         if (cancelled) return
         setTraces(resp.traces)
-        const pick = resp.traces.find((t) => t.session_id === sessionId)?.session_id
-        setSelected(pick ?? resp.traces[0]?.session_id ?? null)
+        // M5.1：用 trace_id（而非 session_id）标识一条 trace
+        const pick = resp.traces.find((t) => t.session_id === sessionId)?.trace_id
+        setSelected(pick ?? resp.traces[0]?.trace_id ?? null)
       })
       .catch((e: unknown) => {
         if (!cancelled) setError(String(e))
@@ -91,8 +92,8 @@ export function TraceTree({ client, projectRoot, sessionId }: Props) {
         >
           {traces.length === 0 && <option value="">（无 trace）</option>}
           {traces.map((t) => (
-            <option key={t.session_id} value={t.session_id}>
-              {t.session_id.slice(0, 8)} · {t.span_count} spans
+            <option key={t.trace_id} value={t.trace_id}>
+              {t.trace_id.slice(0, 8)} · {t.span_count} spans
             </option>
           ))}
         </select>
@@ -131,7 +132,7 @@ function TreeNodeView({
 }) {
   const isCollapsed = collapsed.has(node.span.span_id)
   const hasChildren = node.children.length > 0
-  const statusColor = node.span.status === 'open' ? 'var(--wa-warn)' : 'var(--wa-success)'
+  const statusColor = node.span.status === 'open' ? 'var(--wa-warn)' : node.span.status === 'error' ? 'var(--wa-danger)' : 'var(--wa-success)'
   return (
     <div style={{ marginLeft: depth * 14 }}>
       <div style={{ display: 'flex', alignItems: 'center', gap: 4, padding: '1px 0' }}>
