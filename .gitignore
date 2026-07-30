@@ -38,3 +38,6 @@ __pycache__/
 htmlcov/
 dist/
 build/
+
+# 前端依赖（npm install 产物，勿提交；避免误提交到仓库）
+node_modules/
