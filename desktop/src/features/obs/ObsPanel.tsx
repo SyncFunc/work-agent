@@ -4,12 +4,11 @@ import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { DaemonClient } from '../../protocol/client'
 import { BackgroundAgents } from './BackgroundAgents'
-import { LogView } from './LogView'
 import { StatusBar } from './StatusBar'
-import { TraceTree } from './TraceTree'
+import { TracePanel } from './TracePanel'
 import { useObs } from './useObs'
 import { IconButton, Tabs } from '../../components'
-import { Bot, ListTree, ScrollText, X } from 'lucide-react'
+import { Bot, ListTree, X } from 'lucide-react'
 
 interface Props {
   client: DaemonClient | null
@@ -25,11 +24,10 @@ interface Props {
   onResizeStart?: (e: React.MouseEvent) => void
 }
 
-type Tab = 'trace' | 'log' | 'bg'
+type Tab = 'trace' | 'bg'
 
 const TABS: { id: Tab; label: ReactNode }[] = [
   { id: 'trace', label: (<><ListTree size={14} /> Trace</>) },
-  { id: 'log', label: (<><ScrollText size={14} /> 日志</>) },
   { id: 'bg', label: (<><Bot size={14} /> 后台</>) },
 ]
 
@@ -54,8 +52,7 @@ export function ObsPanel({ client, projectRoot, sessionId, contextWindow, onClos
           <IconButton icon={<X size={16} />} label="关闭可观测面板" onClick={onClose} />
         </div>
         <div className="wa-obs__body">
-          {tab === 'trace' && <TraceTree client={client} projectRoot={projectRoot} sessionId={sessionId} />}
-          {tab === 'log' && <LogView logs={obs.logs} onClear={obs.clearLogs} />}
+          {tab === 'trace' && <TracePanel client={client} projectRoot={projectRoot} sessionId={sessionId} />}
           {tab === 'bg' && <BackgroundAgents client={client} sessionId={sessionId} />}
         </div>
       </aside>
