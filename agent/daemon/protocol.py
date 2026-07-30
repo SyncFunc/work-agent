@@ -46,7 +46,7 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-DAEMON_VERSION = "0.1.0"
+DAEMON_VERSION = "0.3.0"
 PROTOCOL_VERSION = "1.0"
 
 
