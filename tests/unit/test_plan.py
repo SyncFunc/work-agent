@@ -433,12 +433,16 @@ async def test_session_shares_single_root_span():
     await session.step("任务一", _FakeUI(confirm=True), yes=True)
     await session.step("任务二", _FakeUI(confirm=True), yes=True)
 
-    # 唯一根 = session.root span
+    # M5.2：唯一根 = session.root；下挂 user.op（每 step 一个），再下挂 agent.run
     roots = [s for s in tracer.spans if s.parent_id is None]
     assert len(roots) == 1
     root = roots[0]
     assert root.kind == "session"
-    # 两次 run 都挂在 session.root 下（不再是多个独立 root）
+    # 两次 step 各产出一个 user.op 交互 span，挂 root
+    ops = [s for s in tracer.spans if s.kind == "interaction"]
+    assert len(ops) == 2
+    assert all(op.parent_id == root.id for op in ops)
+    # 两次 agent.run 各挂一个 user.op 下
     runs = [s for s in tracer.spans if s.kind == "agent"]
     assert len(runs) == 2
-    assert all(r.parent_id == root.id for r in runs)
+    assert all(r.parent_id in {op.id for op in ops} for r in runs)

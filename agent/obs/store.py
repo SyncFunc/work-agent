@@ -1,11 +1,10 @@
-"""SQLite 持久化存储：按 session 归档 trace/span/log。
+"""SQLite 持久化存储：归档 trace/span/log（按 session 全量覆盖写，逐步追加 trace_id）。
 
-表结构：
-- ``spans``：session_id / span_id / name / kind / parent_id / 起止时间 / meta_json
-- ``logs``：session_id / span_id / ts / key / value / level
-
-``save_trace`` 覆盖写（先删后插），保证幂等。
-``load_trace`` 重建 Span 对象（含 logs 列表）。
+M5.8 关键变更：
+- 新增 ``trace_id`` 列（存储于 span.meta["trace_id"]），用于按一次用户操作检索
+- ``save_trace`` 仍按 session 全量删除重插（保障幂等），trace_id 从每个 span 的 meta 提取
+- ``load_trace`` 支持按 trace_id（per-op）或按 session_id（完整会话）加载，自动回退
+- ``list_traces`` 按 trace_id 分组返回多条（一个 session 可能有多次用户操作）
 """
 
 from __future__ import annotations
@@ -58,6 +57,29 @@ class TraceStore:
                 CREATE INDEX IF NOT EXISTS idx_spans_session ON spans(session_id);
                 CREATE INDEX IF NOT EXISTS idx_logs_session ON logs(session_id);
             """)
+        # M5.8 迁移：为已有数据库补 trace_id 列 + 索引。
+        # ！！必须与 CREATE TABLE 分离，否则对旧 DB 文件（无 trace_id 列）
+        #   执行 CREATE INDEX ON trace_id 会抛 "no such column" 异常，
+        #   整个 executescript 中断，迁移逻辑永远无法运行。
+        self._migrate_add_trace_id()
+
+    def _migrate_add_trace_id(self) -> None:
+        with self._conn() as conn:
+            for table in ("spans", "logs"):
+                try:
+                    conn.execute(
+                        f"ALTER TABLE {table} ADD COLUMN trace_id TEXT NOT NULL DEFAULT ''"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # 列已存在
+            for table, idx_name in (
+                ("spans", "idx_spans_trace"),
+                ("logs", "idx_logs_trace"),
+            ):
+                try:
+                    conn.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {table}(trace_id)")
+                except sqlite3.OperationalError:
+                    pass
 
     def save_trace(self, tracer: Tracer) -> None:
         """持久化一个 Tracer 的全部 span（含 logs）。覆盖写保证幂等。"""
@@ -67,12 +89,15 @@ class TraceStore:
             conn.execute("DELETE FROM spans WHERE session_id = ?", (session_id,))
 
             for s in tracer.spans:
+                tid = s.meta.get("trace_id", "")
                 conn.execute(
                     """INSERT INTO spans
-                       (session_id, span_id, name, kind, parent_id, started_at, ended_at, meta_json)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                       (session_id, trace_id, span_id, name, kind, parent_id,
+                        started_at, ended_at, meta_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                     (
                         session_id,
+                        tid,
                         s.id,
                         s.name,
                         s.kind,
@@ -85,19 +110,77 @@ class TraceStore:
                 for lg in s.logs:
                     conn.execute(
                         """INSERT INTO logs
-                           (session_id, span_id, ts, key, value, level)
-                           VALUES (?, ?, ?, ?, ?, ?)""",
-                        (session_id, s.id, lg.ts, lg.key, _serialize_value(lg.value), lg.level),
+                           (session_id, trace_id, span_id, ts, key, value, level)
+                           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+                        (
+                            session_id,
+                            tid,
+                            s.id,
+                            lg.ts,
+                            lg.key,
+                            _serialize_value(lg.value),
+                            lg.level,
+                        ),
                     )
 
     def delete_session(self, session_id: str) -> None:
-        """M9.9 彻底删除：删除该会话的全部 span 与 log（含子会话的 trace 由调用方逐个清理）。"""
+        """彻底删除该会话的全部 span 与 log。"""
         with self._conn() as conn:
             conn.execute("DELETE FROM logs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM spans WHERE session_id = ?", (session_id,))
 
-    def load_trace(self, session_id: str) -> Tracer | None:
-        """按 session_id 重建 Tracer（含全部 span + logs）。不存在返回 None。"""
+    def load_trace(self, trace_or_session_id: str) -> Tracer | None:
+        """按 trace_id 或 session_id 加载 Tracer。
+
+        - 先按 trace_id 精确匹配（trace_id = message_id，一次用户操作）；
+        - 如果没找到，退化为按 session_id 加载所有 span（向后兼容）。
+        不存在返回 None。
+        """
+        with self._conn() as conn:
+            # Primary: 按 trace_id 精确查询
+            span_rows = conn.execute(
+                "SELECT * FROM spans WHERE trace_id = ? ORDER BY started_at",
+                (trace_or_session_id,),
+            ).fetchall()
+            if not span_rows:
+                # Fallback: 按 session_id 查询（兼容旧数据/测试）
+                span_rows = conn.execute(
+                    "SELECT * FROM spans WHERE session_id = ? ORDER BY started_at",
+                    (trace_or_session_id,),
+                ).fetchall()
+            if not span_rows:
+                return None
+
+            log_rows = conn.execute(
+                "SELECT * FROM logs WHERE session_id = ? ORDER BY ts",
+                (span_rows[0]["session_id"],),
+            ).fetchall()
+        return self._build_tracer(span_rows, log_rows)
+
+    def load_session_traces(self, session_id: str) -> list[Tracer]:
+        """按 session_id 加载该会话下的所有 trace（多条，逐次用户操作）。"""
+        with self._conn() as conn:
+            trace_ids = conn.execute(
+                "SELECT DISTINCT trace_id FROM spans WHERE session_id = ? AND trace_id != ''",
+                (session_id,),
+            ).fetchall()
+            tracers: list[Tracer] = []
+            for (tid,) in trace_ids:
+                span_rows = conn.execute(
+                    "SELECT * FROM spans WHERE session_id = ? AND trace_id = ? ORDER BY started_at",
+                    (session_id, tid),
+                ).fetchall()
+                log_rows = conn.execute(
+                    "SELECT * FROM logs WHERE session_id = ? AND trace_id = ? ORDER BY ts",
+                    (session_id, tid),
+                ).fetchall()
+                t = self._build_tracer(span_rows, log_rows)
+                if t is not None:
+                    tracers.append(t)
+            return tracers
+
+    def load_all_session_spans(self, session_id: str) -> Tracer | None:
+        """按 session_id 加载全部 span（完整会话视图）。不存在返回 None。"""
         with self._conn() as conn:
             span_rows = conn.execute(
                 "SELECT * FROM spans WHERE session_id = ? ORDER BY started_at",
@@ -109,12 +192,19 @@ class TraceStore:
                 "SELECT * FROM logs WHERE session_id = ? ORDER BY ts",
                 (session_id,),
             ).fetchall()
+        return self._build_tracer(span_rows, log_rows)
+
+    def _build_tracer(
+        self, span_rows: list[sqlite3.Row], log_rows: list[sqlite3.Row]
+    ) -> Tracer | None:
+        if not span_rows:
+            return None
         logs_by_span: dict[str, list[LogEntry]] = {}
         for lr in log_rows:
             logs_by_span.setdefault(lr["span_id"], []).append(
                 LogEntry(ts=lr["ts"], key=lr["key"], value=lr["value"], level=lr["level"])
             )
-        tracer = Tracer(session_id=session_id)
+        tracer = Tracer(session_id=span_rows[0]["session_id"])
         for sr in span_rows:
             meta: dict[str, Any] = {}
             try:
@@ -153,27 +243,44 @@ class TraceStore:
             ]
 
     def list_traces(self, session_id: str | None = None) -> list[dict[str, Any]]:
-        """返回含 trace（span）的会话列表（供 M9.7 daemon ``trace.list``）。
+        """返回 trace 列表（按 trace_id 分组）。
 
-        - ``session_id`` 为 None：返回全部项目的 trace（按 last_ts 降序）；
-        - 指定 ``session_id``：仅返回该会话的 trace 摘要（命中 0/1 条）。
+        有 trace_id 的按 trace_id 分组（一次用户操作一条）；trace_id 为空的
+        按 session_id 分组（兼容旧数据/测试），此时 trace_id = session_id。
+
+        - session_id 为 None：返回全部 trace（按 last_ts 降序）；
+        - 指定 session_id：仅返回该会话下的 trace 列表。
         """
         with self._conn() as conn:
             if session_id:
                 rows = conn.execute(
-                    """SELECT session_id, COUNT(*) as span_count,
-                              MIN(started_at) as first_ts, MAX(started_at) as last_ts
-                       FROM spans WHERE session_id = ? GROUP BY session_id""",
+                    """SELECT
+                        CASE WHEN trace_id = '' THEN session_id ELSE trace_id END as trace_id,
+                        session_id,
+                        COUNT(*) as span_count,
+                        MIN(started_at) as first_ts,
+                        MAX(started_at) as last_ts
+                       FROM spans
+                       WHERE session_id = ?
+                       GROUP BY CASE WHEN trace_id = '' THEN session_id ELSE trace_id END
+                       ORDER BY last_ts DESC""",
                     (session_id,),
                 ).fetchall()
             else:
                 rows = conn.execute(
-                    """SELECT session_id, COUNT(*) as span_count,
-                              MIN(started_at) as first_ts, MAX(started_at) as last_ts
-                       FROM spans GROUP BY session_id ORDER BY last_ts DESC"""
+                    """SELECT
+                        CASE WHEN trace_id = '' THEN session_id ELSE trace_id END as trace_id,
+                        session_id,
+                        COUNT(*) as span_count,
+                        MIN(started_at) as first_ts,
+                        MAX(started_at) as last_ts
+                       FROM spans
+                       GROUP BY CASE WHEN trace_id = '' THEN session_id ELSE trace_id END
+                       ORDER BY last_ts DESC"""
                 ).fetchall()
             return [
                 {
+                    "trace_id": r["trace_id"],
                     "session_id": r["session_id"],
                     "span_count": r["span_count"],
                     "first_ts": r["first_ts"],

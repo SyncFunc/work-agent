@@ -168,8 +168,9 @@ export interface SessionListResponse {
 // 可观测面板（M9.7）：trace 查询（对齐 agent/daemon/server.py 的 _trace_*）
 // --------------------------------------------------------------------------- //
 
-/** 一条 trace 摘要（trace.list 响应中的一项；trace_id == session_id）。 */
+/** 一条 trace 摘要（trace.list 响应中的一项；trace_id = message_id，不再等于 session_id）。 */
 export interface TraceInfo {
+  trace_id: string
   session_id: string
   span_count: number
   first_ts: number | null
@@ -198,13 +199,14 @@ export interface SpanNode {
   parent_id: string | null
   started_at: number
   ended_at: number | null
-  status: 'open' | 'ok'
+  status: 'open' | 'ok' | 'error'
   meta: Record<string, unknown>
   logs: SpanLog[]
 }
 
 /** trace.get 的响应 payload（trace_tree 消息）。 */
 export interface TraceTreeResponse {
+  trace_id: string
   session_id: string | null
   spans: SpanNode[]
 }

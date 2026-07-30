@@ -1,6 +1,6 @@
 {
   "name": "work-agent-desktop",
-  "version": "0.1.0",
+  "version": "0.3.0",
   "private": true,
   "description": "Work Agent 桌面客户端（Electron + React + TypeScript，连接 agentrunner daemon）",
   "type": "module",

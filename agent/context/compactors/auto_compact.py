@@ -13,8 +13,12 @@
 
 from __future__ import annotations
 
+import logging
+
 from agent.core.model import Message, Model
 from agent.obs.tracer import Tracer, _span
+
+logger = logging.getLogger(__name__)
 
 # 内联 prompt（模板文件在 agent/prompts/compact_*.md，供调试/审计参考）
 COMPACT_SYSTEM_PROMPT = (
@@ -83,18 +87,14 @@ class AutoCompact:
         ``tool_use`` / ``tool_result`` 配对中间（否则会孤立任一方）；本实现沿用上层
         约定，不在此处拆分配对。
         """
-        with _span(self.tracer, "compact.auto_compact", kind="compact") as ac_span:
-            if ac_span is not None:
-                ac_span.log("boundary", boundary)
-                ac_span.log("conv_len", len(conv))
+        with _span(self.tracer, "compact.auto_compact", kind="compact") as _:
+            logger.info("boundary=%d conv_len=%d", boundary, len(conv))
             # 太短：不足以留出 recent_keep 条保留，原样返回。
             if len(conv) <= self.recent_keep:
-                if ac_span is not None:
-                    ac_span.log("skip", "conv 过短无需压缩，原样返回", level="warn")
+                logger.warning("skip=conv 过短无需压缩，原样返回")
                 return conv
             if self.failure_count >= self.max_failures:
-                if ac_span is not None:
-                    ac_span.log("skip", "失败断路器已触发，放弃压缩", level="warn")
+                logger.warning("skip=失败断路器已触发，放弃压缩")
                 return conv
 
             # 实际压缩点：恒留最近 recent_keep 条，与传入的 boundary 无关。
@@ -107,14 +107,11 @@ class AutoCompact:
 
             if summary is None:
                 self.failure_count += 1
-                if ac_span is not None:
-                    ac_span.log("result", "模型调用失败，断路器 +1", level="warn")
+                logger.warning("result=模型调用失败，断路器 +1")
                 return conv
 
             self.failure_count = 0
-            if ac_span is not None:
-                ac_span.log("summary_len", len(summary))
-                ac_span.log("cut", cut)
+            logger.info("summary_len=%d cut=%d", len(summary), cut)
             # 用摘要替换 cut 之前的历史，保留 cut 之后的原文
             return [
                 Message(role="user", content=f"[Compact Summary]\n{summary}"),
@@ -128,13 +125,12 @@ class AutoCompact:
         ]
         try:
             with _span(self.tracer, "model.act", kind="model") as mspan:
-                if mspan is not None:
-                    mspan.log("prompt_len", len(prompt))
+                logger.info("prompt_len=%d", len(prompt))
                 decision = await self.model.act(messages)
                 if mspan is not None:
                     if decision.usage:
                         mspan.meta["usage"] = decision.usage
-                    mspan.log("text_len", len(decision.text or ""))
+                logger.info("text_len=%d", len(decision.text or ""))
             text = decision.text or ""
             if "<summary>" in text and "</summary>" in text:
                 start = text.index("<summary>") + len("<summary>")

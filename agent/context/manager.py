@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -25,6 +26,8 @@ from agent.context.compactors.session_memory import SessionMemory
 from agent.context.tokens import _estimate_tokens
 from agent.core.model import Message
 from agent.obs.tracer import Span, Tracer, _span
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -167,13 +170,10 @@ class ContextManager:
         """
         if not self.conv or self.microcompact is None:
             return self.conv
-        with _span(
-            self.tracer, "compact.microcompact", kind="compact", parent=self.root_span
-        ) as mc_span:
+        with _span(self.tracer, "compact.microcompact", kind="compact", parent=self.root_span):
             out = await self.microcompact.compact(self.conv, len(self.conv))
-            if mc_span is not None:
-                repl = sum(1 for m in out if m.role == "tool" and m.content == PLACEHOLDER)
-                mc_span.log("tool_results_replaced", repl)
+            repl = sum(1 for m in out if m.role == "tool" and m.content == PLACEHOLDER)
+            logger.info("tool_results_replaced=%d", repl)
             return out
 
     def record_compact(
@@ -205,16 +205,14 @@ class ContextManager:
         ① Microcompact（零成本）→ ② 仍超阈值则 ③a 优先 Session Memory Compact
         （复用摘要，零 API 调用）；无摘要时 ③b 降级 Auto Compact（1 次调用）。
         """
-        with _span(self.tracer, "context.compact", kind="compact", parent=self.root_span) as cspan:
-            if cspan is not None:
-                cspan.log("trigger_pct", round(self.estimate_usage().used_pct, 4))
+        with _span(self.tracer, "context.compact", kind="compact", parent=self.root_span):
+            logger.info("trigger_pct=%.4f", round(self.estimate_usage().used_pct, 4))
             # ① Microcompact（零成本）
             await self.apply_microcompact()
 
             # ② 检查是否需要进一步压缩
             if not self.should_compact():
-                if cspan is not None:
-                    cspan.log("shortcut", "microcompact 后未超阈值，跳过压缩")
+                logger.info("shortcut=microcompact 后未超阈值，跳过压缩")
                 return True
 
             # ③a Session Memory Compact（零成本首选，复用后台维护的摘要）
@@ -225,8 +223,7 @@ class ContextManager:
                     self.conv = sm_result
                     after_tokens = self.estimate_usage().total
                     self.record_compact("session_memory", before_tokens, after_tokens)
-                    if cspan is not None:
-                        cspan.log("session_memory", f"{before_tokens} -> {after_tokens} tok")
+                    logger.info("session_memory=%d -> %d tok", before_tokens, after_tokens)
                     # ④ 标记边界 + ⑤ 防漂移
                     self.mark_boundary()
                     await self._anti_drift()
@@ -240,8 +237,7 @@ class ContextManager:
                     self.conv = new_conv
                     after_tokens = self.estimate_usage().total
                     self.record_compact("auto_compact", before_tokens, after_tokens)
-                    if cspan is not None:
-                        cspan.log("auto_compact", f"{before_tokens} -> {after_tokens} tok")
+                    logger.info("auto_compact=%d -> %d tok", before_tokens, after_tokens)
 
             # ④ 标记边界（压缩后 conv 的尾部）
             self.mark_boundary()
@@ -274,9 +270,8 @@ class ContextManager:
             )
             self.conv.append(Message(role="user", content=note))
             if self.tracer is not None:
-                with _span(self.tracer, "compact.anti_drift", kind="compact") as ad_span:
-                    if ad_span is not None:
-                        ad_span.log("files_reread", len(read_files))
+                with _span(self.tracer, "compact.anti_drift", kind="compact"):
+                    logger.info("files_reread=%d", len(read_files))
 
     def _estimate_conv_tokens(self) -> int:
         """估算 conv 中 boundary 之后的 token 数。"""

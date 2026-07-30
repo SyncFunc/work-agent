@@ -18,10 +18,10 @@
   ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
 
 M9.7 可观测面板：新增 trace 查询
-- ``trace.list``（C→S）：``{project_root, session_id?}`` → 按项目根列出含 trace 的会话（带 ``id`` 以便响应配对）。
-- ``trace.get``（C→S）：``{project_root, trace_id}``（trace_id == session_id）→ 取单条 trace 的 span 树。
-- ``trace_list``（S→C）：``{project_root, traces[], id?}``，每项为 ``{session_id, span_count, first_ts, last_ts}``。
-- ``trace_tree``（S→C）：``{session_id, spans[], id?}``，span 含 ``parent_id`` 供客户端重建父子树。
+- ``trace.list``（C→S）：``{project_root, session_id?}`` → 按项目根列出 trace（按 trace_id 分组，一个 session 可能有多条）。
+- ``trace.get``（C→S）：``{project_root, trace_id}``（trace_id == message_id，不再等于 session_id）→ 取单条 trace 的 span 树。
+- ``trace_list``（S→C）：``{project_root, traces[], id?}``，每项为 ``{trace_id, session_id, span_count, first_ts, last_ts}``。
+- ``trace_tree``（S→C）：``{session_id?, trace_id, spans[], id?}``，span 含 ``parent_id`` 供客户端重建父子树。
 
 事件 ``event`` 直接承载 ``Event.to_dict()``，是天然序列化边界（见 M7.2 知识沉淀）。
 
@@ -46,7 +46,7 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-DAEMON_VERSION = "0.1.0"
+DAEMON_VERSION = "0.3.0"
 PROTOCOL_VERSION = "1.0"
 
 
@@ -122,7 +122,7 @@ def make_message(
         msg["id"] = id
     if session is not None:
         msg["session"] = session
-    return json.dumps(msg, ensure_ascii=False)
+    return json.dumps(msg, ensure_ascii=False, default=str)
 
 
 def parse_message(raw: str) -> dict[str, Any]:

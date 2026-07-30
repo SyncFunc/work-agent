@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from typing import TYPE_CHECKING, Any, cast
@@ -340,6 +341,7 @@ async def _task_send(
     transport = handle.transport
     # 同步置 busy：避免并发 task.send 竞态（配合每会话 Lock 双重保险）。
     handle.busy = True
+    trace_id = uuid.uuid4().hex[:12]  # M10.6：每条用户消息分配独立 trace_id 串联整体链路
 
     async def _run() -> None:
         handle.running = True
@@ -347,7 +349,9 @@ async def _task_send(
         try:
             t0 = time.time()
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
-                res, _err = await session.step(text, transport, yes=yes, fatal_plan_decline=False)
+                res, _err = await session.step(
+                    text, transport, yes=yes, fatal_plan_decline=False, trace_id=trace_id
+                )
             duration = time.time() - t0
             # step 内可能切换了 plan_mode（计划批准后 → False），通知前端更新
             await _send_session_info(conn, handle, sid)
@@ -502,7 +506,7 @@ def _span_to_dict(s: Any) -> dict[str, Any]:
         "parent_id": s.parent_id,
         "started_at": s.started_at,
         "ended_at": s.ended_at,
-        "status": "open" if s.ended_at is None else "ok",
+        "status": "open" if s.ended_at is None else s.status,
         "meta": s.meta,
         "logs": [
             {"ts": lg.ts, "key": lg.key, "value": lg.value, "level": lg.level} for lg in s.logs
@@ -541,11 +545,15 @@ async def _trace_get(
     mid: str | None,
 ) -> None:
     if not trace_id:
-        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        await conn.send(
+            MsgType.TRACE_TREE, {"session_id": None, "trace_id": None, "spans": []}, id=mid
+        )
         return
     factory = getattr(registry, "_trace_store_factory", None)
     if factory is None:
-        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        await conn.send(
+            MsgType.TRACE_TREE, {"session_id": None, "trace_id": trace_id, "spans": []}, id=mid
+        )
         return
     try:
         tracer = factory(project_root).load_trace(trace_id)
@@ -553,10 +561,16 @@ async def _trace_get(
         await conn.send(MsgType.ERROR, {"code": "trace_error", "message": str(e)}, id=mid)
         return
     if tracer is None:
-        await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": []}, id=mid)
+        await conn.send(
+            MsgType.TRACE_TREE, {"session_id": None, "trace_id": trace_id, "spans": []}, id=mid
+        )
         return
     spans = [_span_to_dict(s) for s in tracer.spans]
-    await conn.send(MsgType.TRACE_TREE, {"session_id": trace_id, "spans": spans}, id=mid)
+    await conn.send(
+        MsgType.TRACE_TREE,
+        {"session_id": tracer.session_id, "trace_id": trace_id, "spans": spans},
+        id=mid,
+    )
 
 
 # --------------------------------------------------------------------------- #
@@ -649,9 +663,12 @@ def start_daemon(settings: Settings) -> None:
     from agent.context.session_store import SessionStore
     from agent.core.model import create_model
     from agent.core.session import Session
+    from agent.obs.span_log_handler import ensure_span_log_handler
     from agent.obs.store import TraceStore
     from agent.obs.tracer import Tracer
     from agent.runtime.registry import default_registry
+
+    ensure_span_log_handler()
 
     # 按 project_root 惰性解析并缓存 SessionStore（同一项目复用同一个 store 实例）。
     store_cache: dict[str, SessionStore] = {}
@@ -681,7 +698,7 @@ def start_daemon(settings: Settings) -> None:
 
     def _build_session(project_root: str, session_id: str, store: SessionStore) -> Session:
         s = load_settings(project_root=project_root)
-        tracer = Tracer() if s.obs.enabled else None
+        tracer = Tracer(session_id=session_id) if s.obs.enabled else None
         model = create_model(s, tracer=tracer)
         trace_db = _anchor_path(s.obs.db_path, project_root)
         trace_store = TraceStore(trace_db) if s.obs.enabled else None
