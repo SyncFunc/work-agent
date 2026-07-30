@@ -136,6 +136,7 @@ class AgentLoop:
         event_sink: Callable[[Event], None] | None = None,
         stream: EventStream | None = None,
         message_id: str | None = None,
+        trace_id: str | None = None,
     ) -> AgentResult:
         pm = plan_mode if plan_mode is not None else self.plan_mode
         pp = plan_path if plan_path is not None else self.plan_path
@@ -196,6 +197,9 @@ class AgentLoop:
         # name（子 agent 类型，如 explore/general-purpose）附加在 span 名上，便于 trace 区分不同子 agent。
         span_name = f"agent.run:{name}" if name else "agent.run"
         with _span(self.tracer, span_name, kind="agent", parent=parent_span) as self._agent_span:
+            if trace_id is not None and self._agent_span is not None:
+                self._agent_span.meta["trace_id"] = trace_id
+                self._agent_span.meta["user_text"] = task[:80]
             for i in range(self.settings.loop.max_iterations):
                 decision = await self._decide(
                     conv, stream, plan_mode=pm, plan_path=pp, system_prompt=self._run_system_prompt

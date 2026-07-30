@@ -61,6 +61,7 @@ class SessionLike(Protocol):
         *,
         yes: bool = False,
         fatal_plan_decline: bool = False,
+        trace_id: str | None = None,
     ) -> Awaitable[tuple[AgentResult, int | None]]: ...
 
     def list_skills(self) -> list: ...
@@ -283,9 +284,11 @@ class Session:
         yes: bool = False,
         fatal_plan_decline: bool = False,
         message_id: str | None = None,
+        trace_id: str | None = None,
     ) -> tuple[AgentResult, int | None]:
         current_task = task
         mid = message_id or uuid.uuid4().hex
+        # M10.6：把请求入口 trace_id 透传至 loop，记入 agent.run span meta
         while True:
             # M4.5：每轮 step 前把当前消息投影交给 ContextManager（压缩作用对象）。
             if self.context_mgr is not None:
@@ -304,6 +307,7 @@ class Session:
                 event_sink=self._event_sink,
                 stream=self.event_stream,
                 message_id=mid,
+                trace_id=trace_id,
             )
             if self.session_store is not None:
                 self.session_store.touch(self.session_id)

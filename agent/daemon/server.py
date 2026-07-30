@@ -15,6 +15,7 @@ import json
 import logging
 import os
 import time
+import uuid
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from threading import Thread
 from typing import TYPE_CHECKING, Any, cast
@@ -340,6 +341,7 @@ async def _task_send(
     transport = handle.transport
     # 同步置 busy：避免并发 task.send 竞态（配合每会话 Lock 双重保险）。
     handle.busy = True
+    trace_id = uuid.uuid4().hex[:12]  # M10.6：每条用户消息分配独立 trace_id 串联整体链路
 
     async def _run() -> None:
         handle.running = True
@@ -347,7 +349,7 @@ async def _task_send(
         try:
             t0 = time.time()
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
-                res, _err = await session.step(text, transport, yes=yes, fatal_plan_decline=False)
+                res, _err = await session.step(text, transport, yes=yes, fatal_plan_decline=False, trace_id=trace_id)
             duration = time.time() - t0
             # step 内可能切换了 plan_mode（计划批准后 → False），通知前端更新
             await _send_session_info(conn, handle, sid)
@@ -649,9 +651,12 @@ def start_daemon(settings: Settings) -> None:
     from agent.context.session_store import SessionStore
     from agent.core.model import create_model
     from agent.core.session import Session
+    from agent.obs.span_log_handler import ensure_span_log_handler
     from agent.obs.store import TraceStore
     from agent.obs.tracer import Tracer
     from agent.runtime.registry import default_registry
+
+    ensure_span_log_handler()
 
     # 按 project_root 惰性解析并缓存 SessionStore（同一项目复用同一个 store 实例）。
     store_cache: dict[str, SessionStore] = {}

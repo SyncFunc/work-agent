@@ -4,8 +4,8 @@
 
 用法：
     >>> import logging
-    >>> from agent.obs.span_log_handler import SpanLogHandler, install_span_log_handler
-    >>> install_span_log_handler()  # 向 root logger 注册 Handler
+    >>> from agent.obs.span_log_handler import ensure_span_log_handler
+    >>> ensure_span_log_handler()  # 向 root logger 注册 Handler（幂等）
     >>> logger = logging.getLogger(__name__)
     >>> logger.info("tool %s completed", tool_name)  # 自动写入当前 span
 """
@@ -25,6 +25,9 @@ _LOG_LEVEL_MAP: dict[int, str] = {
     logging.ERROR: "error",
     logging.CRITICAL: "error",
 }
+
+# 模块级状态：防止重复注册
+_installed: bool = False
 
 
 class SpanLogHandler(logging.Handler):
@@ -55,21 +58,25 @@ class SpanLogHandler(logging.Handler):
         )
 
 
-def install_span_log_handler(
+def ensure_span_log_handler(
     logger: logging.Logger | None = None,
     *,
     level: int = logging.DEBUG,
-) -> SpanLogHandler:
-    """向目标 logger 注册 SpanLogHandler（默认 root logger）。
+) -> SpanLogHandler | None:
+    """向目标 logger 注册 SpanLogHandler（幂等，防止重复注册）。
 
     参数：
-        logger: 目标 logger。为 None 时注册到 root logger（同步从根 logger 输出到 span）。
-        level: Handler 的接收级别，默认 DEBUG 即全部日志都写入 span。
+        logger: 目标 logger。为 None 时注册到 root logger。
+        level: Handler 的接收级别，默认 DEBUG。
 
     返回：
-        已注册的 SpanLogHandler 实例（可用于后续 removeHandler）。
+        首次注册返回 SpanLogHandler 实例；已注册过则返回 None。
     """
+    global _installed
+    if _installed:
+        return None
     target = logger or logging.getLogger()
     handler = SpanLogHandler(level=level)
     target.addHandler(handler)
+    _installed = True
     return handler
