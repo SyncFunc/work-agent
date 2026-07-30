@@ -133,9 +133,6 @@ export function TracePanel({ client, projectRoot, sessionId }: TracePanelProps) 
       const resp = await listTraces(client, projectRoot)
       if (resp) {
         setTraces(resp.traces ?? [])
-        if (!activeSessionId && resp.traces.length > 0) {
-          setActiveSessionId(resp.traces[0].session_id)
-        }
       }
     } finally {
       setLoading(false)
@@ -145,6 +142,28 @@ export function TracePanel({ client, projectRoot, sessionId }: TracePanelProps) 
   useEffect(() => {
     loadTraces()
   }, [loadTraces])
+
+  // 当 traces 加载完成后，确保 activeSessionId 是有效的（在 traces 中存在的 session）
+  useEffect(() => {
+    if (traces.length === 0) return
+    const knownSessions = new Set(traces.map((t) => t.session_id))
+    if (!activeSessionId || !knownSessions.has(activeSessionId)) {
+      // 按 span_count 降序，选最大的 session
+      const sessionRank = new Map<string, number>()
+      for (const t of traces) {
+        sessionRank.set(t.session_id, (sessionRank.get(t.session_id) ?? 0) + t.span_count)
+      }
+      let best = traces[0].session_id
+      let max = 0
+      for (const [sid, count] of sessionRank) {
+        if (count > max) {
+          max = count
+          best = sid
+        }
+      }
+      setActiveSessionId(best)
+    }
+  }, [traces, activeSessionId])
 
   // 选中 trace 时加载 span 树
   useEffect(() => {
