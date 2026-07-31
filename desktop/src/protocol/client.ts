@@ -97,7 +97,7 @@ export class DaemonClient {
         settled = true
         this.clearConnectTimer()
         this.reconnectAttempt = 0
-        this.send('hello', { client_type: 'desktop', version: '0.3.0', token: this.token })
+        this.send('hello', { client_type: 'desktop', version: '0.4.0', token: this.token })
         // 重连后恢复会话订阅（M9.3 切换/断线恢复）。
         if (this.currentSessionId) {
           this.attach(this.currentSessionId, this.currentProjectRoot)
@@ -295,7 +295,7 @@ export class DaemonClient {
   // --------------------------------------------------------------------------- //
 
   hello(token?: string): void {
-    this.send('hello', { client_type: 'desktop', version: '0.3.0', token: token ?? this.token })
+    this.send('hello', { client_type: 'desktop', version: '0.4.0', token: token ?? this.token })
   }
 
   newSession(name?: string, projectRoot?: string): void {

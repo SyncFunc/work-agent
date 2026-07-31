@@ -424,7 +424,9 @@ class AgentLoop:
             return
         self._prefetched_originals.add(path)
         original = read_file_original(self.cwd, path)
-        logger.debug("prefetch_original tc_index=%s path=%s chars=%d", tc_index, path, len(original))
+        logger.debug(
+            "prefetch_original tc_index=%s path=%s chars=%d", tc_index, path, len(original)
+        )
         stream.emit(
             Event(
                 type=EventType.FILE_ORIGINAL,

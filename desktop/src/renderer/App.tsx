@@ -32,7 +32,7 @@ import type { SplashStep } from '../components/SplashScreen'
 import type { DaemonStage } from '../shared/daemon-config'
 
 const APP_NAME = 'Work Agent'
-const APP_VERSION = '0.3.0'
+const APP_VERSION = '0.4.0'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
 
