@@ -16,6 +16,28 @@ export function countDiffStats(diffText: string): { added: number; removed: numb
 }
 
 /**
+ * DiffBlock 的核心派生逻辑（纯函数，便于测试）：
+ * 从 ToolBlock 状态推导「流式目标内容」与「实时 diff 文本」。
+ *
+ * 每个 delta 都更新 target（delta 本身由 LLM 分片产生，频率可接受），
+ * 保证写入过程中实时展示 diff，而不是等完整行或结果。
+ * 完整 content（tool_use 后）始终最新。
+ */
+export function computeThrottledTarget(opts: {
+  fullContent: string | undefined
+  streamingContent: string | null
+  lastTarget: string
+}): { target: string; nextLastTarget: string } {
+  const { fullContent, streamingContent } = opts
+  if (fullContent !== undefined) {
+    return { target: fullContent, nextLastTarget: fullContent }
+  }
+  const partial = streamingContent ?? ''
+  if (partial === '') return { target: '', nextLastTarget: '' }
+  return { target: partial, nextLastTarget: partial }
+}
+
+/**
  * 从原始内容与新内容生成 standard unified diff。
  * @param original  写/改操作前的文件内容（空字符串 = 新文件）
  * @param modified  写/改操作后的文件内容

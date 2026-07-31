@@ -67,11 +67,15 @@ class SessionHandle:
         project_root: str = "",
         *,
         parent_id: str | None = None,
+        background: bool = False,
     ) -> None:
         self.session_id = session_id
         self.name = name or session_id[:8]
         self.project_root = project_root
         self.parent_id = parent_id  # M9 subsession：父会话 id（顶层会话为 None）
+        # M11：后台 subsession（如 session-memory 记忆子 agent）标记，事件转发时带
+        # background=true，前端据此不渲染成前台聊天区的子 agent 卡。
+        self.background = background
         self.session: SessionLike | None = session
         self.transport: BridgeTransport | None = (
             transport  # AgentTransport 实现（BridgeTransport 等）

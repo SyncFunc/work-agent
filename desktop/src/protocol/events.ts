@@ -143,6 +143,7 @@ export function parseEvent(raw: unknown): AgentEvent {
     type,
     ts: typeof d.ts === 'number' ? d.ts : 0,
     transient: typeof d.transient === 'boolean' ? d.transient : undefined,
+    background: typeof d.background === 'boolean' ? d.background : undefined,
     decision: d.decision === undefined ? undefined : parseDecision(d.decision),
     tool_use: d.tool_use === undefined ? undefined : parseToolCall(d.tool_use),
     tool_result: d.tool_result === undefined ? undefined : parseToolResult(d.tool_result),
@@ -174,6 +175,7 @@ export function parseEvent(raw: unknown): AgentEvent {
 export function eventToDict(ev: AgentEvent): Record<string, unknown> {
   const d: Record<string, unknown> = { seq: ev.seq, type: ev.type, ts: ev.ts }
   if (ev.transient !== undefined) d.transient = ev.transient
+  if (ev.background !== undefined) d.background = ev.background
   if (ev.decision !== undefined) d.decision = ev.decision
   if (ev.tool_use !== undefined) d.tool_use = ev.tool_use
   if (ev.tool_result !== undefined) d.tool_result = ev.tool_result

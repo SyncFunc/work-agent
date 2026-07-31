@@ -75,11 +75,17 @@ export function DiffView({
   const [view, setView] = useState<'unified' | 'split'>('unified')
   const [copied, setCopied] = useState(false)
   const rawLines = useMemo(() => text.split('\n'), [text])
-  // 紧凑模式：去掉 unified-diff 文件头（---/+++）、hunk 头（@@）以及首/尾纯空行
+  // 紧凑模式：去掉 unified-diff 文件头（Index: / ==== / --- / +++ / @@）以及首/尾纯空行
   const lines = useMemo(() => {
     if (!compact) return rawLines
     const filtered = rawLines.filter(
-      (ln) => ln !== '' && !/^---/.test(ln) && !/^\+\+\+/.test(ln) && !/^@@/.test(ln),
+      (ln) =>
+        ln !== '' &&
+        !/^Index:/.test(ln) &&
+        !/^=+$/.test(ln) &&
+        !/^---/.test(ln) &&
+        !/^\+\+\+/.test(ln) &&
+        !/^@@/.test(ln),
     )
     // 去掉首/尾连续空行（unified-diff 输出末尾的 \n 产生的 '' 行）
     while (filtered.length && filtered[0] === '') filtered.shift()
@@ -99,7 +105,7 @@ export function DiffView({
   }
 
   return (
-    <div className="wa-diff-view">
+    <div className={`wa-diff-view${compact ? ' wa-diff-view--compact' : ''}`}>
       {!compact && (
         <div className="wa-diff-view__bar">
           <Button variant="ghost" size="sm" onClick={() => setView((v) => (v === 'unified' ? 'split' : 'unified'))}>

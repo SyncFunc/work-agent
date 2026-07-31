@@ -300,19 +300,11 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         break
       }
       case 'file_original': {
-        // write/edit 流式预读：缓存 path → 原内容，并直接挂载到已匹配的工具块
-        // （路径来自后端解析，比前端 deltaArgs 正则提取更可靠，保证写入中实时 diff 可用）。
+        // write/edit 流式预读：只缓存 path → 原内容，不创建工具块。
+        // 工具块由后续 tool_call_delta / tool_use 创建，再由 attachOriginal 命中缓存挂载，
+        // 避免提前创建 name='tool' 的空块触发跨轮检测误清空（导致重复块）。
         if (ev.file_path && ev.file_original != null) {
           originalByPath.set(ev.file_path, ev.file_original)
-          for (const tb of toolOrder) {
-            if (
-              tb.original === null &&
-              (tb.name === 'write' || tb.name === 'edit') &&
-              (typeof tb.args?.path === 'string' ? tb.args.path : extractPartialPath(tb.deltaArgs)) === ev.file_path
-            ) {
-              tb.original = ev.file_original
-            }
-          }
         }
         break
       }
@@ -335,7 +327,9 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
           toolUseSeen = 0
         }
         const tb = ensureToolAt(idx)
-        if (ev.tc_args) tb.deltaArgs += ev.tc_args
+        // 后端 model.py 发的是「累计值」（slot["arguments"] 每次含全部前缀），
+        // 因此这里赋值而非追加，否则会重复累加产生乱码（如 content 关键字反复嵌套）。
+        if (ev.tc_args) tb.deltaArgs = ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
         attachOriginal(tb)
         break
@@ -603,19 +597,11 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         break
       }
       case 'file_original': {
-        // write/edit 流式预读：缓存 path → 原内容，并直接挂载到已匹配的工具块
-        // （路径来自后端解析，比前端 deltaArgs 正则提取更可靠，保证写入中实时 diff 可用）。
+        // write/edit 流式预读：只缓存 path → 原内容，不创建工具块。
+        // 工具块由后续 tool_call_delta / tool_use 创建，再由 attachOriginal 命中缓存挂载，
+        // 避免提前创建 name='tool' 的空块触发跨轮检测误清空（导致重复块）。
         if (ev.file_path && ev.file_original != null) {
           originalByPath.set(ev.file_path, ev.file_original)
-          for (const tb of toolOrder) {
-            if (
-              tb.original === null &&
-              (tb.name === 'write' || tb.name === 'edit') &&
-              (typeof tb.args?.path === 'string' ? tb.args.path : extractPartialPath(tb.deltaArgs)) === ev.file_path
-            ) {
-              tb.original = ev.file_original
-            }
-          }
         }
         break
       }
@@ -638,7 +624,9 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
           toolUseSeen = 0
         }
         const tb = ensureToolAt(idx)
-        if (ev.tc_args) tb.deltaArgs += ev.tc_args
+        // 后端 model.py 发的是「累计值」（slot["arguments"] 每次含全部前缀），
+        // 因此这里赋值而非追加，否则会重复累加产生乱码（如 content 关键字反复嵌套）。
+        if (ev.tc_args) tb.deltaArgs = ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
         attachOriginal(tb)
         break
@@ -801,41 +789,55 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         segEvents.push(events[j])
         j++
       }
-      // M10.4：提取子 agent 段内的 USAGE 事件，累积到父会话的用量（子 agent 块不渲染消耗）。
-      for (const sev of segEvents) {
-        if (sev.type !== 'usage') continue
-        if (!currentUsage) {
-          currentUsage = {
-            duration: 0,
-            usage: {
-              prompt_tokens: 0,
-              completion_tokens: 0,
-              reasoning_tokens: 0,
-              cache_hit_tokens: 0,
-              cache_miss_tokens: 0,
-              cache_write_tokens: 0,
-              total_tokens: 0,
-            },
+      // M11：后台 subsession（如 session-memory 记忆子 agent）事件不渲染进前台聊天区，
+      // 其 token 消耗也不计入前台用量（后台单独统计，由 daemon 持久化/后台面板消费）。
+      const isBackground = events[i].background === true
+      if (!isBackground) {
+        // M10.4：提取前台子 agent 段内的 USAGE 事件，累积到父会话的用量（子 agent 块不渲染消耗）。
+        for (const sev of segEvents) {
+          if (sev.type !== 'usage') continue
+          if (!currentUsage) {
+            currentUsage = {
+              duration: 0,
+              usage: {
+                prompt_tokens: 0,
+                completion_tokens: 0,
+                reasoning_tokens: 0,
+                cache_hit_tokens: 0,
+                cache_miss_tokens: 0,
+                cache_write_tokens: 0,
+                total_tokens: 0,
+              },
+            }
           }
+          const u = sev.usage ?? {}
+          currentUsage.duration += sev.duration ?? 0
+          currentUsage.usage.prompt_tokens += u.prompt_tokens ?? 0
+          currentUsage.usage.completion_tokens += u.completion_tokens ?? 0
+          currentUsage.usage.reasoning_tokens += u.reasoning_tokens ?? 0
+          currentUsage.usage.cache_hit_tokens += u.cache_hit_tokens ?? 0
+          currentUsage.usage.cache_miss_tokens += u.cache_miss_tokens ?? 0
+          currentUsage.usage.cache_write_tokens += u.cache_write_tokens ?? 0
+          currentUsage.usage.total_tokens += u.total_tokens ?? 0
+          usageDirty = true
         }
-        const u = sev.usage ?? {}
-        currentUsage.duration += sev.duration ?? 0
-        currentUsage.usage.prompt_tokens += u.prompt_tokens ?? 0
-        currentUsage.usage.completion_tokens += u.completion_tokens ?? 0
-        currentUsage.usage.reasoning_tokens += u.reasoning_tokens ?? 0
-        currentUsage.usage.cache_hit_tokens += u.cache_hit_tokens ?? 0
-        currentUsage.usage.cache_miss_tokens += u.cache_miss_tokens ?? 0
-        currentUsage.usage.cache_write_tokens += u.cache_write_tokens ?? 0
-        currentUsage.usage.total_tokens += u.total_tokens ?? 0
-        usageDirty = true
+        const subBlocks = reduceSubEvents(segEvents, `s${subSeq++}-`)
+        // Bug5 修复：同一 subsession_id 的事件可能被父会话事件隔成多段（如 session-memory
+        // 子 agent 执行期间父层插入 text/usage）。若上一块已是同 subsession 的 subagent 卡，
+        // 则把本段追加合并进它，避免生成重复 key（`sub-<id>`）导致 React 渲染错乱。
+        const lastTop = top[top.length - 1]
+        if (lastTop && lastTop.type === 'subagent' && lastTop.subsessionId === sub) {
+          lastTop.blocks.push(...subBlocks)
+        } else {
+          top.push({
+            key: `sub-${sub}`,
+            type: 'subagent',
+            subsessionId: sub,
+            name: agentFromSubId(sub),
+            blocks: subBlocks,
+          })
+        }
       }
-      top.push({
-        key: `sub-${sub}`,
-        type: 'subagent',
-        subsessionId: sub,
-        name: agentFromSubId(sub),
-        blocks: reduceSubEvents(segEvents, `s${subSeq++}-`),
-      })
       // 段结束：仅重置「定位」状态（保留 toolById 以配对跨段结果），避免段后 delta
       // 误写到段前的工具块（如 spawn_subagent 的 TOOL_USE 在段前）。
       toolOrder.length = 0

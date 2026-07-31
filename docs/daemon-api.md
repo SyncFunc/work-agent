@@ -189,6 +189,7 @@
 
 ### 5.6 `event`
 - **payload**：`{ "event": Event.to_dict() }`，子会话事件额外带 `subsession_id`：`{ "event": {...}, "subsession_id": string }`。
+- **后台 subsession 标记**：后台子 agent（如 session-memory 记忆子 agent）的事件，其 `background: true` 在 `event` **结构体内部**（经 `to_dict()` 序列化），随回放/持久化完整保留；前端据此**不渲染进前台聊天区**。信封层不额外带 `background` 字段。
 - 这是前端渲染的核心数据源（见 6.1 事件结构）。
 
 ### 5.7 `replay_start` / `replay_end`
@@ -263,6 +264,7 @@
 | `tool_call_id` | string | `tool_result` 等 |
 | `tc_index` / `tc_name` / `tc_args` | int / string / string | `tool_call_delta`（瞬时，不回放） |
 | `file_path` / `file_original` | string / string | `file_original`（瞬时，不回放；write/edit 流式预读原内容，供前端实时 diff） |
+| `background` | bool | 任意事件（后台 subsession，如 session-memory 记忆子 agent；进 event 序列化，回放/持久化仍保留，前端据此不渲染进前台聊天区） |
 | `text` | string | `text` / `final` / `error` |
 | `kind` | `"reasoning"` \| `"content"` | `text`（区分思考/输出） |
 | `error` | string | `error` |

@@ -171,3 +171,26 @@ def test_stream_tail_preserves_true_seq_and_continues():
     # maxlen=3 触发截断：seq 4 被挤出，窗口变为 [5,6,7]；seq 仍全局唯一、无重复。
     assert [e.seq for e in capped.all()] == [5, 6, 7]
     assert len({e.seq for e in capped.all()}) == len(capped.all())
+
+
+def test_stream_background_marks_all_events_and_survives_serialization():
+    """M11：EventStream.background=True 时，append/emit 的事件统一打 background 标记，
+    且 to_dict/from_dict 序列化保留（回放时前端据此不渲染进前台聊天区）。"""
+    stream = EventStream()
+    stream.background = True
+    stream.append(Event(type=EventType.TEXT, text="bg text"))
+    # 落盘视角：to_dict 带 background
+    assert stream.all()[0].background is True
+    assert stream.to_json().__contains__('"background": true')
+    # 重建视角：from_dict 还原 background（回放时仍能区分）
+    rebuilt = EventStream.from_json(stream.to_json())
+    assert rebuilt.all()[0].background is True
+    # emit 的瞬时事件也带标记（实时转发用）
+    emitted: list[Event] = []
+    stream.subscribe(lambda ev: emitted.append(ev))
+    stream.emit(Event(type=EventType.TOOL_CALL_DELTA, tc_index=0, tc_name="bash", tc_args="{}"))
+    assert emitted[0].background is True
+    # 非后台流不标记
+    plain = EventStream()
+    plain.append(Event(type=EventType.TEXT, text="plain"))
+    assert plain.all()[0].background is False

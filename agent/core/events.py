@@ -94,6 +94,9 @@ class Event:
 
     type: EventType  # 事件类型，强类型枚举（见 EventType）
     transient: bool = False  # 瞬时事件标记：emit 路径置 True，不进 to_dict/from_dict，不进回放缓冲
+    # M11：后台 subsession 事件标记（如 session-memory 记忆子 agent）。进 event 序列化，
+    # 回放/持久化时仍可区分前后台；前端据此不渲染进前台聊天区。
+    background: bool = False
     ts: float = 0.0  # 写入时由 EventStream 填充（from_json 重建时保留原值）
     message_id: str | None = (
         None  # 归属的 message（一次响应：顶层=一轮 task.send / 子agent=一次 spawn）
@@ -141,6 +144,8 @@ class Event:
             d["duration"] = self.duration
         if self.estimated:
             d["estimated"] = True
+        if self.background:
+            d["background"] = True
         if self.decision is not None:
             d["decision"] = _decision_to_dict(self.decision)
         if self.tool_use is not None:
@@ -186,6 +191,7 @@ class Event:
             usage=d.get("usage"),
             duration=d.get("duration"),
             estimated=bool(d.get("estimated", False)),
+            background=bool(d.get("background", False)),
             decision=_decision_from_dict(d["decision"]) if "decision" in d else None,
             tool_use=_tool_call_from_dict(d["tool_use"]) if "tool_use" in d else None,
             tool_result=_tool_result_from_dict(d["tool_result"]) if "tool_result" in d else None,
@@ -231,6 +237,10 @@ class EventStream:
         # 内存上限（防 OOM）：非 None 时 _events 仅保留最近 maxlen 条。
         # 持久化不受影响（SessionStoreSink 仍全量落盘 sqlite）。
         self.maxlen = maxlen
+        # M11：后台 subsession（如 session-memory）事件标记。为 True 时本流产生的每条事件
+        # （append/emit）都统一打 background=true，使所有订阅者（实时转发 transport + sqlite
+        # 落盘 sink）看到的 ev.background 一致，落盘保留 → 回放时前端仍据此不渲染进前台聊天区。
+        self.background = False
 
     def subscribe(self, sink: EventSink) -> None:
         """注册一个实时事件处理器（渲染/转发）。幂等：同一 sink 重复订阅只生效一次。
@@ -254,6 +264,9 @@ class EventStream:
         self._seq += 1
         if ev.ts == 0.0:
             ev.ts = time.time()
+        # M11：后台 subsession 事件源头统一打 background 标记（确保落盘与实时转发一致）。
+        if self.background:
+            ev.background = True
         # 唯一打标点：未显式标注 message_id 的事件自动继承当前 message 上下文
         if ev.message_id is None:
             ev.message_id = self.current_message_id
@@ -274,6 +287,9 @@ class EventStream:
         ``to_json`` / 重放，也不改变「持久化事件序列」的既有不变量（测试据此断言 type 顺序）。
         """
         ev.transient = True  # 标记为瞬时，回放缓冲（如 daemon 环形缓冲）据此排除
+        # M11：后台 subsession 瞬时事件（如 tool_call_delta）同样打 background 标记。
+        if self.background:
+            ev.background = True
         for sink in self._sinks:
             sink(ev)
 

@@ -49,8 +49,9 @@ describe('buildChatModel', () => {
   it('工具流：delta 预览 + TOOL_USE 定稿 + TOOL_RESULT 结果，块唯一', () => {
     const events: AgentEvent[] = [
       { seq: 0, type: 'text', text: 'ok', kind: 'content', ts: 0 },
+      // 后端发累计值：后一个 tc_args 含全部前缀（前端赋值而非追加）
       { seq: 1, type: 'tool_call_delta', tc_index: 0, tc_name: 'bash', tc_args: '{"cmd"', ts: 0 },
-      { seq: 2, type: 'tool_call_delta', tc_index: 0, tc_args: ':"ls"}', ts: 0 },
+      { seq: 2, type: 'tool_call_delta', tc_index: 0, tc_args: '{"cmd":"ls"}', ts: 0 },
       { seq: 3, type: 'decision', decision: { text: 'ok', tool_calls: [{ id: 'c1', name: 'bash', arguments: { cmd: 'ls' } }] }, ts: 0 },
       { seq: 4, type: 'tool_use', tool_use: { id: 'c1', name: 'bash', arguments: { cmd: 'ls' } }, ts: 0 },
       { seq: 5, type: 'tool_result', tool_call_id: 'c1', tool_result: { ok: true, output: 'a\nb' }, ts: 0 },
@@ -69,30 +70,47 @@ describe('buildChatModel', () => {
     expect(flat[1].type).toBe('tool')
   })
 
-  it('write 实时 diff：FILE_ORIGINAL 预读缓存挂到工具块 original（delta 阶段即可用）', () => {
+  it('write 实时 diff：FILE_ORIGINAL 缓存 + deltaArgs 赋值（后端累计值）命中挂载', () => {
+    // 后端 emit 顺序：file_original 先到，tool_call_delta 携带「累计值」（非增量）
     const events: AgentEvent[] = [
-      // ① FILE_ORIGINAL 瞬时事件：预读原文件内容（path=src/a.ts）
       { seq: 0, type: 'file_original', file_path: 'src/a.ts', file_original: 'line1\nline2\n', ts: 0 },
-      // ② 流式参数：path 已完整出现，content 仍在累积
       { seq: 1, type: 'tool_call_delta', tc_index: 0, tc_name: 'write', tc_args: '{"path":"src/a.ts","content":"line1', ts: 0 },
-      { seq: 2, type: 'tool_call_delta', tc_index: 0, tc_name: 'write', tc_args: '\\nline2\\nNEW"}' as string, ts: 0 },
-      // ③ TOOL_USE 定稿（含完整 content）
+      // 后端每次发累计值（含全部前缀），前端应赋值而非追加
+      { seq: 2, type: 'tool_call_delta', tc_index: 0, tc_name: 'write', tc_args: '{"path":"src/a.ts","content":"line1\nline2\nNEW"}' as string, ts: 0 },
       { seq: 3, type: 'tool_use', tool_use: { id: 'w1', name: 'write', arguments: { path: 'src/a.ts', content: 'line1\nline2\nNEW' } }, ts: 0 },
-      // ④ TOOL_RESULT（original 权威值回填）
       { seq: 4, type: 'tool_result', tool_call_id: 'w1', tool_result: { ok: true, original: 'line1\nline2\n' }, ts: 0 },
     ]
     const { blocks } = buildChatModel(events)
     const tools = toolBlocks(blocks)
     expect(tools).toHaveLength(1)
     expect(tools[0].name).toBe('write')
-    // FILE_ORIGINAL 预读缓存命中：delta 阶段即可拿到原内容
+    // FILE_ORIGINAL 缓存命中，attachOriginal 用完整 deltaArgs 提取 path 挂载（不创建重复块）
     expect(tools[0].original).toBe('line1\nline2\n')
+    // deltaArgs 为累计值（赋值，非重复追加乱码）
+    expect(tools[0].deltaArgs).toBe('{"path":"src/a.ts","content":"line1\nline2\nNEW"}')
+    // 工具块最终参数 + 结果完整
+    expect(tools[0].args).toEqual({ path: 'src/a.ts', content: 'line1\nline2\nNEW' })
+    expect(tools[0].result).toEqual({ ok: true, original: 'line1\nline2\n' })
+  })
+
+  it('write：path 未完整时提取不到，original 不挂载（保持 null）', () => {
+    // 首个 delta 的 path 只有部分，且无后续完整 delta（模拟提取失败场景）
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'file_original', file_path: 'src/a.ts', file_original: 'line1\n', ts: 0 },
+      { seq: 1, type: 'tool_call_delta', tc_index: 0, tc_name: 'write', tc_args: '{"path":"src/', ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    const tools = toolBlocks(blocks)
+    expect(tools).toHaveLength(1)
+    // path 不完整 → 提取不到 → original 保持 null（DiffBlock 回退到内容预览）
+    expect(tools[0].original).toBe(null)
   })
 
   it('replay 一致性：不含 transient delta 的回放，工具最终参数/结果与带 delta 的实时一致', () => {
     const withDelta: AgentEvent[] = [
+      // 后端发累计值：后一个 tc_args 含全部前缀
       { seq: 0, type: 'tool_call_delta', tc_index: 0, tc_name: 'bash', tc_args: '{"cmd"', ts: 0 },
-      { seq: 1, type: 'tool_call_delta', tc_index: 0, tc_args: ':"ls"}', ts: 0 },
+      { seq: 1, type: 'tool_call_delta', tc_index: 0, tc_args: '{"cmd":"ls"}', ts: 0 },
       { seq: 2, type: 'decision', decision: { text: '', tool_calls: [{ id: 'c1', name: 'bash', arguments: { cmd: 'ls' } }] }, ts: 0 },
       { seq: 3, type: 'tool_use', tool_use: { id: 'c1', name: 'bash', arguments: { cmd: 'ls' } }, ts: 0 },
       { seq: 4, type: 'tool_result', tool_call_id: 'c1', tool_result: { ok: true, output: 'OUT' }, ts: 0 },
@@ -273,6 +291,28 @@ describe('buildChatModel', () => {
     expect(resp.turnMeta?.duration).toBeCloseTo(5.0, 1)
   })
 
+  it('M11：后台 subsession（session-memory）的 USAGE 不计入前台用量', () => {
+    const sub = 'sess/sub_session-memory_0_3bb340'
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'user', text: '写文章', ts: 0 },
+      { seq: 1, type: 'text', text: '写作中', kind: 'content', ts: 0 },
+      // 后台记忆子 agent：带 USAGE（background=true），其 token 消耗不应计入前台
+      { seq: 2, type: 'text', text: '记忆内容', kind: 'content', subsession_id: sub, background: true, ts: 0 },
+      { seq: 3, type: 'final', text: '记忆完成', subsession_id: sub, background: true, ts: 0 },
+      { seq: 4, type: 'usage', message_id: 'sub-m1', usage: { total_tokens: 50, prompt_tokens: 30, completion_tokens: 20 }, duration: 5.0, estimated: false, subsession_id: sub, background: true, ts: 0 },
+      // 父级回答 + USAGE
+      { seq: 5, type: 'final', text: '写完了', ts: 0 },
+      { seq: 6, type: 'usage', message_id: 'm2', usage: { total_tokens: 10, prompt_tokens: 6, completion_tokens: 4 }, duration: 1.0, estimated: false, ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    // 后台子 agent 不渲染成前台卡
+    expect(subBlocks(blocks)).toHaveLength(0)
+    const resp = blocks.find((b) => b.type === 'response') as ResponseBlock
+    // 前台用量只含父级 10，不含后台子 agent 的 50
+    expect(resp.turnMeta?.usage.total_tokens).toBe(10)
+    expect(resp.turnMeta?.duration).toBeCloseTo(1.0, 1)
+  })
+
   it('正常 user 任务不误并入澄清块', () => {
     const events: AgentEvent[] = [
       { seq: 0, type: 'user', text: '新任务', ts: 0 },
@@ -331,5 +371,41 @@ describe('buildChatModel', () => {
     const subs = subBlocks(buildChatModel(events).blocks)
     expect(subs).toHaveLength(1)
     expect(deriveSubagentStatus(subs[0].blocks)).toBe('done')
+  })
+
+  it('Bug5：同一 subsession 被父事件隔成多段时合并为单一子 agent 块（不产生重复 key）', () => {
+    // 复现 session-memory 子 agent：同一 sub 的事件流被父会话事件（如 usage）隔成两段。
+    // 若分别 push 两个 `sub-<id>` 块 → 重复 key → React 渲染错乱。
+    const sub = 'sess/sub_session-memory_0_3bb340'
+    const events: AgentEvent[] = [
+      { seq: 0, type: 'text', text: '记忆开始', kind: 'content', subsession_id: sub, ts: 0 },
+      // 父事件（usage）插在中间，把同一子 agent 段隔开
+      { seq: 1, type: 'usage', usage: { prompt_tokens: 10, completion_tokens: 5 }, ts: 0 },
+      { seq: 2, type: 'text', text: '记忆继续', kind: 'content', subsession_id: sub, ts: 0 },
+      { seq: 3, type: 'final', text: '记忆完成', subsession_id: sub, ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    // 关键：同一 sub 只应产生一个子 agent 块（两段合并）
+    const subs = subBlocks(blocks)
+    expect(subs).toHaveLength(1)
+    expect(subs[0].key).toBe(`sub-${sub}`)
+    // 两段文本都应合并进该块（final 仅收尾，不产生重复文本）
+    const textContents = subs[0].blocks
+      .filter((b) => b.type === 'text')
+      .map((b) => (b as { content?: string }).content ?? '')
+    expect(textContents.join('|')).toContain('记忆开始')
+    expect(textContents.join('|')).toContain('记忆继续')
+  })
+
+  it('M11：后台 subsession（session-memory）事件不渲染成前台子 agent 卡', () => {
+    const sub = 'sess/sub_session-memory_0_3bb340'
+    const events: AgentEvent[] = [
+      // 后台记忆子 agent：background=true，其事件不应出现在前台聊天区
+      { seq: 0, type: 'text', text: '记忆内容', kind: 'content', subsession_id: sub, background: true, ts: 0 },
+      { seq: 1, type: 'final', text: '记忆完成', subsession_id: sub, background: true, ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    // 前台不应产生任何 subagent 卡
+    expect(subBlocks(blocks)).toHaveLength(0)
   })
 })

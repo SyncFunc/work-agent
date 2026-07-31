@@ -442,6 +442,8 @@ class Session:
                     # subsession 实时转发；CLI 模式 daemon_handle 为 None，走本地 transport。
                     parent_handle=self.daemon_handle,
                     registry=self.daemon_registry,
+                    # M11：后台 subsession 标记，前端据此不渲染进前台聊天区（如 session-memory）。
+                    background=True,
                 )
                 if result_sink is not None:
                     result_sink(agent_name, task, result.text)

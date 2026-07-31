@@ -23,7 +23,9 @@ import { useObs } from '../features/obs/useObs'
 import { Sidebar } from '../features/sidebar/Sidebar'
 import type { LeftNav } from '../features/sidebar/Sidebar'
 import { SkillsPanel, AgentsPanel } from '../features/sidebar/SpecPanels'
-import { ToastStack, TitleBar } from '../components'
+import { BackgroundAgents } from '../features/obs/BackgroundAgents'
+import { Bot } from 'lucide-react'
+import { ToastStack, TitleBar, IconButton } from '../components'
 import type { ToastData, ToastKind } from '../components'
 import { SplashScreen } from '../components/SplashScreen'
 import type { SplashStep } from '../components/SplashScreen'
@@ -52,6 +54,10 @@ export default function App(): React.ReactElement {
   const [draft, setDraft] = useState<string>('')
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [paletteOpen, setPaletteOpen] = useState(false)
+  // M11：聊天区右上角的后台子 agent 浮层面板开关。
+  const [bgOpen, setBgOpen] = useState(false)
+  // 当前是否有后台子 agent 在运行（驱动 Bot 入口按钮的呼吸动画）。
+  const [bgRunning, setBgRunning] = useState(false)
   const [leftNav, setLeftNav] = useState<LeftNav>('chat')
   const [contextWindow, setContextWindow] = useState<number | undefined>(undefined)
   const [sidebarW, setSidebarW] = useState(() => loadNum('workagent.sidebarW', 260))
@@ -441,10 +447,29 @@ export default function App(): React.ReactElement {
               )}
               {active && (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
-                  <p style={{ color: 'var(--wa-text-muted)', fontSize: 13, padding: '0 16px', margin: '8px 0' }}>
-                    会话 <code>{active.name}</code> · {active.events.length} 条事件
-                    {sessions.state.replaying ? '（回放中…）' : ''}
-                  </p>
+                  <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', margin: '8px 0', position: 'relative' }}>
+                    <p style={{ color: 'var(--wa-text-muted)', fontSize: 13, margin: 0, flex: 1 }}>
+                      会话 <code>{active.name}</code> · {active.events.length} 条事件
+                      {sessions.state.replaying ? '（回放中…）' : ''}
+                    </p>
+                    {/* M11：后台子 agent 面板入口（聊天区右上角），不依赖会话切换。
+                        后台有任务运行时，按钮以呼吸律动闪烁提醒用户。 */}
+                    <IconButton
+                      icon={<Bot size={15} />}
+                      label="后台子 Agent"
+                      onClick={() => setBgOpen((v) => !v)}
+                      className={bgRunning ? 'wa-bg-entry--running' : undefined}
+                    />
+                    {/* BackgroundAgents 始终挂载（仅用浮层控制可见性），确保浮层关闭时
+                        也能持续感知后台任务事件，从而驱动入口按钮的呼吸动画。 */}
+                    <div className={bgOpen ? 'wa-bg-popover' : 'wa-bg-popover wa-bg-popover--hidden'}>
+                      <BackgroundAgents
+                        client={client}
+                        sessionId={active ? active.id : null}
+                        onRunningChange={setBgRunning}
+                      />
+                    </div>
+                  </div>
                   <MessageList model={model} autoScroll />
                 </div>
               )}

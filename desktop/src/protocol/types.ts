@@ -121,6 +121,8 @@ export interface AgentEvent {
   ts: number
   /** M9 subsession：归属的子会话 id（顶层会话事件为 undefined/空）。 */
   subsession_id?: string | null
+  /** M11：后台 subsession 标记（如 session-memory 记忆子 agent），前端据此不渲染进前台聊天区。 */
+  background?: boolean
   transient?: boolean
   decision?: Decision | null
   tool_use?: ToolCall | null

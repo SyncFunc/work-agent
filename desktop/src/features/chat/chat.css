@@ -339,6 +339,19 @@
   border-radius: var(--wa-r-sm);
   line-height: 1.5;
 }
+/* 紧凑模式（write/edit 块内）：去掉独立卡片感，紧贴内容块 */
+.wa-diff-view--compact .wa-diff {
+  background: none;
+  border: none;
+  border-radius: 0;
+  padding: 0;
+  margin: 0;
+  line-height: 1.5;
+}
+.wa-diff-view--compact .wa-diff__num {
+  padding-right: var(--wa-s1);
+  min-width: 2ch;
+}
 .wa-diff-row {
   display: flex;
 }
@@ -438,7 +451,15 @@
 .wa-tool-diff__body {
   max-height: 300px;
   overflow-y: auto;
-  padding: var(--wa-s2) var(--wa-s3);
+  padding: var(--wa-s1) var(--wa-s3);
+}
+.wa-tool-diff__empty {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: var(--wa-s2) 0;
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-muted);
 }
 .wa-tool-diff__out {
   margin: 0;

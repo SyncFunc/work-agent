@@ -10,7 +10,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { ToolBlock as ToolBlockModel } from './useEventReducer'
 import { DiffView, isDiffLike } from './DiffView'
 import { Badge, Button, IconButton, Spinner } from '../../components'
-import { computeUnifiedDiff, countDiffStats, extractPartialContent } from '../../utils/diff'
+import { computeThrottledTarget, computeUnifiedDiff, countDiffStats, extractPartialContent } from '../../utils/diff'
 import {
   CheckCircle2,
   ChevronRight,
@@ -91,27 +91,17 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
   }, [block.deltaArgs])
   const targetContent = fullContent ?? streamingContent ?? ''
 
-  // 流式阶段节流：每个字符都跑 createTwoFilesPatch 太浪费。
-  // 仅在 content 累积到完整行（末尾 \n）时才更新 throttledTarget；不完整行沿用上次结果。
-  // tool_use 之后 fullContent 完整，总是取最新。超长单行兜底：长度变化 ≥ 256 也更新一次。
+  // 流式阶段节流：仅在 content 累积到完整行（末尾 \n）时更新 throttledTarget；
+  // 完整 content（tool_use 后）始终最新；超长单行兜底。核心逻辑见 computeThrottledTarget。
   const lastFullLineRef = useRef<string>('')
   const throttledTarget = useMemo(() => {
-    if (fullContent !== undefined) {
-      lastFullLineRef.current = fullContent
-      return fullContent
-    }
-    const partial = streamingContent ?? ''
-    if (partial === '') return lastFullLineRef.current
-    if (partial.endsWith('\n')) {
-      lastFullLineRef.current = partial
-      return partial
-    }
-    // 兜底：超长单行（≥256 字符）允许更新，避免永卡住
-    if (partial.length - lastFullLineRef.current.length >= 256) {
-      lastFullLineRef.current = partial
-      return partial
-    }
-    return lastFullLineRef.current
+    const r = computeThrottledTarget({
+      fullContent,
+      streamingContent,
+      lastTarget: lastFullLineRef.current,
+    })
+    lastFullLineRef.current = r.nextLastTarget
+    return r.target
   }, [fullContent, streamingContent])
 
   // 实时 diff：节流后的目标内容（流式按行；完整 always fresh）
@@ -123,6 +113,9 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
   // 无 original（如回放场景无预读）时回退到后端 diff / 原始内容预览。
   const fallbackText = result?.diff ?? null
   const displayText = diffText ?? fallbackText ?? targetContent
+  // 流式阶段（delta 进行中 / 工具执行中）始终展开，避免 delta 早期内容为空时误判为折叠
+  const isStreaming = block.deltaArgs !== '' || block.running
+  const bodyVisible = expanded && (displayText !== '' || isStreaming)
 
   // 写入完成（result 且 ok 且非 running）后自动折叠内容，仅执行一次；用户可点标题展开。
   const doneRef = useRef(false)
@@ -173,13 +166,19 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
         ) : null}
         <ChevronRight size={16} className={`wa-tool__chev ${expanded ? 'wa-tool__chev--open' : ''}`} />
       </button>
-      {expanded && displayText && (
+      {bodyVisible && (
         <div className="wa-tool-diff__body">
           {diffText ? (
             // 实时 diff（流式阶段即可见，行级着色）
             <DiffView text={shownOut} compact />
-          ) : (
+          ) : displayText ? (
             <pre className="wa-tool-diff__out">{shownOut}</pre>
+          ) : (
+            // delta 早期 / 尚无内容：占位，避免空白折叠感
+            <div className="wa-tool-diff__empty">
+              <Spinner size={12} />
+              <span>等待写入内容…</span>
+            </div>
           )}
           {truncated && (
             <div style={{ marginTop: 'var(--wa-s1)' }}>

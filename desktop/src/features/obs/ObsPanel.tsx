@@ -1,14 +1,13 @@
-// ObsPanel：M9.7 可观测面板主容器——状态栏 + 可切换的 Trace / 日志 / 后台 视图。
+// ObsPanel：M9.7 可观测面板主容器——状态栏 + 可切换的 Trace / 日志 视图。
 
 import { useState } from 'react'
 import type { ReactNode } from 'react'
 import { DaemonClient } from '../../protocol/client'
-import { BackgroundAgents } from './BackgroundAgents'
 import { StatusBar } from './StatusBar'
 import { TracePanel } from './TracePanel'
 import { useObs } from './useObs'
 import { IconButton, Tabs } from '../../components'
-import { Bot, ListTree, X } from 'lucide-react'
+import { ListTree, X } from 'lucide-react'
 
 interface Props {
   client: DaemonClient | null
@@ -24,11 +23,10 @@ interface Props {
   onResizeStart?: (e: React.MouseEvent) => void
 }
 
-type Tab = 'trace' | 'bg'
+type Tab = 'trace'
 
 const TABS: { id: Tab; label: ReactNode }[] = [
   { id: 'trace', label: (<><ListTree size={14} /> Trace</>) },
-  { id: 'bg', label: (<><Bot size={14} /> 后台</>) },
 ]
 
 export function ObsPanel({ client, projectRoot, sessionId, contextWindow, onClose, drawer, width, onResizeStart }: Props) {
@@ -53,7 +51,6 @@ export function ObsPanel({ client, projectRoot, sessionId, contextWindow, onClos
         </div>
         <div className="wa-obs__body">
           {tab === 'trace' && <TracePanel client={client} projectRoot={projectRoot} sessionId={sessionId} />}
-          {tab === 'bg' && <BackgroundAgents client={client} sessionId={sessionId} />}
         </div>
       </aside>
     </>

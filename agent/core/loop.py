@@ -385,7 +385,7 @@ class AgentLoop:
                 elif ev.type == EventType.TOOL_CALL_DELTA:
                     # M11：write/edit 流式预读原文件内容，emit FILE_ORIGINAL 供前端实时 diff。
                     # 只在 path 首次完整出现时读取一次（避免每个 delta 都重复读文件）。
-                    self._prefetch_original(stream, ev.tc_name, ev.tc_args)
+                    self._prefetch_original(stream, ev.tc_index, ev.tc_name, ev.tc_args)
                     stream.emit(
                         Event(
                             type=EventType.TOOL_CALL_DELTA,
@@ -409,12 +409,13 @@ class AgentLoop:
         return decision
 
     def _prefetch_original(
-        self, stream: EventStream, tc_name: str | None, tc_args: str | None
+        self, stream: EventStream, tc_index: int | None, tc_name: str | None, tc_args: str | None
     ) -> None:
         """write/edit 流式阶段预读原文件内容，emit FILE_ORIGINAL 供前端实时 diff。
 
         - 只在 tc_name 是 write/edit、且能从 tc_args 提取到完整 path 时触发；
-        - 同一 run 内同一 path 只预读一次（写入自去重，避免重复读文件/重复 emit）。
+        - 同一 run 内同一 path 只预读一次（写入自去重，避免重复读文件/重复 emit）；
+        - 携带 tc_index 供前端直接定位工具块（比前端提取 path 更可靠）。
         """
         if tc_name not in ("write", "edit"):
             return
@@ -423,8 +424,15 @@ class AgentLoop:
             return
         self._prefetched_originals.add(path)
         original = read_file_original(self.cwd, path)
-        logger.debug("prefetch_original path=%s chars=%d", path, len(original))
-        stream.emit(Event(type=EventType.FILE_ORIGINAL, file_path=path, file_original=original))
+        logger.debug("prefetch_original tc_index=%s path=%s chars=%d", tc_index, path, len(original))
+        stream.emit(
+            Event(
+                type=EventType.FILE_ORIGINAL,
+                tc_index=tc_index,
+                file_path=path,
+                file_original=original,
+            )
+        )
 
     def _model_tools(self, *, plan_mode: bool = False, plan_path: str | None = None) -> list[dict]:
         registry_tools = [spec.to_openai() for spec in self.registry.list()]

@@ -217,6 +217,10 @@ class SubsessionBridgeTransport(BridgeTransport):
         )
 
     def _on_event(self, ev: Event) -> None:
+        # M11：后台 subsession（如 session-memory）给事件打 background 标记，使其进入
+        # event 序列化（to_dict/from_dict 与回放缓冲均保留），前端据此不渲染进前台聊天区。
+        if getattr(self.handle, "background", False):
+            ev.background = True
         # 仅非 transient 事件进回放缓冲（与父会话一致）。
         if not ev.transient:
             self.handle.event_buffer.append(ev)

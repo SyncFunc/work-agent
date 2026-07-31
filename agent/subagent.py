@@ -276,6 +276,10 @@ class SubagentSpawner:
         # M10.2：子 agent USAGE 事件的父 message 指针（指向派生子 agent 的那条 message）；
         # 由调用方（loop._tool_spawn_subagent）传入当前 message_id，逐级形成 message 树。
         parent_message_id: str | None = None,
+        # M11：后台 subsession 标记（如 session-memory 记忆子 agent）。后台 subsession 事件
+        # 仍走 subsession 实时转发（供持久化/后台面板），但带 background=true，
+        # 前端据此不渲染成前台聊天区的子 agent 卡。
+        background: bool = False,
     ) -> AgentResult:
         """构造独立 AgentLoop（独立 EventStream + fork 可选），跑 run()，返回摘要。"""
         if depth >= self.max_depth:
@@ -308,9 +312,14 @@ class SubagentSpawner:
                 None,
                 parent_handle.project_root,
                 parent_id=parent_handle.session_id,
+                background=background,
             )
             registry.register_subsession(parent_handle.session_id, sub_handle)
             sub_stream = EventStream()
+            # M11：后台 subsession（如 session-memory）事件源头统一打 background 标记，
+            # 使实时转发与 sqlite 落盘都保留，回放时前端据此不渲染进前台聊天区。
+            if background:
+                sub_stream.background = True
             sub_transport = SubsessionBridgeTransport(parent_handle, sub_handle)
             # M9 subsession 持久化：把子会话事件带 parent_session_id 落盘，供重进后回放
             # 历史（修复「子 agent 历史丢失 / 后台列表完成即消失」）。仓库按项目隔离，
