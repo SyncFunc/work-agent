@@ -91,11 +91,34 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
   }, [block.deltaArgs])
   const targetContent = fullContent ?? streamingContent ?? ''
 
-  // 实时 diff：只要有 original + 目标内容（无论流式/完整）即计算，不依赖 result。
+  // 流式阶段节流：每个字符都跑 createTwoFilesPatch 太浪费。
+  // 仅在 content 累积到完整行（末尾 \n）时才更新 throttledTarget；不完整行沿用上次结果。
+  // tool_use 之后 fullContent 完整，总是取最新。超长单行兜底：长度变化 ≥ 256 也更新一次。
+  const lastFullLineRef = useRef<string>('')
+  const throttledTarget = useMemo(() => {
+    if (fullContent !== undefined) {
+      lastFullLineRef.current = fullContent
+      return fullContent
+    }
+    const partial = streamingContent ?? ''
+    if (partial === '') return lastFullLineRef.current
+    if (partial.endsWith('\n')) {
+      lastFullLineRef.current = partial
+      return partial
+    }
+    // 兜底：超长单行（≥256 字符）允许更新，避免永卡住
+    if (partial.length - lastFullLineRef.current.length >= 256) {
+      lastFullLineRef.current = partial
+      return partial
+    }
+    return lastFullLineRef.current
+  }, [fullContent, streamingContent])
+
+  // 实时 diff：节流后的目标内容（流式按行；完整 always fresh）
   const diffText = useMemo<string | null>(() => {
-    if (original == null || targetContent === '') return null
-    return computeUnifiedDiff(original, targetContent, filePath || 'file')
-  }, [original, targetContent, filePath])
+    if (original == null || throttledTarget === '') return null
+    return computeUnifiedDiff(original, throttledTarget, filePath || 'file')
+  }, [original, throttledTarget, filePath])
 
   // 无 original（如回放场景无预读）时回退到后端 diff / 原始内容预览。
   const fallbackText = result?.diff ?? null

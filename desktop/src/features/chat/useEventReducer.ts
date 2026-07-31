@@ -300,9 +300,19 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         break
       }
       case 'file_original': {
-        // write/edit 流式预读：缓存 path → 原内容，供后续 tool_call_delta/tool_use 挂载。
+        // write/edit 流式预读：缓存 path → 原内容，并直接挂载到已匹配的工具块
+        // （路径来自后端解析，比前端 deltaArgs 正则提取更可靠，保证写入中实时 diff 可用）。
         if (ev.file_path && ev.file_original != null) {
           originalByPath.set(ev.file_path, ev.file_original)
+          for (const tb of toolOrder) {
+            if (
+              tb.original === null &&
+              (tb.name === 'write' || tb.name === 'edit') &&
+              (typeof tb.args?.path === 'string' ? tb.args.path : extractPartialPath(tb.deltaArgs)) === ev.file_path
+            ) {
+              tb.original = ev.file_original
+            }
+          }
         }
         break
       }
@@ -593,9 +603,19 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         break
       }
       case 'file_original': {
-        // write/edit 流式预读：缓存 path → 原内容，供后续 tool_call_delta/tool_use 挂载。
+        // write/edit 流式预读：缓存 path → 原内容，并直接挂载到已匹配的工具块
+        // （路径来自后端解析，比前端 deltaArgs 正则提取更可靠，保证写入中实时 diff 可用）。
         if (ev.file_path && ev.file_original != null) {
           originalByPath.set(ev.file_path, ev.file_original)
+          for (const tb of toolOrder) {
+            if (
+              tb.original === null &&
+              (tb.name === 'write' || tb.name === 'edit') &&
+              (typeof tb.args?.path === 'string' ? tb.args.path : extractPartialPath(tb.deltaArgs)) === ev.file_path
+            ) {
+              tb.original = ev.file_original
+            }
+          }
         }
         break
       }

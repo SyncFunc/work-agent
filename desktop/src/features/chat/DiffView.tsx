@@ -69,12 +69,23 @@ export function DiffView({
   compact = false,
 }: {
   text: string
-  /** 紧凑模式：隐藏工具栏（并排/统一切换、复制按钮），只渲染 diff 行。write/edit 块用。 */
+  /** 紧凑模式：write/edit 块用。隐藏工具栏 + 过滤 unified-diff 头部（---/+++/@@）和首尾空行。 */
   compact?: boolean
 }): React.ReactElement {
   const [view, setView] = useState<'unified' | 'split'>('unified')
   const [copied, setCopied] = useState(false)
-  const lines = useMemo(() => text.split('\n'), [text])
+  const rawLines = useMemo(() => text.split('\n'), [text])
+  // 紧凑模式：去掉 unified-diff 文件头（---/+++）、hunk 头（@@）以及首/尾纯空行
+  const lines = useMemo(() => {
+    if (!compact) return rawLines
+    const filtered = rawLines.filter(
+      (ln) => ln !== '' && !/^---/.test(ln) && !/^\+\+\+/.test(ln) && !/^@@/.test(ln),
+    )
+    // 去掉首/尾连续空行（unified-diff 输出末尾的 \n 产生的 '' 行）
+    while (filtered.length && filtered[0] === '') filtered.shift()
+    while (filtered.length && filtered[filtered.length - 1] === '') filtered.pop()
+    return filtered
+  }, [rawLines, compact])
   const splitRows = useMemo(() => toSplitRows(lines), [lines])
 
   const copy = (): void => {
