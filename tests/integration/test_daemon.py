@@ -40,7 +40,9 @@ class FakeSession:
         self.loop = SimpleNamespace(_agent_span=None)
         self.settings = load_settings()
 
-    async def step(self, task, transport, *, yes=False, fatal_plan_decline=False):
+    async def step(self, task, transport, *, yes=False, fatal_plan_decline=False, message_id=None, trace_id=None):
+        # 参数需与真实 Session.step 对齐（server._task_send 会传 message_id / trace_id），
+        # 否则调用时 TypeError 导致事件/ASK 丢失、仅剩 CLOSE。
         stream = EventStream()
         transport.bind(stream)
         stream.append(Event(type=EventType.TEXT, text="thinking"))
