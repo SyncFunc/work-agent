@@ -252,16 +252,17 @@
 
 ### 6.1 Event（`event` 消息体内的 `event` 字段，`Event.to_dict()`）
 固定字段：`seq`(int)、`type`(EventType 字符串)、`ts`(float，Unix 秒)。`type` 取值：
-`decision` / `clarify` / `plan` / `plan_progress` / `tool_use` / `tool_result` / `final` / `error` / `text` / `tool_call_delta` / `user` / `usage`。
+`decision` / `clarify` / `plan` / `plan_progress` / `tool_use` / `tool_result` / `file_original` / `final` / `error` / `text` / `tool_call_delta` / `user` / `usage`。
 
 按类型出现的可选字段（仅非空时包含）：
 | 字段 | 类型 | 出现于 |
 |---|---|---|
 | `decision` | `{ text?:string, tool_calls: ToolCall[] }` | `decision` |
 | `tool_use` | `{ id, name, arguments }` | `tool_use` |
-| `tool_result` | `{ ok:bool, output?:string, error?:string }` | `tool_result` |
+| `tool_result` | `{ ok:bool, output?:string, error?:string, diff?:string, original?:string }` | `tool_result`（write/edit 回传 `diff`/`original`） |
 | `tool_call_id` | string | `tool_result` 等 |
 | `tc_index` / `tc_name` / `tc_args` | int / string / string | `tool_call_delta`（瞬时，不回放） |
+| `file_path` / `file_original` | string / string | `file_original`（瞬时，不回放；write/edit 流式预读原内容，供前端实时 diff） |
 | `text` | string | `text` / `final` / `error` |
 | `kind` | `"reasoning"` \| `"content"` | `text`（区分思考/输出） |
 | `error` | string | `error` |
@@ -276,7 +277,7 @@
 | `message_id` | string | `usage`（逐 message 归集用量） |
 | `parent_message_id` | string\|null | `usage`（子 agent 用量归集回派生子 agent 的 message） |
 
-> `tool_call_delta` 为瞬时事件：实时转发但不入档、不回放。
+> `tool_call_delta` / `file_original` 为瞬时事件：实时转发但不入档、不回放。
 
 ### 6.2 Question（`ask` / `show_questions` / `clarify` 内）
 ```jsonc

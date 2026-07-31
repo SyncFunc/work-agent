@@ -19,6 +19,7 @@ const EVENT_TYPES: readonly EventTypeStr[] = [
   'plan_progress',
   'tool_use',
   'tool_result',
+  'file_original',
   'final',
   'error',
   'text',
@@ -149,6 +150,8 @@ export function parseEvent(raw: unknown): AgentEvent {
     tc_index: asOptNumber(d.tc_index),
     tc_name: asOptString(d.tc_name),
     tc_args: asOptString(d.tc_args),
+    file_path: asOptString(d.file_path),
+    file_original: asOptString(d.file_original),
     text: asOptString(d.text),
     kind: asOptString(d.kind),
     error: asOptString(d.error),
@@ -178,6 +181,8 @@ export function eventToDict(ev: AgentEvent): Record<string, unknown> {
   if (ev.tc_index !== undefined) d.tc_index = ev.tc_index
   if (ev.tc_name !== undefined) d.tc_name = ev.tc_name
   if (ev.tc_args !== undefined) d.tc_args = ev.tc_args
+  if (ev.file_path !== undefined) d.file_path = ev.file_path
+  if (ev.file_original !== undefined) d.file_original = ev.file_original
   if (ev.text !== undefined) d.text = ev.text
   if (ev.kind !== undefined) d.kind = ev.kind
   if (ev.error !== undefined) d.error = ev.error

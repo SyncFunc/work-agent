@@ -17,6 +17,7 @@
 // 结果回填到发起调用的那一块，而不是另起一个孤立「运行中」块。
 
 import { useMemo } from 'react'
+import { extractPartialPath } from '../../utils/diff'
 import type {
   AgentEvent,
   PlanStepView,
@@ -63,6 +64,8 @@ export interface ToolBlock {
   deltaArgs: string
   result: ToolResult | null
   running: boolean
+  /** write/edit 目标文件的原始内容（FILE_ORIGINAL 预读），供 DiffBlock 实时 diff。 */
+  original: string | null
   /** update_plan：后端回传的完整计划列表，供前端渲染完整步骤。 */
   planSteps?: PlanStepView[]
   /** update_plan：本次更新定位的步骤（高亮用）。 */
@@ -197,6 +200,8 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
   let toolUseSeen = 0
   let hasStreamedText = false
   let lastDecisionText: string | null = null
+  // FILE_ORIGINAL 预读缓存：path → 原文件内容（write/edit 实时 diff 用）
+  const originalByPath = new Map<string, string>()
 
   const flushText = (): void => {
     if (cur && (cur.content || cur.reasoning)) {
@@ -225,11 +230,24 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         deltaArgs: '',
         result: null,
         running: true,
+        original: null,
       }
       toolOrder[index] = tb
       blocks.push(tb)
     }
     return tb
+  }
+
+  // write/edit：从 args.path（优先）或 deltaArgs 提取目标路径，命中预读缓存则挂载原内容。
+  const attachOriginal = (tb: ToolBlock): void => {
+    if (tb.original !== null) return
+    if (tb.name !== 'write' && tb.name !== 'edit') return
+    const argPath = typeof tb.args?.path === 'string' ? tb.args.path : null
+    const path = argPath ?? extractPartialPath(tb.deltaArgs)
+    if (path) {
+      const o = originalByPath.get(path)
+      if (o !== undefined) tb.original = o
+    }
   }
 
   for (const ev of events) {
@@ -281,6 +299,13 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         blocks.push({ key: `${prefix}b${n++}`, type: 'user', text: ev.text ?? '' })
         break
       }
+      case 'file_original': {
+        // write/edit 流式预读：缓存 path → 原内容，供后续 tool_call_delta/tool_use 挂载。
+        if (ev.file_path && ev.file_original != null) {
+          originalByPath.set(ev.file_path, ev.file_original)
+        }
+        break
+      }
       case 'tool_call_delta': {
         flushText()
         const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
@@ -302,6 +327,7 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         const tb = ensureToolAt(idx)
         if (ev.tc_args) tb.deltaArgs += ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
+        attachOriginal(tb)
         break
       }
       case 'tool_use': {
@@ -328,6 +354,7 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
         tb.args = tc.arguments
         tb.running = true
         toolById.set(tc.id, tb)
+        attachOriginal(tb)
         break
       }
       case 'tool_result': {
@@ -338,16 +365,18 @@ function reduceSubEvents(events: AgentEvent[], prefix: string): ChatBlock[] {
           tb.result = ev.tool_result ?? null
           tb.running = false
         } else {
-          blocks.push({
+          const orphan = {
             key: `${prefix}tool-${n++}`,
-            type: 'tool',
+            type: 'tool' as const,
             toolCallId: id,
             name: 'tool',
             args: null,
             deltaArgs: '',
             result: ev.tool_result ?? null,
             running: false,
-          })
+            original: null,
+          }
+          blocks.push(orphan)
         }
         break
       }
@@ -427,6 +456,8 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
   let hasStreamedText = false
   let lastDecisionText: string | null = null
   let subSeq = 0
+  // FILE_ORIGINAL 预读缓存：path → 原文件内容（write/edit 实时 diff 用）。
+  const originalByPath = new Map<string, string>()
 
   // M10.4：用量归集——子 agent(subession) 与父会话 USAGE 事件均累加到 root ResponseBlock 的 turnMeta。
   // "队列"机制：每个 USER 事件标记新一轮，flush 上一轮用量。
@@ -461,11 +492,24 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         deltaArgs: '',
         result: null,
         running: true,
+        original: null,
       }
       toolOrder[index] = tb
       top.push(tb)
     }
     return tb
+  }
+
+  // write/edit：从 args.path（优先）或 deltaArgs 提取目标路径，命中预读缓存则挂载原内容。
+  const attachOriginal = (tb: ToolBlock): void => {
+    if (tb.original !== null) return
+    if (tb.name !== 'write' && tb.name !== 'edit') return
+    const argPath = typeof tb.args?.path === 'string' ? tb.args.path : null
+    const path = argPath ?? extractPartialPath(tb.deltaArgs)
+    if (path) {
+      const o = originalByPath.get(path)
+      if (o !== undefined) tb.original = o
+    }
   }
 
   /** 丢弃因被循环拦截而「悬空」的控制工具块（running 且从未收到 tool_use/tool_result）。 */
@@ -548,6 +592,13 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         }
         break
       }
+      case 'file_original': {
+        // write/edit 流式预读：缓存 path → 原内容，供后续 tool_call_delta/tool_use 挂载。
+        if (ev.file_path && ev.file_original != null) {
+          originalByPath.set(ev.file_path, ev.file_original)
+        }
+        break
+      }
       case 'tool_call_delta': {
         flushText()
         const idx = typeof ev.tc_index === 'number' ? ev.tc_index : toolOrder.length
@@ -569,6 +620,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         const tb = ensureToolAt(idx)
         if (ev.tc_args) tb.deltaArgs += ev.tc_args
         if (ev.tc_name) tb.name = ev.tc_name
+        attachOriginal(tb)
         break
       }
       case 'tool_use': {
@@ -595,6 +647,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
         tb.args = tc.arguments
         tb.running = true
         toolById.set(tc.id, tb)
+        attachOriginal(tb)
         break
       }
       case 'tool_result': {
@@ -615,6 +668,7 @@ export function buildChatModel(events: AgentEvent[]): ChatModel {
             deltaArgs: '',
             result: ev.tool_result ?? null,
             running: false,
+            original: null,
           })
         }
         break

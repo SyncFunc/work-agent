@@ -14,6 +14,7 @@
 from __future__ import annotations
 
 import difflib
+import json
 import re
 from pathlib import Path
 from typing import Any
@@ -53,6 +54,47 @@ def _load_file(path: str) -> tuple[Path, str]:
     if not target.is_file():
         raise ValueError(f"not a file: {path}")
     return target, target.read_text(encoding="utf-8")
+
+
+def _extract_path_from_args_fragment(fragment: str) -> str | None:
+    """从 tool_call_delta 的 tc_args 残缺 JSON 片段中尽力提取 path。
+
+    流式生成时 tc_args 是**累计**的 JSON 片段（可能不完整，如
+    `{"path": "foo.py", "content": "imp`），path 通常在 content 之前完整出现，
+    因此正则提取 ``\"path\": \"...\"`` 即可。完整 JSON 优先用 json.loads。
+    """
+    if not fragment:
+        return None
+    try:
+        parsed = json.loads(fragment)
+        if isinstance(parsed, dict):
+            p = parsed.get("path")
+            if isinstance(p, str) and p:
+                return p
+    except (ValueError, TypeError):
+        pass
+    m = re.search(r'"path"\s*:\s*"((?:[^"\\]|\\.)*)"', fragment)
+    if m:
+        return m.group(1)
+    return None
+
+
+def read_file_original(root: Path, path: str) -> str:
+    """读取文件原内容（供 write/edit 流式预读推送，前端实时 diff 用）。
+
+    - 文件不存在视为新建，返回空串；
+    - 越界/IO 错误返回空串（不阻断流式）。
+    """
+    try:
+        target = _resolve(root, path)
+    except ValueError:
+        return ""
+    if not target.is_file():
+        return ""
+    try:
+        return target.read_text(encoding="utf-8")
+    except OSError:
+        return ""
 
 
 def _make_diff(path: str, old: str, new: str) -> str:

@@ -39,6 +39,7 @@ from agent.obs.tracer import Tracer, _span
 from agent.runtime.approval import Action, ApprovalGate
 from agent.runtime.registry import ToolRegistry, ToolResult, UnknownTool
 from agent.runtime.sandbox import ExecRequest, Executor, SandboxProfile
+from agent.tools.fs import _extract_path_from_args_fragment, read_file_original
 
 if TYPE_CHECKING:
     from agent.context import ContextManager
@@ -115,6 +116,8 @@ class AgentLoop:
         self._control_tools_enabled: bool = True
         # use_skill 待注入 conv 的正文（run 每轮结束时统一追加为 user 消息）
         self._pending_skill_injections: list[str] = []
+        # M11：本次 run 已预读过原文件的 path 集合（避免同一文件重复读 + 重复 emit）。
+        self._prefetched_originals: set[str] = set()
         # M10.2：本 run 的 message_id（run 时更新），供子 agent spawn 透传为 parent_message_id；
         # 初始化为 None，使不经 run 直接调用 _tool_spawn_subagent 的路径也不报属性缺失。
         self._run_message_id: str | None = None
@@ -380,6 +383,9 @@ class AgentLoop:
                         Event(type=EventType.TEXT, text=ev.text, kind=ev.kind or "content")
                     )
                 elif ev.type == EventType.TOOL_CALL_DELTA:
+                    # M11：write/edit 流式预读原文件内容，emit FILE_ORIGINAL 供前端实时 diff。
+                    # 只在 path 首次完整出现时读取一次（避免每个 delta 都重复读文件）。
+                    self._prefetch_original(stream, ev.tc_name, ev.tc_args)
                     stream.emit(
                         Event(
                             type=EventType.TOOL_CALL_DELTA,
@@ -401,6 +407,24 @@ class AgentLoop:
             if decision.is_final and decision.text:
                 logger.info("final_text_len=%d", len(decision.text))
         return decision
+
+    def _prefetch_original(
+        self, stream: EventStream, tc_name: str | None, tc_args: str | None
+    ) -> None:
+        """write/edit 流式阶段预读原文件内容，emit FILE_ORIGINAL 供前端实时 diff。
+
+        - 只在 tc_name 是 write/edit、且能从 tc_args 提取到完整 path 时触发；
+        - 同一 run 内同一 path 只预读一次（写入自去重，避免重复读文件/重复 emit）。
+        """
+        if tc_name not in ("write", "edit"):
+            return
+        path = _extract_path_from_args_fragment(tc_args or "")
+        if not path or path in self._prefetched_originals:
+            return
+        self._prefetched_originals.add(path)
+        original = read_file_original(self.cwd, path)
+        logger.debug("prefetch_original path=%s chars=%d", path, len(original))
+        stream.emit(Event(type=EventType.FILE_ORIGINAL, file_path=path, file_original=original))
 
     def _model_tools(self, *, plan_mode: bool = False, plan_path: str | None = None) -> list[dict]:
         registry_tools = [spec.to_openai() for spec in self.registry.list()]

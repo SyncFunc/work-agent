@@ -69,6 +69,26 @@ describe('buildChatModel', () => {
     expect(flat[1].type).toBe('tool')
   })
 
+  it('write 实时 diff：FILE_ORIGINAL 预读缓存挂到工具块 original（delta 阶段即可用）', () => {
+    const events: AgentEvent[] = [
+      // ① FILE_ORIGINAL 瞬时事件：预读原文件内容（path=src/a.ts）
+      { seq: 0, type: 'file_original', file_path: 'src/a.ts', file_original: 'line1\nline2\n', ts: 0 },
+      // ② 流式参数：path 已完整出现，content 仍在累积
+      { seq: 1, type: 'tool_call_delta', tc_index: 0, tc_name: 'write', tc_args: '{"path":"src/a.ts","content":"line1', ts: 0 },
+      { seq: 2, type: 'tool_call_delta', tc_index: 0, tc_name: 'write', tc_args: '\\nline2\\nNEW"}' as string, ts: 0 },
+      // ③ TOOL_USE 定稿（含完整 content）
+      { seq: 3, type: 'tool_use', tool_use: { id: 'w1', name: 'write', arguments: { path: 'src/a.ts', content: 'line1\nline2\nNEW' } }, ts: 0 },
+      // ④ TOOL_RESULT（original 权威值回填）
+      { seq: 4, type: 'tool_result', tool_call_id: 'w1', tool_result: { ok: true, original: 'line1\nline2\n' }, ts: 0 },
+    ]
+    const { blocks } = buildChatModel(events)
+    const tools = toolBlocks(blocks)
+    expect(tools).toHaveLength(1)
+    expect(tools[0].name).toBe('write')
+    // FILE_ORIGINAL 预读缓存命中：delta 阶段即可拿到原内容
+    expect(tools[0].original).toBe('line1\nline2\n')
+  })
+
   it('replay 一致性：不含 transient delta 的回放，工具最终参数/结果与带 delta 的实时一致', () => {
     const withDelta: AgentEvent[] = [
       { seq: 0, type: 'tool_call_delta', tc_index: 0, tc_name: 'bash', tc_args: '{"cmd"', ts: 0 },

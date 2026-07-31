@@ -106,6 +106,7 @@ export type EventTypeStr =
   | 'plan_progress'
   | 'tool_use'
   | 'tool_result'
+  | 'file_original'
   | 'final'
   | 'error'
   | 'text'
@@ -128,6 +129,9 @@ export interface AgentEvent {
   tc_index?: number | null
   tc_name?: string | null
   tc_args?: string | null
+  /** file_original 瞬时事件：write/edit 流式预读的原文件内容。 */
+  file_path?: string | null
+  file_original?: string | null
   text?: string | null
   kind?: string | null
   error?: string | null

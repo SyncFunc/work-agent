@@ -64,7 +64,14 @@ function toSplitRows(lines: string[]): SplitRow[] {
   return rows
 }
 
-export function DiffView({ text }: { text: string }): React.ReactElement {
+export function DiffView({
+  text,
+  compact = false,
+}: {
+  text: string
+  /** 紧凑模式：隐藏工具栏（并排/统一切换、复制按钮），只渲染 diff 行。write/edit 块用。 */
+  compact?: boolean
+}): React.ReactElement {
   const [view, setView] = useState<'unified' | 'split'>('unified')
   const [copied, setCopied] = useState(false)
   const lines = useMemo(() => text.split('\n'), [text])
@@ -82,17 +89,19 @@ export function DiffView({ text }: { text: string }): React.ReactElement {
 
   return (
     <div className="wa-diff-view">
-      <div className="wa-diff-view__bar">
-        <Button variant="ghost" size="sm" onClick={() => setView((v) => (v === 'unified' ? 'split' : 'unified'))}>
-          {view === 'unified' ? '并排视图' : '统一视图'}
-        </Button>
-        <IconButton
-          icon={copied ? <Check size={14} /> : <Copy size={14} />}
-          label={copied ? '已复制' : '复制补丁'}
-          size="sm"
-          onClick={copy}
-        />
-      </div>
+      {!compact && (
+        <div className="wa-diff-view__bar">
+          <Button variant="ghost" size="sm" onClick={() => setView((v) => (v === 'unified' ? 'split' : 'unified'))}>
+            {view === 'unified' ? '并排视图' : '统一视图'}
+          </Button>
+          <IconButton
+            icon={copied ? <Check size={14} /> : <Copy size={14} />}
+            label={copied ? '已复制' : '复制补丁'}
+            size="sm"
+            onClick={copy}
+          />
+        </div>
+      )}
 
       {view === 'unified' ? (
         <pre className="wa-diff">

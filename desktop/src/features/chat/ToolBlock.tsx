@@ -6,11 +6,11 @@
 //   update_plan  → PlanProgressBlock（完整计划列表，图标状态，高亮本次更新）
 //   grep/其他 → GenericToolBlock
 
-import React, { useEffect, useState } from 'react'
+import React, { useEffect, useMemo, useRef, useState } from 'react'
 import type { ToolBlock as ToolBlockModel } from './useEventReducer'
 import { DiffView, isDiffLike } from './DiffView'
 import { Badge, Button, IconButton, Spinner } from '../../components'
-import { computeUnifiedDiff, extractPartialContent } from '../../utils/diff'
+import { computeUnifiedDiff, countDiffStats, extractPartialContent } from '../../utils/diff'
 import {
   CheckCircle2,
   ChevronRight,
@@ -66,7 +66,10 @@ function BashBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
 
 // ══════════════════════════════════════════
 //  DiffBlock (write / edit)
-// ══════════════════════════════════════════
+//  ══════════════════════════════════════════
+// 实时 diff：写入（流式生成参数）期间就用「预读的原内容 original + 正在生成的
+// content」计算 unified diff；写入完成（result 到达且 ok）后自动折叠内容，
+// 标题旁展示 +added -removed 行数统计。紧凑 diff 视图（无并排/复制按钮）。
 function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
   const [expanded, setExpanded] = useState(true)
   const [showAll, setShowAll] = useState(false)
@@ -75,29 +78,40 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
   const failed = result ? !result.ok : false
   const fullContent = block.args?.content as string | undefined
 
-  // 前端 computed diff：original + new content → unified diff
-  const diffText = useMemo<string | null>(() => {
-    if (!result) return null
-    // write：用 result.original + args.content → computeUnifiedDiff（不依赖后端 diff）
-    if (result.ok && result.original != null && fullContent != null) {
-      return computeUnifiedDiff(result.original, fullContent, filePath || 'file')
-    }
-    // edit 或无 original 时回退到后端 diff 字符串
-    if (result.diff) return result.diff
-    return null
-  }, [result?.ok, result?.original, result?.diff, fullContent, filePath])
+  // 原始文件内容：优先 result.original（权威），否则用 FILE_ORIGINAL 预读缓存（block.original）。
+  const original = useMemo<string | null>(
+    () => result?.original ?? block.original ?? null,
+    [result?.original, block.original],
+  )
 
-  // 流式预览：从 deltaArgs 提取 content
+  // 目标内容：tool_use 后 args.content 完整；流式阶段从 deltaArgs 尽力提取。
   const streamingContent = useMemo<string | null>(() => {
     if (!block.deltaArgs) return null
     return extractPartialContent(block.deltaArgs)
   }, [block.deltaArgs])
+  const targetContent = fullContent ?? streamingContent ?? ''
 
-  // 预览阶段的文本（尚未生成 args 时为 partial，已有 args 时为完整内容）
-  const previewText = fullContent ?? streamingContent ?? ''
+  // 实时 diff：只要有 original + 目标内容（无论流式/完整）即计算，不依赖 result。
+  const diffText = useMemo<string | null>(() => {
+    if (original == null || targetContent === '') return null
+    return computeUnifiedDiff(original, targetContent, filePath || 'file')
+  }, [original, targetContent, filePath])
 
-  // 展示用文本：有结果时展示 diff，否则展示流式预览
-  const displayText = result ? (diffText ?? '') : previewText
+  // 无 original（如回放场景无预读）时回退到后端 diff / 原始内容预览。
+  const fallbackText = result?.diff ?? null
+  const displayText = diffText ?? fallbackText ?? targetContent
+
+  // 写入完成（result 且 ok 且非 running）后自动折叠内容，仅执行一次；用户可点标题展开。
+  const doneRef = useRef(false)
+  useEffect(() => {
+    if (result && result.ok && !block.running && !doneRef.current) {
+      doneRef.current = true
+      setExpanded(false)
+    }
+  }, [result, block.running])
+
+  // 标题旁 +x -x 统计（基于展示的 diff）
+  const stats = useMemo(() => countDiffStats(diffText ?? ''), [diffText])
 
   const truncated = displayText.length > OUTPUT_LIMIT
   const shownOut = truncated && !showAll
@@ -110,6 +124,12 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
         <Wrench size={14} />
         <span className="wa-tool__name">{block.name}</span>
         {filePath && <code className="wa-tool-diff__path">{filePath}</code>}
+        {diffText && (stats.added > 0 || stats.removed > 0) && (
+          <span className="wa-tool-diff__stats">
+            <span className="wa-diff-add">+{stats.added}</span>
+            <span className="wa-diff-del">-{stats.removed}</span>
+          </span>
+        )}
         <span style={{ flex: 1 }} />
         {block.running ? (
           <Badge tone="primary" icon={<Spinner size={12} />}>
@@ -123,7 +143,7 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
           <Badge tone="success" icon={<CheckCircle2 size={14} />}>
             已更新
           </Badge>
-        ) : previewText ? (
+        ) : targetContent ? (
           <Badge tone="primary" icon={<Spinner size={12} />}>
             生成中…
           </Badge>
@@ -132,15 +152,10 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
       </button>
       {expanded && displayText && (
         <div className="wa-tool-diff__body">
-          {result ? (
-            // 结果阶段：展示 diff（前端 computed 或后端 fallback）
-            isDiffLike(shownOut) ? (
-              <DiffView text={shownOut} />
-            ) : (
-              <pre className="wa-tool-diff__out">{shownOut}</pre>
-            )
+          {diffText ? (
+            // 实时 diff（流式阶段即可见，行级着色）
+            <DiffView text={shownOut} compact />
           ) : (
-            // 流式/预览阶段：展示累积的内容（无 diff 着色，纯代码块样式）
             <pre className="wa-tool-diff__out">{shownOut}</pre>
           )}
           {truncated && (

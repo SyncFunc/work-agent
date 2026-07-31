@@ -37,6 +37,7 @@ class EventType(StrEnum):
     PLAN_PROGRESS = "plan_progress"
     TOOL_USE = "tool_use"
     TOOL_RESULT = "tool_result"
+    FILE_ORIGINAL = "file_original"  # 瞬时事件：write/edit 流式时预读原文件内容，供前端实时 diff
     FINAL = "final"
     ERROR = "error"
     TEXT = "text"
@@ -110,6 +111,9 @@ class Event:
     tc_index: int | None = None
     tc_name: str | None = None
     tc_args: str | None = None
+    # FILE_ORIGINAL 瞬时事件：write/edit 流式预读的原文件内容（供前端实时 diff）。
+    file_path: str | None = None
+    file_original: str | None = None
     text: str | None = None
     kind: str | None = None  # text 事件：区分 "reasoning"（思考）/ "content"（输出）
     error: str | None = None
@@ -151,6 +155,10 @@ class Event:
             d["tc_name"] = self.tc_name
         if self.tc_args is not None:
             d["tc_args"] = self.tc_args
+        if self.file_path is not None:
+            d["file_path"] = self.file_path
+        if self.file_original is not None:
+            d["file_original"] = self.file_original
         if self.text is not None:
             d["text"] = self.text
         if self.kind is not None:
@@ -185,6 +193,8 @@ class Event:
             tc_index=d.get("tc_index"),
             tc_name=d.get("tc_name"),
             tc_args=d.get("tc_args"),
+            file_path=d.get("file_path"),
+            file_original=d.get("file_original"),
             text=d.get("text"),
             kind=d.get("kind"),
             error=d.get("error"),

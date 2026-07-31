@@ -4,6 +4,17 @@
 
 import { createTwoFilesPatch } from 'diff'
 
+/** unified diff 文本的增删行统计（标题旁 +x -x 用）。 */
+export function countDiffStats(diffText: string): { added: number; removed: number } {
+  let added = 0
+  let removed = 0
+  for (const ln of diffText.split('\n')) {
+    if (ln.startsWith('+') && !ln.startsWith('+++')) added += 1
+    else if (ln.startsWith('-') && !ln.startsWith('---')) removed += 1
+  }
+  return { added, removed }
+}
+
 /**
  * 从原始内容与新内容生成 standard unified diff。
  * @param original  写/改操作前的文件内容（空字符串 = 新文件）
@@ -17,6 +28,22 @@ export function computeUnifiedDiff(
   filePath: string,
 ): string {
   return createTwoFilesPatch(`a/${filePath}`, `b/${filePath}`, original, modified, '', '')
+}
+
+/**
+ * 从 tool_call_delta 累积的 JSON 片段中尽力提取 path 字段。
+ * 与 extractPartialContent 同思路：先完整 parse，失败则正则逼近。
+ */
+export function extractPartialPath(deltaArgs: string): string | null {
+  if (!deltaArgs) return null
+  try {
+    const parsed = JSON.parse(deltaArgs)
+    if (typeof parsed.path === 'string' && parsed.path) return parsed.path
+    return null
+  } catch {
+    const m = deltaArgs.match(/"path"\s*:\s*"((?:[^"\\]|\\.)*)"/)
+    return m ? m[1] : null
+  }
 }
 
 /**
