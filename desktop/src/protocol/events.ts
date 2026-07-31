@@ -74,6 +74,7 @@ function parseToolResult(v: unknown): ToolResult | null {
     output: asOptString(d.output),
     error: asOptString(d.error),
     diff: asOptString(d.diff),
+    original: asOptString(d.original),
   }
 }
 

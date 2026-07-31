@@ -71,12 +71,19 @@ def _decision_from_dict(d: dict[str, Any]) -> Decision:
 
 
 def _tool_result_to_dict(r: ToolResult) -> dict[str, Any]:
-    return {"ok": r.ok, "output": r.output, "error": r.error, "diff": r.diff}
+    d: dict[str, Any] = {"ok": r.ok, "output": r.output, "error": r.error, "diff": r.diff}
+    if r.original is not None:
+        d["original"] = r.original
+    return d
 
 
 def _tool_result_from_dict(d: dict[str, Any]) -> ToolResult:
     return ToolResult(
-        ok=d["ok"], output=d.get("output", ""), error=d.get("error"), diff=d.get("diff")
+        ok=d["ok"],
+        output=d.get("output", ""),
+        error=d.get("error"),
+        diff=d.get("diff"),
+        original=d.get("original"),
     )
 
 

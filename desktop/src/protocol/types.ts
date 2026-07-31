@@ -76,6 +76,8 @@ export interface ToolResult {
   error?: string | null
   /** write/edit 等工具的 unified-diff 文本，供 UI 展示改动。 */
   diff?: string | null
+  /** 写/改操作前的原始文件内容，供前端自行计算实时 diff。 */
+  original?: string | null
 }
 
 export interface Question {

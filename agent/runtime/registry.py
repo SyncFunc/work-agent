@@ -34,12 +34,16 @@ class ToolResult:
 
     diff 为可选的 unified-diff 文本（写/改类工具回传，供 UI 展示改动），不计入
     output 截断逻辑（仅用于展示，不影响模型上下文）。
+
+    original 为写/改操作执行前的原始文件内容（仅用于前端计算实时 diff，不计入
+    模型上下文）。无此语义的工具不设置。
     """
 
     ok: bool
     output: str = ""
     error: str | None = None
     diff: str | None = None
+    original: str | None = None
 
 
 @dataclass
@@ -83,7 +87,7 @@ def _cap_result(r: ToolResult, max_chars: int) -> ToolResult:
         changed = True
     if not changed:
         return r
-    return ToolResult(ok=r.ok, output=out, error=err, diff=r.diff)
+    return ToolResult(ok=r.ok, output=out, error=err, diff=r.diff, original=r.original)
 
 
 class ToolRegistry:

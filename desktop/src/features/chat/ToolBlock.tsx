@@ -6,10 +6,11 @@
 //   update_plan  → PlanProgressBlock（完整计划列表，图标状态，高亮本次更新）
 //   grep/其他 → GenericToolBlock
 
-import React, { useEffect, useRef, useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import type { ToolBlock as ToolBlockModel } from './useEventReducer'
 import { DiffView, isDiffLike } from './DiffView'
 import { Badge, Button, IconButton, Spinner } from '../../components'
+import { computeUnifiedDiff, extractPartialContent } from '../../utils/diff'
 import {
   CheckCircle2,
   ChevronRight,
@@ -70,22 +71,38 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
   const [expanded, setExpanded] = useState(true)
   const [showAll, setShowAll] = useState(false)
   const result = block.result
-  // 优先使用 diff 字段（完整 diff 内容），回退到 output
-  const content = (result?.diff ?? result?.output ?? result?.error ?? '')
-  const out = content
-  const failed = result ? !result.ok : false
-  const truncated = out.length > OUTPUT_LIMIT
-  const shownOut = truncated && !showAll ? out.slice(0, OUTPUT_LIMIT) + '\n…(已截断，点击展开)' : out
   const filePath = (block.args?.path ?? '') as string
+  const failed = result ? !result.ok : false
+  const fullContent = block.args?.content as string | undefined
 
-  // 写入完成后自动折叠（仅执行一次），用户可手动展开查看
-  const doneRef = useRef(false)
-  useEffect(() => {
-    if (!block.running && block.result?.ok && !doneRef.current) {
-      doneRef.current = true
-      setExpanded(false)
+  // 前端 computed diff：original + new content → unified diff
+  const diffText = useMemo<string | null>(() => {
+    if (!result) return null
+    // write：用 result.original + args.content → computeUnifiedDiff（不依赖后端 diff）
+    if (result.ok && result.original != null && fullContent != null) {
+      return computeUnifiedDiff(result.original, fullContent, filePath || 'file')
     }
-  }, [block.running, block.result?.ok])
+    // edit 或无 original 时回退到后端 diff 字符串
+    if (result.diff) return result.diff
+    return null
+  }, [result?.ok, result?.original, result?.diff, fullContent, filePath])
+
+  // 流式预览：从 deltaArgs 提取 content
+  const streamingContent = useMemo<string | null>(() => {
+    if (!block.deltaArgs) return null
+    return extractPartialContent(block.deltaArgs)
+  }, [block.deltaArgs])
+
+  // 预览阶段的文本（尚未生成 args 时为 partial，已有 args 时为完整内容）
+  const previewText = fullContent ?? streamingContent ?? ''
+
+  // 展示用文本：有结果时展示 diff，否则展示流式预览
+  const displayText = result ? (diffText ?? '') : previewText
+
+  const truncated = displayText.length > OUTPUT_LIMIT
+  const shownOut = truncated && !showAll
+    ? displayText.slice(0, OUTPUT_LIMIT) + '\n…(已截断，点击展开)'
+    : displayText
 
   return (
     <div className="wa-tool wa-tool-diff">
@@ -95,22 +112,35 @@ function DiffBlock({ block }: { block: ToolBlockModel }): React.ReactElement {
         {filePath && <code className="wa-tool-diff__path">{filePath}</code>}
         <span style={{ flex: 1 }} />
         {block.running ? (
-          <span className="wa-tool-diff__status">
-            <Spinner size={12} />
-            <span className="wa-tool-diff__status-text">写入中…</span>
-          </span>
+          <Badge tone="primary" icon={<Spinner size={12} />}>
+            写入中…
+          </Badge>
         ) : failed ? (
-          <XCircle size={14} className="wa-clr-danger" />
+          <Badge tone="danger" icon={<XCircle size={14} />}>
+            失败
+          </Badge>
         ) : result?.ok ? (
-          <CheckCircle2 size={14} className="wa-clr-success" />
+          <Badge tone="success" icon={<CheckCircle2 size={14} />}>
+            已更新
+          </Badge>
+        ) : previewText ? (
+          <Badge tone="primary" icon={<Spinner size={12} />}>
+            生成中…
+          </Badge>
         ) : null}
         <ChevronRight size={16} className={`wa-tool__chev ${expanded ? 'wa-tool__chev--open' : ''}`} />
       </button>
-      {expanded && out && (
+      {expanded && displayText && (
         <div className="wa-tool-diff__body">
-          {isDiffLike(out) ? (
-            <DiffView text={shownOut} />
+          {result ? (
+            // 结果阶段：展示 diff（前端 computed 或后端 fallback）
+            isDiffLike(shownOut) ? (
+              <DiffView text={shownOut} />
+            ) : (
+              <pre className="wa-tool-diff__out">{shownOut}</pre>
+            )
           ) : (
+            // 流式/预览阶段：展示累积的内容（无 diff 着色，纯代码块样式）
             <pre className="wa-tool-diff__out">{shownOut}</pre>
           )}
           {truncated && (

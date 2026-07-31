@@ -222,7 +222,9 @@ async def write(args: dict[str, Any]) -> ToolResult:
     except (ValueError, OSError) as e:
         return ToolResult(ok=False, error=str(e))
     diff = _make_diff(path, old, content)
-    return ToolResult(ok=True, output=f"wrote {len(content)} chars to {path}", diff=diff)
+    return ToolResult(
+        ok=True, output=f"wrote {len(content)} chars to {path}", diff=diff, original=old
+    )
 
 
 @tool(
@@ -284,7 +286,7 @@ async def edit(args: dict[str, Any]) -> ToolResult:
     except (ValueError, OSError) as e:
         return ToolResult(ok=False, error=str(e))
     diff = _make_diff(path, text, new_text)
-    return ToolResult(ok=True, output=f"edited {path}", diff=diff)
+    return ToolResult(ok=True, output=f"edited {path}", diff=diff, original=text)
 
 
 # 导入即登记到默认注册表（确定性，无副作用风险）。

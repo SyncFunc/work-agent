@@ -16,6 +16,7 @@
     "dist": "npm run build && electron-builder"
   },
   "dependencies": {
+    "diff": "^9.0.0",
     "highlight.js": "^11.11.1",
     "js-yaml": "^5.2.2",
     "lucide-react": "^1.26.0",
@@ -26,6 +27,7 @@
     "remark-gfm": "^4.0.1"
   },
   "devDependencies": {
+    "@types/diff": "^7.0.2",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^20.14.0",
     "@types/react": "^18.3.3",
