@@ -91,7 +91,7 @@
 - 桌面端命令面板（Ctrl/Cmd+K）对齐同一命令集。
 
 ### 发版 / CD（现状）
-- **版本号 7 处必须同步**（唯一事实来源，别漏）：`pyproject.toml` → `agent/__init__.py`(`__version__`) → `agent/daemon/protocol.py`(`DAEMON_VERSION`) → `desktop/package.json` → `desktop/src/renderer/App.tsx`(`APP_VERSION`) → `desktop/src/protocol/client.ts`(hello 消息 ×2)。`PROTOCOL_VERSION` 是**协议版本**，仅当消息契约变更才升，与产品版本号无关。
+- **版本号同步**：后端 `pyproject.toml` → `agent/__init__.py`(`__version__`) → `agent/daemon/protocol.py`(`DAEMON_VERSION`) → `desktop/package.json`（**前端唯一来源**）；前端运行时代码（App.tsx 开屏/Sidebar）统一经 `desktop/src/shared/version.ts` 读 `package.json`（不再各自硬编码）；`desktop/src/protocol/client.ts` hello 消息 `version` ×2 仍为字面量（线协议字段，发版时同步改）。**唯一例外**：`desktop/src/renderer/index.html` 的**静态启动遮罩**在 JS 挂载前渲染、无法 import 模块，仍手动填版本（发版须与 package.json 同步）。`PROTOCOL_VERSION` 是**协议版本**，仅当消息契约变更才升，与产品版本号无关。
 - **CI vs CD 职责**：`ci.yml` = push main / PR 门禁（ruff+basedpyright+pytest+cov，`fast` job）+ nightly `slow` e2e；`cd.yml` = **push tag `v*` 触发**（或 `workflow_dispatch` 手动）→ 矩阵(ubuntu/windows/macos) PyInstaller 冻结 daemon 二进制 + electron-builder 打安装包 → `release` job 把三平台安装包作为资产上传到该 tag 的 GitHub Release。
 - **手动建 Release 与 CD 不冲突**：可以先经 GitHub API 手动建带 release notes 的 Release（占位/说明文档），CD 的 `softprops/action-gh-release@v2` 对**已存在的 tag** 是**追加安装包资产**、不覆盖 notes/不重建——最后得到"说明 + 安装包"合一的 Release。
 - **发版标准动作**（幂等可复用）：① 升 7 处版本号 ② 本地跑门禁（ruff/basedpyright/pytest + 前端 tsc/vitest/build）③ commit + push main ④ `git tag vX.Y.Z && git push origin main --tags`（触发 CD）⑤ 等 CD 跑完，用 API 或 gh 补 Release notes（若想先占位可先建）。
@@ -149,6 +149,11 @@
 - **契约测试（TS↔Python）**：TS 解析正则须兼容单/双引号（`/["']([^"']+)["']/g`）；Python 端 subprocess 捕获用 `encoding='utf-8'`（node 输出含中文，默认 gbk 会 `UnicodeDecodeError`）。
 - **toolOrder 跨轮复用致工具块「名实不符」**：`buildChatModel` 中 `toolOrder[]` 按 `tc_index` 定位同一轮工具块，只在 `USER` 事件时清空。当模型**自动连续调用多轮工具**（无用户输入间隔），旧轮已完成的工具块仍躺在 `toolOrder`，新轮 `tool_call_delta`/`tool_use` 的 `ensureToolAt(idx)` 直接复用了它——覆盖其 `name` 但保留了旧 `result`。表现为「历史第一个工具块变成最后一个工具的渲染类型，但内容还是原来的」。**修复**：在 `tool_call_delta` 和 `tool_use` 处理时，检测若 `toolOrder[slot]` 已有**已完成（有 result、非 running）**的块，主动清空 `toolOrder`/`toolById`/`toolUseSeen`，确保新轮创建全新块。详见 `buildChatModel` 中 `case 'tool_call_delta'` 的跨轮检测注释。
 - **`present_plan` 不可通过 `dropInterceptedControl` 丢弃**：后端对 `present_plan` 拦截前**不发送 `TOOL_USE`**，因此其 `toolCallId` 永远为 `null`。但该工具块是前端展示「计划生成中」呼吸动画的唯一载体，必须保留。若将它加入 `INTERCEPTED_CONTROL_TOOLS`，`dropInterceptedControl` 会在 `PLAN` 事件到达时匹配并移除它，导致呼吸动画丢失。**区分**：`ask_clarification`/`update_plan` 仍走丢弃逻辑（无有用渲染），`present_plan` 独立不参与清理。详见 `INTERCEPTED_CONTROL_TOOLS` 注释。
+
+### 工具 / 后台子 agent 切换（M11.6，v1.0.0）
+- **工具白名单从后台动态获取**：前端不再硬编码工具清单，daemon 新增 `/tools` 命令 + `show_tools` 消息（`server._list_tools`），从 `default_registry.list()` 返回真实注册工具 `{name,risk,description}`；前端进入面板拉取渲染复选框，避免「前端以为有、后台没注册」的悬空引用。
+- **探索工具在 `agent/tools/explore.py`**：`glob`/`find`/`list_dir`/`fetch_url`（对标 Claude Code / Codex）。**坑**：这些工具要生效必须经 `agent/tools/__init__.py` 导入 `explore` 模块（`from agent.tools import bash, explore, fs`），否则不会注册到 `default_registry`；`cli.py` 导入 `agent.tools` 会触发注册。`glob`/`find` 此前是 `BUILTIN_EXPLORE.tools` 白名单里的**悬空字符串引用**（根本无实现），本版本才补上。
+- **后台 session-memory 子 agent 运行时会饿死会话切换**：`SubsessionBridgeTransport._on_event` 用 `asyncio.ensure_future(conn.send(...))` 无限投递事件到连接，全部排队抢占 `Connection._lock`；`_switch` 的 `ATTACHED`/replay 也要 `await conn.send()` 排队，被后台事件洪流排到队尾饿死 → 前端「切换不了会话」。**修复**：`Connection` 加 `track_background(task)`/`cancel_background()`，`_attach`/`_switch` 发 `ATTACHED` 前先 `conn.cancel_background()` 清掉旧会话后台转发积压（已落盘/进 event_buffer，切回时 replay 恢复，不丢历史）。**判据**：后台 session-memory 运行时切换卡住、手动子 agent 却正常。
 
 ### Textual TUI（M8，basedpyright 类型检查铁律）
 - 不要用 `self._log` 缓存日志容器（`App` 基类已有 `_log` 方法，覆盖会触发 `reportAttributeAccessIssue`）→ 改名 `self._log_container`。

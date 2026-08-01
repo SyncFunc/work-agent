@@ -354,3 +354,73 @@ def test_trigger_text_truncated(tmp_path: Path):
     long = "x" * 2000
     spec = SkillSpec(name="x", description=long, path=tmp_path)
     assert len(spec.trigger_text) == 1536
+
+
+def test_discover_marks_project_source(tmp_path: Path):
+    """M11.6：项目级 skill 的 source=project，用户级=user。"""
+    _write_skill(tmp_path / "proj" / ".agent" / "skills", "a", "---\nname: a\ndescription: A\n---")
+    _write_skill(tmp_path / "user" / "skills", "b", "---\nname: b\ndescription: B\n---")
+    loader = _make_loader(tmp_path, with_user=True)
+    specs = {s.name: s for s in loader.discover()}
+    assert specs["a"].source == "project"
+    assert specs["b"].source == "user"
+
+
+def test_set_enabled_writes_skill_md(tmp_path: Path):
+    """M11.6：技能开关写回 SKILL.md frontmatter（disable_model_invocation）。"""
+    d = _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: A\ndisable_model_invocation: false\n---",
+    )
+    loader = _make_loader(tmp_path)
+    assert loader.set_enabled("a", False) is True
+    text = (d / "SKILL.md").read_text(encoding="utf-8")
+    assert "disable_model_invocation: true" in text
+    # 重读生效：模型不可自动调用
+    spec = next(s for s in loader.discover() if s.name == "a")
+    assert spec.disable_model_invocation is True
+    # 再启用
+    assert loader.set_enabled("a", True) is True
+    spec = next(s for s in loader.discover() if s.name == "a")
+    assert spec.disable_model_invocation is False
+
+
+def test_set_enabled_missing_returns_false(tmp_path: Path):
+    loader = _make_loader(tmp_path)
+    assert loader.set_enabled("nonexistent", False) is False
+
+
+def test_catalog_prompt_excludes_disabled(tmp_path: Path):
+    """M11.6：禁用的技能不注入 catalog（模型感知不到）。"""
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: skill A\n---",
+    )
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "b",
+        "---\nname: b\ndescription: skill B\n---",
+    )
+    loader = _make_loader(tmp_path)
+    cat = loader.catalog_prompt()
+    assert "skill A" in cat
+    assert "skill B" in cat
+    # 关闭技能 a 后，catalog 不再包含它
+    loader.set_enabled("a", False)
+    cat2 = loader.catalog_prompt()
+    assert "skill A" not in cat2
+    assert "skill B" in cat2
+
+
+def test_catalog_prompt_excludes_not_user_invocable(tmp_path: Path):
+    """M11.6：user_invocable=False 的技能也不注入 catalog。"""
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "a",
+        "---\nname: a\ndescription: hidden\nuser_invocable: false\n---",
+    )
+    loader = _make_loader(tmp_path)
+    cat = loader.catalog_prompt()
+    assert "hidden" not in cat

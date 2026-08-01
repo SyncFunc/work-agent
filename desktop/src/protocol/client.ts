@@ -97,7 +97,7 @@ export class DaemonClient {
         settled = true
         this.clearConnectTimer()
         this.reconnectAttempt = 0
-        this.send('hello', { client_type: 'desktop', version: '0.4.0', token: this.token })
+        this.send('hello', { client_type: 'desktop', version: '1.0.0', token: this.token })
         // 重连后恢复会话订阅（M9.3 切换/断线恢复）。
         if (this.currentSessionId) {
           this.attach(this.currentSessionId, this.currentProjectRoot)
@@ -298,7 +298,7 @@ export class DaemonClient {
   // --------------------------------------------------------------------------- //
 
   hello(token?: string): void {
-    this.send('hello', { client_type: 'desktop', version: '0.4.0', token: token ?? this.token })
+    this.send('hello', { client_type: 'desktop', version: '1.0.0', token: token ?? this.token })
   }
 
   newSession(name?: string, projectRoot?: string): void {
@@ -354,7 +354,9 @@ export class DaemonClient {
     this.send('command', {
       name,
       args: args ?? null,
-      project_root: projectRoot ?? this.projectRoot ?? '',
+      // 优先用当前 attach 会话的 project_root（currentProjectRoot），保证技能/智能体面板
+      // 在切换到其它项目会话后仍按该项目扫描；未 attach 时回退连接时的 projectRoot。
+      project_root: projectRoot ?? this.currentProjectRoot ?? this.projectRoot ?? '',
     })
   }
 
@@ -374,6 +376,24 @@ export class DaemonClient {
       session_id: id,
       project_root: projectRoot ?? this.projectRoot ?? '',
       title,
+    })
+  }
+
+  /** M11.6 技能开关（写回 SKILL.md frontmatter）。 */
+  setSkillEnabled(name: string, enabled: boolean, projectRoot?: string): void {
+    this.send('skill.update', {
+      name,
+      enabled,
+      project_root: projectRoot ?? this.currentProjectRoot ?? this.projectRoot ?? '',
+    })
+  }
+
+  /** M11.6 编辑智能体配置（写回 .md frontmatter）。 */
+  updateAgent(name: string, updates: Record<string, unknown>, projectRoot?: string): void {
+    this.send('agent.update', {
+      name,
+      updates,
+      project_root: projectRoot ?? this.currentProjectRoot ?? this.projectRoot ?? '',
     })
   }
 

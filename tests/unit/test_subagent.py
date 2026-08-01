@@ -137,6 +137,50 @@ def test_parse_agent_file(tmp_path):
     assert spec.system_prompt == "你是一个自定义 agent。"
 
 
+def test_discover_marks_user_project_source(tmp_path):
+    """M11.6：项目级 agent 的 source=project，用户级=user。"""
+    (tmp_path / ".agent" / "agents").mkdir(parents=True)
+    (tmp_path / ".agent" / "agents" / "proj-agent.md").write_text(
+        "---\nname: proj-agent\ndescription: project agent\n---\n正文\n", encoding="utf-8"
+    )
+    spawner = SubagentSpawner(_settings(), cwd=tmp_path)
+    specs = {s.name: s for s in spawner.discover()}
+    assert specs["proj-agent"].source == "project"
+    assert specs["proj-agent"].source_dir == tmp_path / ".agent" / "agents"
+    # 内置仍为 builtin
+    assert specs["explore"].source == "builtin"
+
+
+def test_update_spec_writes_md(tmp_path):
+    """M11.6：编辑项目级 agent 写回 .md frontmatter。"""
+    agents = tmp_path / ".agent" / "agents"
+    agents.mkdir(parents=True)
+    (agents / "my-agent.md").write_text(
+        "---\nname: my-agent\ndescription: before\npermission_mode: plan\n---\n正文\n",
+        encoding="utf-8",
+    )
+    spawner = SubagentSpawner(_settings(), cwd=tmp_path)
+    ok = spawner.update_spec(
+        "my-agent",
+        {"description": "after", "permission_mode": "auto", "max_turns": 5},
+    )
+    assert ok is True
+    text = (agents / "my-agent.md").read_text(encoding="utf-8")
+    assert "description: after" in text
+    assert "permission_mode: auto" in text
+    assert "max_turns: 5" in text
+    # 重读生效
+    spec = next(s for s in spawner.discover() if s.name == "my-agent")
+    assert spec.description == "after"
+    assert spec.permission_mode == "auto"
+
+
+def test_update_spec_rejects_builtin(tmp_path):
+    """M11.6：内置 agent 不可编辑。"""
+    spawner = SubagentSpawner(_settings(), cwd=tmp_path)
+    assert spawner.update_spec("explore", {"description": "x"}) is False
+
+
 # --------------------------------------------------------------------------- #
 # 隔离 / 摘要
 # --------------------------------------------------------------------------- #

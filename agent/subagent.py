@@ -38,9 +38,10 @@ class AgentSummary:
     model: str | None
     permission_mode: str | None
     builtin: bool
+    source: str = "builtin"  # M11.6 来源：builtin / user / project
 
 
-from agent.config.settings import Settings, project_config_path, user_config_path
+from agent.config.settings import Settings, user_config_path
 from agent.context.compactors.session_memory import MEMORY_SYSTEM_PROMPT
 from agent.context.tokens import _estimate_tokens
 from agent.core.events import Event, EventStream, EventType
@@ -76,6 +77,8 @@ class AgentSpec:
     no_control_tools: bool = False  # True=子 agent 不注入控制/虚拟工具（纯文本产出，强隔离）
     builtin: bool = False
     panel_height: int = 15  # 子 agent 输出框的固定行高（0=不限制）
+    source: str = "builtin"  # M11.6 来源：builtin / user / project（用于面板分组展示）
+    source_dir: Path | None = None  # 定义文件所在目录（内置为 None；供编辑/写回定位）
 
 
 # --------------------------------------------------------------------------- #
@@ -155,7 +158,7 @@ class SubagentSpawner:
         self.settings = settings
         self.tracer = tracer
         self.max_depth = max_depth
-        self.cwd = cwd or Path.cwd()
+        self.cwd = Path(cwd) if cwd else Path.cwd()
 
     # ------------------------------------------------------------------ #
     # 发现 / 获取
@@ -164,16 +167,20 @@ class SubagentSpawner:
         """扫描 <project>/.agent/agents/*.md 与 ~/.agent/agents/*.md（项目级覆盖同名）。
 
         内置类型始终可用；用户级可覆盖内置同名，项目级再覆盖用户级。
+        项目级目录用 spawner 自身的 project_root（self.cwd）定位，而非环境变量/进程 cwd，
+        以保证多项目 daemon 下各自扫到本项目的 agent（与 settings 加载约定一致）。
         """
         specs: dict[str, AgentSpec] = {b.name: b for b in BUILTIN_SPECS}
 
         user_dir = user_config_path().parent / "agents"
-        project_dir = project_config_path().parent / "agents"
-        for d in (user_dir, project_dir):  # 后写的覆盖先写的
+        project_dir = self.cwd / ".agent" / "agents"
+        for d, source in ((user_dir, "user"), (project_dir, "project")):  # 后写覆盖先写
             if d.is_dir():
                 for f in sorted(d.glob("*.md")):
                     spec = self._parse_agent_file(f)
                     if spec is not None:
+                        spec.source = source
+                        spec.source_dir = d
                         specs[spec.name] = spec
         return list(specs.values())
 
@@ -214,6 +221,7 @@ class SubagentSpawner:
                 model=s.model,
                 permission_mode=s.permission_mode,
                 builtin=s.builtin,
+                source=s.source,
             )
             for s in self.discover()
         ]
@@ -250,6 +258,42 @@ class SubagentSpawner:
             builtin=False,
             panel_height=int(meta.get("panel_height", 15)),
         )
+
+    def update_spec(self, name: str, updates: dict[str, Any]) -> bool:
+        """M11.6 编辑智能体：把 updates 合并进该 agent 的 .md frontmatter 并写回。
+
+        仅支持非内置（用户/项目级）agent；内置 agent 是代码定义，不可编辑。
+        找到定义文件（source_dir/name.md）失败返回 False。
+        """
+        spec = self.get(name)
+        if spec is None or spec.builtin or spec.source_dir is None:
+            return False
+        path = spec.source_dir / f"{name}.md"
+        if not path.is_file():
+            return False
+        try:
+            text = path.read_text(encoding="utf-8")
+            meta_raw, body = _split_frontmatter(text)
+            meta: dict[str, Any] = yaml.safe_load(meta_raw) if meta_raw else {}
+            if not isinstance(meta, dict):
+                meta = {}
+            for k, v in updates.items():
+                if k == "system_prompt":
+                    # 正文单独写；frontmatter 不存 system_prompt（解析时 fallback body）
+                    if v is not None:
+                        body = str(v)
+                    continue
+                if v is None:
+                    meta.pop(k, None)
+                else:
+                    meta[k] = v
+            # 合并后 body 已按需更新；重新序列化 frontmatter
+            new_frontmatter = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+            path.write_text(f"---\n{new_frontmatter}\n---\n{body}", encoding="utf-8")
+            self._cache = None  # type: ignore[attr-defined]  # 清空 discover 缓存（若有）
+            return True
+        except OSError:
+            return False
 
     # ------------------------------------------------------------------ #
     # 生成

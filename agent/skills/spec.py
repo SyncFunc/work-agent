@@ -38,6 +38,7 @@ class SkillSpec:
     hooks: list[dict] = field(default_factory=list)
     paths: list[str] = field(default_factory=list)  # Glob，限定自动触发文件
     shell: str = "bash"
+    source: str = "user"  # M11.6 来源：user / project（用于面板分组展示）
 
     _body_cache: str | None = field(default=None, repr=False, compare=False)
 

@@ -252,6 +252,21 @@ class SessionRegistry:
             for cid in list(parent.children):
                 self._subsessions.pop(cid, None)
 
+    def invalidate_skill_cache(self, project_root: str | None) -> None:
+        """M11.6：技能开关/编辑后，失效该项目下所有会话的 skill_loader 缓存。
+
+        使当前会话下一轮 system prompt（catalog_prompt）重新 discover，立即反映开关状态。
+        """
+        for h in self._sessions.values():
+            if project_root is not None and h.project_root != project_root:
+                continue
+            sl = getattr(h.session, "skill_loader", None)
+            if sl is not None:
+                try:
+                    sl._cache = None
+                except Exception:
+                    pass
+
     def list_info(self, project_root: str | None = None) -> list[dict]:
         """会话清单（供 ``session_list`` 响应）。
 

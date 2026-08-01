@@ -53,6 +53,25 @@ class Connection:
         self.session_id: str | None = None
         # 串行化出站消息：保证 FINAL 事件先于 CLOSE 到达（避免 CLOSE 抢占事件）。
         self._lock = asyncio.Lock()
+        # 后台 subsession（如 session-memory）实时转发在飞的任务。
+        # 会话切换/attach 前 cancel 掉这些积压任务，避免它们排队抢占 conn._lock、
+        # 把 ATTACHED / replay 响应饿死，导致「切换会话卡住」。
+        self._backlog: list[asyncio.Task] = []
+
+    def track_background(self, task: asyncio.Task) -> None:
+        """登记一条后台事件转发任务（由 BridgeTransport 在 ensure_future 后调用）。"""
+        self._backlog = [t for t in self._backlog if not t.done()]
+        self._backlog.append(task)
+
+    def cancel_background(self) -> None:
+        """取消所有积压的后台事件转发任务（会话切换/attach 前调用）。
+
+        取消只是放弃「实时转发」这些旧会话事件；它们已落盘/进 event_buffer，
+        前端切回时经 replay 完整恢复，不会丢历史。
+        """
+        for t in self._backlog:
+            t.cancel()
+        self._backlog = []
 
     async def send(
         self,
@@ -224,6 +243,10 @@ async def _route(
             payload.get("title", ""),
             _mid,
         )
+    elif mtype == MsgType.SKILL_UPDATE.value:
+        await _skill_update(conn, registry, payload, _mid)
+    elif mtype == MsgType.AGENT_UPDATE.value:
+        await _agent_update(conn, payload, _mid)
     elif mtype == MsgType.TRACE_LIST.value:
         await _trace_list(
             conn,
@@ -251,6 +274,9 @@ async def _attach(
     if handle is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid or ""})
         return
+    # M11.6：attach 前取消积压的后台事件转发任务（如 session-memory），
+    # 避免它们排队抢占 conn._lock 饿死 ATTACHED / replay 响应。
+    conn.cancel_background()
     await conn.send(
         MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
     )
@@ -265,6 +291,8 @@ async def _switch(
     if handle is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid or ""})
         return
+    # M11.6：切换前取消旧会话后台事件转发积压（session-memory 持续投递会饿死响应）。
+    conn.cancel_background()
     await conn.send(
         MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
     )
@@ -549,6 +577,59 @@ async def _session_set_title(
         )
 
 
+async def _skill_update(
+    conn: Connection, registry: SessionRegistry, payload: dict, mid: str | None
+) -> None:
+    """M11.6 技能开关：写回 SKILL.md frontmatter（disable_model_invocation）。"""
+    from agent.skills.loader import SkillLoader
+
+    name = str(payload.get("name", ""))
+    enabled = bool(payload.get("enabled", True))
+    proj = str(payload.get("project_root") or os.getcwd())
+    ok = SkillLoader(Path(proj)).set_enabled(name, enabled)
+    if ok:
+        # 使该项目下所有会话的 skill_loader 缓存失效，下一轮 system prompt 立即不注入禁用技能。
+        registry.invalidate_skill_cache(proj)
+        await conn.send(
+            MsgType.SKILL_UPDATE_RESP,
+            {"ok": True, "name": name, "enabled": enabled},
+            id=mid,
+        )
+    else:
+        await conn.send(
+            MsgType.SKILL_UPDATE_RESP,
+            {"ok": False, "name": name, "error": "skill_not_found"},
+            id=mid,
+        )
+
+
+async def _agent_update(conn: Connection, payload: dict, mid: str | None) -> None:
+    """M11.6 编辑智能体：把 updates 合并进该 agent 的 .md frontmatter 并写回。"""
+    from agent.config.settings import load_settings
+    from agent.subagent import SubagentSpawner
+
+    name = str(payload.get("name", ""))
+    updates = payload.get("updates") or {}
+    if not isinstance(updates, dict):
+        updates = {}
+    proj = str(payload.get("project_root") or os.getcwd())
+    settings = load_settings(project_root=proj)
+    spawner = SubagentSpawner(settings, cwd=Path(proj))
+    ok = spawner.update_spec(name, updates)
+    if ok:
+        await conn.send(
+            MsgType.AGENT_UPDATE_RESP,
+            {"ok": True, "name": name},
+            id=mid,
+        )
+    else:
+        await conn.send(
+            MsgType.AGENT_UPDATE_RESP,
+            {"ok": False, "name": name, "error": "agent_not_editable"},
+            id=mid,
+        )
+
+
 async def _command(
     conn: Connection,
     registry: SessionRegistry,
@@ -561,10 +642,12 @@ async def _command(
     sid = conn.session_id
     handle = registry.get(sid) if sid else None
     if handle is None:
-        # 无 attach 会话时，/skills、/agents 是全局只读查询，不依赖具体会话：
+        # 无 attach 会话时，/skills、/agents、/tools 是全局只读查询，不依赖具体会话：
         # 用连接的 project_root 直接构造 loader 列清单（M11 面板无需先建会话即可浏览）。
         if name in {"skills", "agents"}:
             await _list_global_specs(conn, name, project_root or os.getcwd())
+        elif name == "tools":
+            await _list_tools(conn)
         else:
             await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid})
         return
@@ -611,6 +694,28 @@ async def _list_global_specs(conn: Connection, name: str, project_root: str) -> 
     except Exception:
         log.debug("[daemon] 全局查询 %s 失败，返回空清单: %s", name, project_root)
         await conn.send(mtype, {"specs": []})
+
+
+async def _list_tools(conn: Connection) -> None:
+    """返回当前进程已注册的真实工具清单（read/grep/write/edit/bash + explore 工具）。
+
+    M11.6：前端「工具白名单」勾选项直接来自后台真实注册表，避免与前端硬编码不一致。
+    payload: ``{"tools": [{name, risk, description}]}``
+    """
+    from agent.runtime.registry import default_registry
+
+    tools = []
+    for spec in default_registry.list():
+        schema = spec.schema or {}
+        tools.append(
+            {
+                "name": spec.name,
+                "risk": spec.risk,
+                "description": schema.get("description", ""),
+            }
+        )
+    tools.sort(key=lambda t: t["name"])
+    await conn.send(MsgType.SHOW_TOOLS, {"tools": tools})
 
 
 def _maybe_set_user_title(registry: SessionRegistry, handle: Any, text: str) -> None:

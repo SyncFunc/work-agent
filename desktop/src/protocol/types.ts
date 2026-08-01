@@ -20,6 +20,8 @@ export const ALL_MSG_TYPES = [
   'task.cancel', // M9.9 真实中断当前生成
   'session.delete', // M9.9 彻底删除会话（含事件/记忆/trace）
   'session.title', // M11.6 手动设置会话标题 {title}
+  'skill.update', // M11.6 技能开关 {name, enabled}
+  'agent.update', // M11.6 编辑智能体配置 {name, updates}
   'trace.list',
   'trace.get',
   // ---- Server -> Client ----
@@ -36,6 +38,7 @@ export const ALL_MSG_TYPES = [
   'show_plan',
   'show_skills',
   'show_agents',
+  'show_tools', // M11.6 已注册真实工具清单：tools 数组，每项含 name/risk/description
   'notify',
   'close',
   'error',
@@ -43,6 +46,8 @@ export const ALL_MSG_TYPES = [
   'session.info', // M9.9 推送 plan_mode / model
   'session.delete_resp', // M9.9 删除结果
   'session.title_resp', // M11.6 标题设置结果 {ok, title?, error?}
+  'skill.update_resp', // M11.6 技能开关结果 {ok, name?, enabled?, error?}
+  'agent.update_resp', // M11.6 智能体编辑结果 {ok, name?, error?}
   'trace_list',
   'trace_tree',
 ] as const
@@ -254,4 +259,11 @@ export interface UsageEvent {
 /** notify 消息 payload。 */
 export interface NotifyPayload {
   message: string
+}
+
+/** 一个已注册真实工具（show_tools 响应项，M11.6）。 */
+export interface ToolInfo {
+  name: string
+  risk: 'read' | 'edit' | 'exec' | string
+  description: string
 }

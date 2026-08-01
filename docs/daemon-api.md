@@ -72,6 +72,10 @@
 | `session.delete_resp` | S→C | 删除结果（M9.9） |
 | `session.title` | C→S | 手动设置会话标题（M11.6） |
 | `session.title_resp` | S→C | 标题设置结果（M11.6） |
+| `skill.update` | C→S | 技能开关（M11.6） |
+| `skill.update_resp` | S→C | 技能开关结果（M11.6） |
+| `agent.update` | C→S | 编辑智能体配置（M11.6） |
+| `agent.update_resp` | S→C | 智能体编辑结果（M11.6） |
 | `session.info` | S→C | 推送 plan_mode / model（M9.9） |
 | `trace.list` | C→S | 列出 trace |
 | `trace_list` | S→C | trace 列表应答 |
@@ -85,6 +89,7 @@
 | `show_plan` | S→C | 展示计划 |
 | `show_skills` | S→C | 展示可用技能 |
 | `show_agents` | S→C | 展示可用子 Agent |
+| `show_tools` | S→C | 展示已注册真实工具清单（M11.6） |
 | `notify` | S→C | 轻量通知文本 |
 | `close` | S→C | 一轮任务结束 |
 | `error` | S→C | 错误 |
@@ -147,7 +152,7 @@
 - **payload**：`{ "name": string, "args": string|null, "project_root"?: string }`
   - `project_root`：可选（M11.5），用于无 attach 会话时的全局只读查询（`skills` / `agents`）。
 - **行为**：交给 `dispatch_command`（如 `name="switch"` 触发会话切换）；未识别命令 → `notify`「未知命令」。
-- **无 attach 会话时的特殊分支**：`skills` / `agents` 是**全局只读查询**，不依赖具体会话——即使未 attach 也用 `project_root` 直接构造 loader 返回清单（`show_skills` / `show_agents`），不再报 `no_session`；其余命令仍返回 `error`（`code:"no_session"`）。
+- **无 attach 会话时的特殊分支**：`skills` / `agents` 是**全局只读查询**，不依赖具体会话——即使未 attach 也用 `project_root` 直接构造 loader 返回清单（`show_skills` / `show_agents`），不再报 `no_session`；`tools` 同样全局可查（`show_tools`）；其余命令仍返回 `error`（`code:"no_session"`）。
 
 ### 4.12 `task.cancel`
 - **payload**：`{}`
@@ -176,6 +181,17 @@
 - 首个提问在 `task.send` 时捕获（仅当该会话尚无标题时写入，来源 `user`）。
 - session memory 摘要更新后，若含 `## Session Title` 段，则落盘为会话标题（来源 `memory`；**不覆盖**用户手动设置的标题）。
 - 用户手动设置（`session.title`）永不被自动覆盖。
+
+### 4.18 `skill.update`（M11.6）
+- **payload**：`{ "project_root": string, "name": string, "enabled": boolean }`
+- **行为**：技能开关——写回 `<skill>/SKILL.md` 的 frontmatter `disable_model_invocation`（`enabled=true` → 模型可自动调用；`false` → 仅手动 `/name`）。找不到技能返回 `ok:false`。
+- **应答**：`skill.update_resp`（见 5.16c）。
+
+### 4.19 `agent.update`（M11.6）
+- **payload**：`{ "project_root": string, "name": string, "updates": object }`
+  - `updates` 支持字段（对齐 `AgentSpec`）：`description` / `tools`（数组或 null=继承全部）/ `model` / `permission_mode` / `max_turns` / `disallowed_tools` / `share_history` 等；`system_prompt` 会作为正文写回。
+- **行为**：编辑智能体——把 `updates` 合并进该 agent 的 `.md` frontmatter 并写回。**仅非内置**（用户/项目级）可编辑；内置（explore/plan 等）返回 `ok:false`。
+- **应答**：`agent.update_resp`（见 5.16d）。
 
 ---
 
@@ -238,9 +254,16 @@
 ### 5.13 `show_skills` / `show_agents`
 - **payload**：`{ "specs": [ { "name": string, "title": string, "description": string, ... } ] }`
   - 各 spec 字段由后端对象 `to_dict()`（或公开属性）决定，至少含 `name/title/description`。
+  - **`source`（M11.6）**：来源 `builtin` / `user` / `project`（技能无内置，为 `user`/`project`），供前端分组展示。
 - **触发**：① 有会话时经 `/skills`、`/agents` 命令；② **无 attach 会话时**（M11.5）经 `command` 的 `skills`/`agents` 全局查询分支——按 `project_root` 直接构造 `SkillLoader` / `SubagentSpawner` 返回清单，无需先建会话。
 
-### 5.14 `notify` / `close` / `task.cancelled`
+### 5.14 `show_tools`（M11.6）
+- **payload**：`{ "tools": [ { "name": string, "risk": string, "description": string } ] }`
+  - `risk`：`read` / `edit` / `exec`。
+  - 数据源：当前进程 `default_registry.list()`（真实注册工具），与 LLM 实际可调用的工具一致。
+- **触发**：经 `command` 的 `tools` 全局查询分支（无 attach 会话即可），用于前端渲染「工具白名单」勾选项，避免前端硬编码与后端不一致。
+
+### 5.15 `notify` / `close` / `task.cancelled`
 - `notify`：`{ "message": string }`。
 - `close`：`{}`（信封带 `session`），表示一轮 `task.send` 运行结束（含正常完成 / 计划拒绝中止 / 取消后清理）。前端须保证在收到 `close` 后再处理最终 `event`，以避免顺序错乱（服务端已用发送锁保证 FINAL 先到）。
 - `task.cancelled`：`{}`，生成被 `task.cancel` 真实中断后下发。
@@ -257,6 +280,14 @@
 ### 5.16b `session.title_resp`（M11.6）
 - **payload（成功）**：`{ "ok": true, "session_id": string, "title": string }`
 - **payload（失败/缺参）**：`{ "ok": false, "session_id"?: string, "error"?: string }`。
+
+### 5.16c `skill.update_resp`（M11.6）
+- **payload（成功）**：`{ "ok": true, "name": string, "enabled": boolean }`
+- **payload（失败）**：`{ "ok": false, "name": string, "error": "skill_not_found" }`。
+
+### 5.16d `agent.update_resp`（M11.6）
+- **payload（成功）**：`{ "ok": true, "name": string }`
+- **payload（失败）**：`{ "ok": false, "name": string, "error": "agent_not_editable" }`（内置或未找到）。
 
 ### 5.17 `trace_list`
 - **payload**：`{ "project_root": string, "traces": TraceInfo[] }`

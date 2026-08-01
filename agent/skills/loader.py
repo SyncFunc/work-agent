@@ -33,6 +33,7 @@ class SkillSummary:
     paths: list[str]
     user_invocable: bool
     disable_model_invocation: bool
+    source: str = "user"  # M11.6 来源：user / project（用于面板分组展示）
 
 
 def _meta_get(meta: dict[str, Any], key: str, default: Any = None) -> Any:
@@ -69,12 +70,13 @@ class SkillLoader:
     def discover(self) -> list[SkillSpec]:
         """扫描项目级与用户级 skills；项目级同名覆盖用户级。"""
         skills: dict[str, SkillSpec] = {}
-        for d in (self._user_dir, self._project_dir):  # 后写覆盖先写
+        for d, source in ((self._user_dir, "user"), (self._project_dir, "project")):  # 后写覆盖先写
             if d.is_dir():
                 for sub in sorted(d.iterdir()):
                     if sub.is_dir():
                         spec = self._parse_skill_dir(sub)
                         if spec is not None:
+                            spec.source = source
                             skills[spec.name] = spec
         self._cache = skills
         return list(skills.values())
@@ -144,11 +146,19 @@ class SkillLoader:
     # 触发目录 / 自动启用
     # ------------------------------------------------------------------ #
     def catalog_prompt(self) -> str:
-        """返回注入系统提示的触发目录（仅 name + trigger_text，不含正文）。"""
+        """返回注入系统提示的触发目录（仅 name + trigger_text，不含正文）。
+
+        M11.6：只暴露「启用」的技能——``disable_model_invocation=True``（被关闭/仅手动）
+        或 ``user_invocable=False`` 的技能**不注入**，模型感知不到，避免「关闭后仍能感知」。
+        """
         if self._cache is None:
             self.discover()
         assert self._cache is not None
-        lines = [f"- {spec.name}: {spec.trigger_text}" for spec in self._cache.values()]
+        lines = [
+            f"- {spec.name}: {spec.trigger_text}"
+            for spec in self._cache.values()
+            if not spec.disable_model_invocation and spec.user_invocable
+        ]
         return "\n".join(lines)
 
     def summaries(self) -> list[SkillSummary]:
@@ -163,9 +173,37 @@ class SkillLoader:
                 paths=list(s.paths),
                 user_invocable=s.user_invocable,
                 disable_model_invocation=s.disable_model_invocation,
+                source=s.source,
             )
             for s in self.discover()
         ]
+
+    def set_enabled(self, name: str, enabled: bool) -> bool:
+        """M11.6 技能开关：写回 SKILL.md frontmatter 的 disable_model_invocation。
+
+        enabled=True → 模型可自动调用（disable_model_invocation=False）；
+        enabled=False → 仅手动 /name（disable_model_invocation=True）。
+        找不到 skill 或写回失败返回 False。
+        """
+        spec = self.get(name)
+        if spec is None:
+            return False
+        skill_md = spec.path / "SKILL.md"
+        if not skill_md.is_file():
+            return False
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+            meta_raw, body = _split_frontmatter(text)
+            meta = yaml.safe_load(meta_raw) if meta_raw else {}
+            if not isinstance(meta, dict):
+                meta = {}
+            meta["disable_model_invocation"] = not enabled
+            new_frontmatter = yaml.safe_dump(meta, allow_unicode=True, sort_keys=False).strip()
+            skill_md.write_text(f"---\n{new_frontmatter}\n---\n{body}", encoding="utf-8")
+            self._cache = None  # 失效缓存，下次 discover 重读
+            return True
+        except OSError:
+            return False
 
     def is_auto_enabled(self, spec: SkillSpec, current_file: str | None = None) -> bool:
         """模型是否可自动触发该 skill（三重判定）：

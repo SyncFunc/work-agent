@@ -210,11 +210,12 @@ class SubsessionBridgeTransport(BridgeTransport):
         conn = self._resolve_conn()
         if conn is None:
             return
-        self._track(
-            asyncio.ensure_future(
-                conn.send(mtype, payload, id=id, session=self.parent_handle.session_id)
-            )
+        task = asyncio.ensure_future(
+            conn.send(mtype, payload, id=id, session=self.parent_handle.session_id)
         )
+        self._track(task)
+        if getattr(self.handle, "background", False):
+            self._track_on_conn(conn, task)
 
     def _on_event(self, ev: Event) -> None:
         # M11：后台 subsession（如 session-memory）给事件打 background 标记，使其进入
@@ -226,12 +227,22 @@ class SubsessionBridgeTransport(BridgeTransport):
             self.handle.event_buffer.append(ev)
         conn = self._resolve_conn()
         if conn is not None:
-            self._track(
-                asyncio.ensure_future(
-                    conn.send(
-                        MsgType.EVENT,
-                        {"event": ev.to_dict(), "subsession_id": self.handle.session_id},
-                        session=self.parent_handle.session_id,
-                    )
+            task = asyncio.ensure_future(
+                conn.send(
+                    MsgType.EVENT,
+                    {"event": ev.to_dict(), "subsession_id": self.handle.session_id},
+                    session=self.parent_handle.session_id,
                 )
             )
+            self._track(task)
+            if getattr(self.handle, "background", False):
+                self._track_on_conn(conn, task)
+
+    def _track_on_conn(self, conn: Any, task: asyncio.Task) -> None:
+        """把后台事件转发任务登记到目标连接，供会话切换/attach 时 cancel（防饿死）。"""
+        tracker = getattr(conn, "track_background", None)
+        if tracker is not None:
+            try:
+                tracker(task)
+            except Exception:
+                pass

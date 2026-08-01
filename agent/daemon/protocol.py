@@ -14,8 +14,8 @@
   ``approve`` / ``command`` / ``trace.list`` / ``trace.get``
 - Server → Client：``welcome`` / ``session.created`` / ``attached`` / ``detached`` /
   ``session_list`` / ``event``(含 usage 子类型) / ``replay_start`` / ``replay_end`` / ``ask`` /
-  ``show_questions`` / ``show_plan`` / ``show_skills`` / ``show_agents`` / ``notify`` /
-  ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
+  ``show_questions`` / ``show_plan`` / ``show_skills`` / ``show_agents`` / ``show_tools`` /
+  ``notify`` / ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
 
 M9.7 可观测面板：新增 trace 查询
 - ``trace.list``（C→S）：``{project_root, session_id?}`` → 按项目根列出 trace（按 trace_id 分组，一个 session 可能有多条）。
@@ -46,7 +46,7 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-DAEMON_VERSION = "0.4.0"
+DAEMON_VERSION = "1.0.0"
 PROTOCOL_VERSION = "1.0"
 
 
@@ -68,6 +68,8 @@ class MsgType(StrEnum):
     TASK_CANCEL = "task.cancel"  # 客户端：取消当前正在生成的任务（真实中断 LLM 流）
     SESSION_DELETE = "session.delete"  # 客户端：彻底删除会话（含事件/记忆/trace）
     SESSION_TITLE = "session.title"  # 客户端：手动设置会话标题 {title}
+    SKILL_UPDATE = "skill.update"  # 客户端：技能开关 {name, enabled}
+    AGENT_UPDATE = "agent.update"  # 客户端：编辑智能体配置 {name, updates}
     TRACE_LIST = "trace.list"
     TRACE_GET = "trace.get"
     # ---- Server -> Client ----
@@ -84,6 +86,7 @@ class MsgType(StrEnum):
     SHOW_PLAN = "show_plan"
     SHOW_SKILLS = "show_skills"
     SHOW_AGENTS = "show_agents"
+    SHOW_TOOLS = "show_tools"  # M11.6：返回真实注册工具清单 {tools:[{name,risk,description}]}
     NOTIFY = "notify"
     CLOSE = "close"
     ERROR = "error"
@@ -93,6 +96,8 @@ class MsgType(StrEnum):
     SESSION_INFO = "session.info"  # 服务端：推送 plan_mode / model 等会话状态
     SESSION_DELETE_RESP = "session.delete_resp"  # 服务端：删除结果 {ok, session_id?, message?}
     SESSION_TITLE_RESP = "session.title_resp"  # 服务端：标题设置结果
+    SKILL_UPDATE_RESP = "skill.update_resp"  # 服务端：技能开关结果 {ok, name?, enabled?, error?}
+    AGENT_UPDATE_RESP = "agent.update_resp"  # 服务端：智能体编辑结果 {ok, name?, error?}
 
 
 @runtime_checkable

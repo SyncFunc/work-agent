@@ -29,9 +29,7 @@ import type { ToastData, ToastKind } from '../components'
 import { SplashScreen } from '../components/SplashScreen'
 import type { SplashStep } from '../components/SplashScreen'
 import type { DaemonStage } from '../shared/daemon-config'
-
-const APP_NAME = 'Work Agent'
-const APP_VERSION = '0.4.0'
+import { APP_NAME, APP_VERSION } from '../shared/version'
 
 const clamp = (v: number, lo: number, hi: number): number => Math.max(lo, Math.min(hi, v))
 
@@ -519,8 +517,12 @@ export default function App(): React.ReactElement {
             )}
           </>
         )}
-        {leftNav === 'skills' && <SkillsPanel client={client} onClose={() => setLeftNav('chat')} />}
-        {leftNav === 'agents' && <AgentsPanel client={client} onClose={() => setLeftNav('chat')} />}
+        {leftNav === 'skills' && (
+          <SkillsPanel client={client} projectRoot={projectRoot} onClose={() => setLeftNav('chat')} />
+        )}
+        {leftNav === 'agents' && (
+          <AgentsPanel client={client} projectRoot={projectRoot} onClose={() => setLeftNav('chat')} />
+        )}
         {leftNav === 'traces' && (
           <div className="wa-main__obs">
             <ObsPanel

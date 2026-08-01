@@ -68,3 +68,404 @@
   color: var(--wa-text-muted);
   line-height: 1.5;
 }
+/* M11.6 来源分组 */
+.wa-spec-group {
+  margin-bottom: 18px;
+}
+.wa-spec-group__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--wa-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  margin-bottom: 8px;
+}
+.wa-spec-card {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+}
+.wa-spec-card__main {
+  flex: 1;
+  min-width: 0;
+}
+.wa-spec-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+}
+.wa-spec-card__edit {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 1px solid var(--wa-border);
+  border-radius: var(--wa-r-sm);
+  background: transparent;
+  color: var(--wa-text-muted);
+  cursor: pointer;
+}
+.wa-spec-card__edit:hover {
+  color: var(--wa-primary);
+  border-color: var(--wa-primary);
+}
+.wa-spec-card__tools {
+  font-size: 11px;
+  color: var(--wa-text-faint);
+  margin-top: 4px;
+}
+.wa-spec-badge {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  font-size: 10px;
+  border-radius: var(--wa-r-sm);
+  vertical-align: middle;
+}
+.wa-spec-badge--builtin {
+  background: var(--wa-bg-subtle);
+  color: var(--wa-text-faint);
+  border: 1px solid var(--wa-border);
+}
+.wa-spec-badge--user {
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+}
+.wa-spec-badge--project {
+  background: var(--wa-success-weak, rgba(40, 167, 69, 0.15));
+  color: var(--wa-success);
+}
+/* M11.6 技能开关 */
+.wa-toggle {
+  width: 34px;
+  height: 18px;
+  border-radius: 10px;
+  border: 1px solid var(--wa-border-strong);
+  background: var(--wa-bg-subtle);
+  position: relative;
+  cursor: pointer;
+  transition: background var(--wa-dur-fast) var(--wa-ease), border-color var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-toggle__knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+  background: var(--wa-text-muted);
+  transition: transform var(--wa-dur-fast) var(--wa-ease), background var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-toggle--on {
+  background: var(--wa-primary);
+  border-color: var(--wa-primary);
+}
+.wa-toggle--on .wa-toggle__knob {
+  transform: translateX(16px);
+  background: #fff;
+}
+/* M11.6 智能体编辑弹窗 */
+.wa-editor-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+  backdrop-filter: blur(2px);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 60;
+}
+.wa-editor-modal {
+  width: 480px;
+  max-width: 92vw;
+  max-height: 84vh;
+  overflow-y: auto;
+  background: var(--wa-bg);
+  border: 1px solid var(--wa-border-strong);
+  border-radius: 14px;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.22);
+  animation: wa-editor-pop 0.16s ease-out;
+}
+@keyframes wa-editor-pop {
+  from {
+    opacity: 0;
+    transform: translateY(8px) scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.wa-editor-modal__head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 18px;
+  border-bottom: 1px solid var(--wa-border);
+}
+.wa-editor-modal__head-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 30px;
+  height: 30px;
+  border-radius: 8px;
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+  flex: none;
+}
+.wa-editor-modal__head-title {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: var(--wa-f-md);
+  font-weight: 600;
+}
+.wa-editor-modal__head-sub {
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--wa-text-faint);
+}
+.wa-editor-modal__body {
+  padding: 6px 18px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.wa-editor-sec {
+  padding: 12px 0;
+  border-bottom: 1px dashed var(--wa-border);
+}
+.wa-editor-sec:last-of-type {
+  border-bottom: none;
+}
+.wa-editor-sec__label {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--wa-text-faint);
+  margin-bottom: 10px;
+}
+.wa-editor-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.wa-editor-field > span,
+.wa-editor-field__label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--wa-text-muted);
+}
+.wa-editor-field input,
+.wa-editor-field textarea {
+  font-size: var(--wa-f-sm);
+  padding: 8px 10px;
+  border: 1px solid var(--wa-border);
+  border-radius: 8px;
+  background-color: var(--wa-bg-subtle);
+  color: var(--wa-text);
+  font-family: inherit;
+  transition: border-color var(--wa-dur-fast) var(--wa-ease), background-color var(--wa-dur-fast) var(--wa-ease), box-shadow var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-editor-field input:focus,
+.wa-editor-field textarea:focus {
+  outline: none;
+  border-color: var(--wa-primary);
+  background-color: var(--wa-bg);
+  box-shadow: 0 0 0 3px var(--wa-primary-weak);
+}
+/* 下拉框：去掉原生外观，箭头用相对定位的伪元素（不依赖 background-image，避免 Chromium 在 select 上的平铺 bug） */
+.wa-editor-field select {
+  appearance: none;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  cursor: pointer;
+  font-size: var(--wa-f-sm);
+  padding: 8px 28px 8px 10px;
+  border: 1px solid var(--wa-border);
+  border-radius: 8px;
+  background-color: var(--wa-bg-subtle);
+  color: var(--wa-text);
+  font-family: inherit;
+  transition: border-color var(--wa-dur-fast) var(--wa-ease), background-color var(--wa-dur-fast) var(--wa-ease), box-shadow var(--wa-dur-fast) var(--wa-ease);
+  background-image: none;
+}
+.wa-editor-field select:focus {
+  outline: none;
+  border-color: var(--wa-primary);
+  background-color: var(--wa-bg);
+  box-shadow: 0 0 0 3px var(--wa-primary-weak);
+}
+.wa-editor-field select:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+/* 自定义箭头：把 select 包在 .wa-select-wrap 里，箭头用 ::after 绝对定位 */
+.wa-select-wrap {
+  position: relative;
+  display: block;
+}
+.wa-select-wrap select {
+  width: 100%;
+}
+.wa-select-wrap::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  right: 10px;
+  width: 8px;
+  height: 8px;
+  border-right: 1.5px solid var(--wa-text-muted);
+  border-bottom: 1.5px solid var(--wa-text-muted);
+  transform: translateY(-70%) rotate(45deg);
+  pointer-events: none;
+  transition: border-color var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-select-wrap:focus-within::after {
+  border-color: var(--wa-primary);
+}
+.wa-editor-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+/* 开关（继承工具 / 共享历史）——独立类名避免与 SettingsPanel 的 .wa-switch 冲突 */
+.wa-inherit-line {
+  display: flex;
+  align-items: center;
+  margin: 2px 0 4px;
+}
+.wa-ed-switch {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text);
+  cursor: pointer;
+  user-select: none;
+  white-space: nowrap;
+}
+.wa-ed-switch input {
+  display: none;
+}
+.wa-ed-switch__track {
+  flex: none;
+  width: 34px;
+  height: 18px;
+  border-radius: 10px;
+  background: var(--wa-bg-subtle);
+  border: 1px solid var(--wa-border-strong);
+  position: relative;
+  transition: background var(--wa-dur-fast) var(--wa-ease), border-color var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-ed-switch__thumb {
+  position: absolute;
+  top: 1px;
+  left: 1px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--wa-text-muted);
+  transition: transform var(--wa-dur-fast) var(--wa-ease), background var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-ed-switch__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-ed-switch input:checked + .wa-ed-switch__track {
+  background: var(--wa-primary);
+  border-color: var(--wa-primary);
+}
+.wa-ed-switch input:checked + .wa-ed-switch__track .wa-ed-switch__thumb {
+  transform: translateX(16px);
+  background: #fff;
+}
+.wa-ed-switch:hover .wa-ed-switch__track {
+  border-color: var(--wa-primary);
+}
+/* 工具勾选（自定义复选框，替代原生 checkbox） */
+.wa-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-radius: 8px;
+  border: 1px solid var(--wa-border);
+  background: var(--wa-bg-subtle);
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text);
+  cursor: pointer;
+  user-select: none;
+  transition: border-color var(--wa-dur-fast) var(--wa-ease), background var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-check:hover {
+  border-color: var(--wa-primary);
+}
+.wa-check--on {
+  border-color: var(--wa-primary);
+  background: var(--wa-primary-weak);
+  color: var(--wa-primary);
+}
+.wa-check input[type='checkbox'] {
+  display: none;
+}
+.wa-check__box {
+  flex: none;
+  width: 16px;
+  height: 16px;
+  border-radius: 5px;
+  border: 1.5px solid var(--wa-border-strong);
+  background: var(--wa-bg);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: transparent;
+  transition: background var(--wa-dur-fast) var(--wa-ease), border-color var(--wa-dur-fast) var(--wa-ease), color var(--wa-dur-fast) var(--wa-ease);
+}
+.wa-check--on .wa-check__box {
+  background: var(--wa-primary);
+  border-color: var(--wa-primary);
+  color: #fff;
+}
+.wa-check--on:hover {
+  border-color: var(--wa-primary);
+}
+.wa-check__text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.wa-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 6px;
+  margin-top: 6px;
+}
+.wa-tool-grid__empty {
+  grid-column: 1 / -1;
+  font-size: var(--wa-f-sm);
+  color: var(--wa-text-faint);
+  padding: 4px 0;
+}
+.wa-editor-modal__foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 18px;
+  border-top: 1px solid var(--wa-border);
+  background: var(--wa-bg-subtle);
+}
+.wa-editor-modal__name {
+  font-size: var(--wa-f-sm);
+  font-weight: 600;
+  color: var(--wa-text);
+}
+.wa-editor-modal__actions {
+  display: flex;
+  gap: 8px;
+}
