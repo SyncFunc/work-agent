@@ -11,6 +11,7 @@ import asyncio
 import os
 import time
 import uuid
+from collections.abc import Callable
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from agent.context import SessionMemory, SessionMemoryConfig
@@ -208,6 +209,9 @@ class Session:
         self._sm_last_tokens = 0
         self._sm_prev_len = 0
         self._sm_updating = False
+        # M11.6 会话标题：由 daemon 注入回调，session memory 摘要更新后把 Session Title
+        # 落盘为会话标题（保持持久化；None 表示未注入，忽略）。
+        self.title_hook: Callable[[str], None] | None = None
 
         # M4.5：上下文管理器（集成压缩 / 固定底座）。优先用注入的，否则依据配置构建。
         # 至少启用一项压缩能力时才构建并介入（默认全开），全关则保持 None 零开销。
@@ -544,6 +548,12 @@ class Session:
         def _sink(agent_name: str, task: str, text: str) -> None:
             if text and self.session_memory is not None:
                 self.session_memory.save(text, stats={"source": "background_subagent"})
+                # M11.6：摘要更新后若含 Session Title，通知 daemon 落盘为会话标题
+                # （由注入的 title_hook 处理；未注入时忽略，列表仍可实时回退到 store）。
+                if self.title_hook is not None:
+                    title = self.session_memory.extract_title()
+                    if title:
+                        self.title_hook(title)
 
         return self.spawn_background(
             "session-memory",

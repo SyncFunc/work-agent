@@ -21,6 +21,14 @@ from typing import Any
 
 from agent.core.events import Event, EventStream
 
+# 会话标题来源（M11.6）：优先级 manual > memory > user。
+# - user：会话首个用户提问（自动生成，可被 memory/manual 覆盖）；
+# - memory：后台 session-memory 子 agent 生成的 Session Title（可被 manual 覆盖）；
+# - manual：用户手动编辑（锁定，永不被自动覆盖）。
+TITLE_SOURCE_USER = "user"
+TITLE_SOURCE_MEMORY = "memory"
+TITLE_SOURCE_MANUAL = "manual"
+
 
 class SessionStore:
     """SQLite 持久化：``sessions`` 元数据 + ``events`` 事件流。"""
@@ -52,7 +60,9 @@ class SessionStore:
                     plan_path         TEXT,
                     clarify_total     INTEGER,
                     root_span_id      TEXT,
-                    model_meta_json   TEXT
+                    model_meta_json   TEXT,
+                    title             TEXT,
+                    title_source      TEXT
                 );
                 CREATE TABLE IF NOT EXISTS events (
                     session_id TEXT NOT NULL,
@@ -72,6 +82,15 @@ class SessionStore:
                 conn.execute("ALTER TABLE events ADD COLUMN parent_session_id TEXT")
             except sqlite3.OperationalError:
                 pass  # 列已存在
+            # M11.6 会话标题：旧库无 title / title_source 列时在线迁移（不破坏既有数据）。
+            for col, ddl in (
+                ("title", "TEXT"),
+                ("title_source", "TEXT"),
+            ):
+                try:
+                    conn.execute(f"ALTER TABLE sessions ADD COLUMN {col} {ddl}")
+                except sqlite3.OperationalError:
+                    pass  # 列已存在
             # 迁移/新建后该列必然存在，再建父会话索引。
             try:
                 conn.execute(
@@ -91,6 +110,8 @@ class SessionStore:
         clarify_total: int = 0,
         root_span_id: str | None = None,
         model_meta_json: str | None = None,
+        title: str | None = None,
+        title_source: str | None = None,
     ) -> None:
         """登记一个会话行（幂等：已存在则跳过 INSERT，仅刷新 updated_at）。"""
         now = time.time()
@@ -98,8 +119,9 @@ class SessionStore:
             conn.execute(
                 """INSERT OR IGNORE INTO sessions
                    (session_id, name, parent_session_id, created_at, updated_at,
-                    plan_mode, plan_path, clarify_total, root_span_id, model_meta_json)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    plan_mode, plan_path, clarify_total, root_span_id, model_meta_json,
+                    title, title_source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     name,
@@ -111,6 +133,8 @@ class SessionStore:
                     clarify_total,
                     root_span_id,
                     model_meta_json,
+                    title,
+                    title_source,
                 ),
             )
             conn.execute("UPDATE sessions SET updated_at=? WHERE session_id=?", (now, session_id))
@@ -203,10 +227,33 @@ class SessionStore:
     def list_sessions(self) -> list[dict[str, Any]]:
         with self._conn() as conn:
             rows = conn.execute(
-                "SELECT session_id, name, parent_session_id, created_at, updated_at "
-                "FROM sessions ORDER BY updated_at DESC"
+                "SELECT session_id, name, parent_session_id, created_at, updated_at, "
+                "title, title_source FROM sessions ORDER BY updated_at DESC"
             ).fetchall()
         return [dict(r) for r in rows]
+
+    def set_title(self, session_id: str, title: str, source: str = TITLE_SOURCE_MANUAL) -> None:
+        """设置会话标题并刷新 ``updated_at``（持久化，重进保留）。
+
+        标题按 ``source`` 记录来源，供上层做优先级决策；本方法只落盘，不判断优先级
+        （优先级由调用方在取用标题前决定，见 ``resolve_title``）。
+        """
+        with self._conn() as conn:
+            conn.execute(
+                "UPDATE sessions SET title=?, title_source=?, updated_at=? WHERE session_id=?",
+                (title, source, time.time(), session_id),
+            )
+
+    def resolve_title(self, session_id: str) -> str | None:
+        """解析该会话的显示标题（按优先级 manual > memory > user）。
+
+        仅读取已持久化的 title 字段；若为 None 返回 None（由调用方回退到 id 前缀）。
+        重进程序后调用即可得到符合预期的标题。
+        """
+        s = self.get_session(session_id)
+        if not s or not s.get("title"):
+            return None
+        return s["title"]
 
     def touch(self, session_id: str) -> None:
         with self._conn() as conn:

@@ -90,6 +90,14 @@
 - REPL：`/plan` `/exec` `/approve` `/mode` `/context` `/compact` `/skills` `/agents` `/skill <name>` `/agent <name> <task>` `/bg` `/resume <id>` `/fork <id>` `/help`。
 - 桌面端命令面板（Ctrl/Cmd+K）对齐同一命令集。
 
+### 发版 / CD（现状）
+- **版本号 7 处必须同步**（唯一事实来源，别漏）：`pyproject.toml` → `agent/__init__.py`(`__version__`) → `agent/daemon/protocol.py`(`DAEMON_VERSION`) → `desktop/package.json` → `desktop/src/renderer/App.tsx`(`APP_VERSION`) → `desktop/src/protocol/client.ts`(hello 消息 ×2)。`PROTOCOL_VERSION` 是**协议版本**，仅当消息契约变更才升，与产品版本号无关。
+- **CI vs CD 职责**：`ci.yml` = push main / PR 门禁（ruff+basedpyright+pytest+cov，`fast` job）+ nightly `slow` e2e；`cd.yml` = **push tag `v*` 触发**（或 `workflow_dispatch` 手动）→ 矩阵(ubuntu/windows/macos) PyInstaller 冻结 daemon 二进制 + electron-builder 打安装包 → `release` job 把三平台安装包作为资产上传到该 tag 的 GitHub Release。
+- **手动建 Release 与 CD 不冲突**：可以先经 GitHub API 手动建带 release notes 的 Release（占位/说明文档），CD 的 `softprops/action-gh-release@v2` 对**已存在的 tag** 是**追加安装包资产**、不覆盖 notes/不重建——最后得到"说明 + 安装包"合一的 Release。
+- **发版标准动作**（幂等可复用）：① 升 7 处版本号 ② 本地跑门禁（ruff/basedpyright/pytest + 前端 tsc/vitest/build）③ commit + push main ④ `git tag vX.Y.Z && git push origin main --tags`（触发 CD）⑤ 等 CD 跑完，用 API 或 gh 补 Release notes（若想先占位可先建）。
+- **无 gh CLI / 无 token 环境变量时创建 Release**：从 Windows 凭据管理器读 token → `git credential fill`（经 subprocess 传多行 `protocol=https\nhost=github.com\n\n`，PowerShell 管道传 stdin 会因缺失 protocol 报错，须用 Python subprocess）→ 取 `password=`（`gho_` 开头）→ POST `api.github.com/repos/{owner}/{repo}/releases`，`Authorization: token <token>`。**用完立即删含 token 的临时文件**。
+- **Release 状态可查**：`GET /repos/{repo}/actions/runs?event=push` 看 CD/CI 运行状态（`head_sha` 前 7 位对应当前提交、`name` 区分 CD/CI、`conclusion` 判断成败）。
+
 ---
 
 ## 踩坑（可能会踩的坑）
@@ -152,3 +160,10 @@
 - 子类访问 app 专属方法：`self.app` 被推断为基类 `App`，需 `cast("ChatApp", self.app)`。
 - **子 agent 独立块 widget 坑**：`VerticalScroll` 在 `textual.containers`（非 `textual.widgets`）；`Static` 内容用 `.content` 属性（非 `.renderable`），`Syntax` 用 `.code`；`Hit` 展示名在 `.text`（非 `.name`）；`Collapsible` 的 Contents 容器类名 `Collapsible.Contents`。
 - TUI `text-style` 合法值**不含 `normal`**（用 `none`，否则 `StylesheetParseError` 整屏崩）。
+
+### 发版 / CD
+- **PowerShell 下 `git credential fill` 传 stdin 多行会报 `refusing to work with credential missing protocol field`**：PowerShell 管道把整块当字符串丢给 stdin 会坏，须用 Python `subprocess.run(input="protocol=https\nhost=github.com\n\n")` 正确传多行。
+- **git 凭据管理器存的 token 可能是 `gho_`（git CLI OAuth）**：通常有 repo 权限可用于建 Release，但 scope 受限（不保证 `workflow`/`delete` 等）；若 API 返回 403 权限不足，需换有 `repo` scope 的 PAT。
+- **`softprops/action-gh-release@v2` 对已存在 Release 是追加资产**，不会覆盖 notes；但若**未手动建** Release，CD `release` job 会自建（`generate_release_notes: true` 自动生成 notes）——两种路径最后都是同 tag 一个 Release。
+- **发版前 `ruff format --check .` 必须过**（不只是 `ruff check`）：之前 `agent/core/loop.py` 曾因长 `logger.debug` 行漏过 `format` 检查，直到发版门禁才发现；改动含 Python 时两把刀都要跑。
+- **历史留档文件（如 `docs/PR-description.md`）常是未跟踪状态**：其内容描述的是**上一版本/历史 PR**，与当前工作区改动主题不符时不并入本次提交（避免把过期说明提交进 release），提交前先甄别。

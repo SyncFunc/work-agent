@@ -110,4 +110,48 @@ describe('sessionsReducer', () => {
     expect(s.tabs.map((t) => t.id)).toEqual(['2'])
     expect(s.activeId).toBe('2')
   })
+
+  it('sessionRenamed 更新列表项 title 与 name', () => {
+    let s: SessionsState = {
+      ...initialState('/p'),
+      list: [
+        { id: '1', name: 'A', title: '首个提问', project_root: '/p' },
+        { id: '2', name: 'B', project_root: '/p' },
+      ],
+    }
+    s = sessionsReducer(s, { type: 'sessionRenamed', id: '1', title: '手动标题' })
+    expect(s.list.find((x) => x.id === '1')).toMatchObject({
+      title: '手动标题',
+      name: '手动标题',
+    })
+    expect(s.list.find((x) => x.id === '2')?.title).toBeUndefined()
+  })
+
+  it('sessionRenamed 对未知 id 不改变列表', () => {
+    let s: SessionsState = {
+      ...initialState('/p'),
+      list: [{ id: '1', name: 'A', project_root: '/p' }],
+    }
+    const before = s.list
+    s = sessionsReducer(s, { type: 'sessionRenamed', id: 'nope', title: 'x' })
+    expect(s.list).toEqual(before)
+  })
+
+  it('liveEvent 忽略归属其他会话的事件（切换后旧会话输出不串渲染）', () => {
+    let s: SessionsState = {
+      ...initialState('/p'),
+      tabs: [{ id: '1', name: 'A', projectRoot: '/p', events: [] }],
+      activeId: '1',
+    }
+    const evBase = { seq: 1, type: 'text' as const, ts: 0 }
+    // 事件归属会话 2（非 active）→ 忽略
+    s = sessionsReducer(s, { type: 'liveEvent', event: { ...evBase, text: '旧会话', session_id: '2' } })
+    expect(s.tabs[0].events).toHaveLength(0)
+    // 事件归属 active 会话 1 → 接收
+    s = sessionsReducer(s, { type: 'liveEvent', event: { ...evBase, text: '当前', session_id: '1' } })
+    expect(s.tabs[0].events).toHaveLength(1)
+    // 无 session_id（兼容回放/旧数据）→ 接收
+    s = sessionsReducer(s, { type: 'liveEvent', event: { ...evBase, text: '兼容' } })
+    expect(s.tabs[0].events).toHaveLength(2)
+  })
 })

@@ -8,7 +8,12 @@ from __future__ import annotations
 import asyncio
 import uuid
 
-from agent.context.session_store import SessionStore, SessionStoreSink
+from agent.context.session_store import (
+    TITLE_SOURCE_MEMORY,
+    TITLE_SOURCE_USER,
+    SessionStore,
+    SessionStoreSink,
+)
 from agent.core.events import Event, EventStream, EventType
 from agent.core.model import Decision, FakeModel, ToolCall
 from agent.core.session import Session
@@ -149,3 +154,36 @@ def test_iter_events_with_subsession_groups_parent_and_children(tmp_path):
     # 通过回放条件验证：子事件可由 parent 查到
     child_rows = [r for r in rows if r[1] == child_id]
     assert len(child_rows) == 2
+
+
+def test_title_set_and_resolve_persists(tmp_path):
+    """M11.6 标题持久化：set_title 后跨「重启」（新 store 实例）仍能解析。"""
+    store = SessionStore(tmp_path / "sessions.db")
+    store.create("s1")
+    store.set_title("s1", "第一个提问：如何优化", TITLE_SOURCE_USER)
+    assert store.resolve_title("s1") == "第一个提问：如何优化"
+    # 模拟重启：同一 db 路径新建 store 实例
+    store2 = SessionStore(tmp_path / "sessions.db")
+    assert store2.resolve_title("s1") == "第一个提问：如何优化"
+    row = store2.get_session("s1")
+    assert row["title_source"] == TITLE_SOURCE_USER
+
+
+def test_title_source_migration_on_existing_db(tmp_path):
+    """旧库（无 title/title_source 列）在线迁移后仍可正常读写标题。"""
+    import sqlite3
+
+    db = tmp_path / "sessions.db"
+    with sqlite3.connect(str(db)) as conn:
+        conn.execute(
+            """CREATE TABLE sessions (
+                session_id TEXT PRIMARY KEY, name TEXT, parent_session_id TEXT,
+                created_at REAL NOT NULL, updated_at REAL NOT NULL, plan_mode INTEGER,
+                plan_path TEXT, clarify_total INTEGER, root_span_id TEXT, model_meta_json TEXT)"""
+        )
+        conn.execute(
+            "INSERT INTO sessions (session_id, created_at, updated_at) VALUES ('old', 0, 0)"
+        )
+    store = SessionStore(db)  # 触发 ALTER 迁移
+    store.set_title("old", "迁移后标题", TITLE_SOURCE_MEMORY)
+    assert store.resolve_title("old") == "迁移后标题"

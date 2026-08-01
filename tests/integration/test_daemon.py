@@ -185,6 +185,46 @@ async def test_hello_welcome(server):
         assert w["payload"]["daemon_version"]
 
 
+async def test_command_skills_agents_without_session(server):
+    """无 attach 会话时，/skills、/agents 是全局只读查询：返回清单而非 no_session。
+
+    M11.5：技能/智能体清单不依赖具体会话，用 project_root 直接构造 loader 查询；
+    其余命令仍报 no_session。
+    """
+    _, port = server
+    async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
+        await _handshake(ws)
+        # 未新建/附加任何会话
+        await ws.send(
+            make_message(
+                MsgType.COMMAND,
+                {"name": "skills", "args": None, "project_root": os.getcwd()},
+            )
+        )
+        s = await _recv_type(ws, MsgType.SHOW_SKILLS)
+        assert isinstance(s["payload"]["specs"], list)
+
+        await ws.send(
+            make_message(
+                MsgType.COMMAND,
+                {"name": "agents", "args": None, "project_root": os.getcwd()},
+            )
+        )
+        a = await _recv_type(ws, MsgType.SHOW_AGENTS)
+        # 内置子 agent（explore/plan/general-purpose/session-memory）至少应列出
+        assert len(a["payload"]["specs"]) >= 1
+
+        # 非只读命令仍报 no_session
+        await ws.send(
+            make_message(
+                MsgType.COMMAND,
+                {"name": "compact", "args": None, "project_root": os.getcwd()},
+            )
+        )
+        err = await _recv_type(ws, MsgType.ERROR)
+        assert err["payload"]["code"] == "no_session"
+
+
 async def test_session_new_and_list(server):
     _, port = server
     async with websockets.connect(f"ws://127.0.0.1:{port}") as ws:
@@ -423,6 +463,48 @@ async def test_multi_project_session_isolation(multi_project_server):
     # 协议层列表也按项目隔离
     assert {s["id"] for s in srv["registry"].list_info(srv["pr_a"])} == {sid_a}
     assert {s["id"] for s in srv["registry"].list_info(srv["pr_b"])} == {sid_b}
+
+
+async def test_session_title_first_question_then_manual(multi_project_server):
+    """M11.6 会话标题：
+    1) 首个提问自动生成（title = 首个 user 提问）；
+    2) session.title 手动设置覆盖，且 list 返回手动标题（持久化，优先级最高）。
+    """
+    srv = multi_project_server
+    async with websockets.connect(f"ws://127.0.0.1:{srv['port']}") as ws:
+        await _handshake(ws)
+        await ws.send(make_message(MsgType.SESSION_NEW, {"project_root": srv["pr_a"]}))
+        created = await _recv_type(ws, MsgType.SESSION_CREATED)
+        sid = created["payload"]["session_id"]
+        await _recv_type(ws, MsgType.ATTACHED)
+
+        # 首个提问 → 自动生成标题（user source）
+        await ws.send(make_message(MsgType.TASK_SEND, {"text": "帮我优化一下代码"}))
+        await _drive(ws, answer="a")
+        infos = srv["registry"].list_info(srv["pr_a"])
+        it = next(i for i in infos if i["id"] == sid)
+        assert it["title"] == "帮我优化一下代码"
+        # M11.6：生成结束后 running 应为 False（运行中标识随之消失）
+        assert it["running"] is False
+        row = srv["store_factory"](srv["pr_a"]).get_session(sid)
+        assert row["title_source"] == "user"
+
+        # 手动设置标题 → 覆盖并标记 manual
+        await ws.send(make_message(MsgType.SESSION_TITLE, {"title": "性能优化任务"}))
+        resp = await _recv_type(ws, MsgType.SESSION_TITLE_RESP)
+        assert resp["payload"]["ok"] is True
+        infos = srv["registry"].list_info(srv["pr_a"])
+        it = next(i for i in infos if i["id"] == sid)
+        assert it["title"] == "性能优化任务"
+        row = srv["store_factory"](srv["pr_a"]).get_session(sid)
+        assert row["title_source"] == "manual"
+
+        # 再次 task.send → 不覆盖手动标题（manual 优先级最高）
+        await ws.send(make_message(MsgType.TASK_SEND, {"text": "第二轮提问"}))
+        await _drive(ws, answer="a")
+        row = srv["store_factory"](srv["pr_a"]).get_session(sid)
+        assert row["title"] == "性能优化任务"
+        assert row["title_source"] == "manual"
 
 
 # --------------------------------------------------------------------------- #

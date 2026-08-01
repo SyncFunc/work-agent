@@ -267,6 +267,9 @@ export class DaemonClient {
           // M9 subsession：把事件归属的子会话 id 注入（顶层会话事件无此字段）。
           const sid = msg.payload['subsession_id']
           if (typeof sid === 'string') ev.subsession_id = sid
+          // M11.6：把事件归属的顶层会话 id 注入（信封 session 字段），供前端按会话过滤，
+          // 避免切换会话后旧会话仍在输出的实时事件串渲染到当前会话。
+          if (typeof msg.session === 'string') ev.session_id = msg.session
           for (const h of this.eventHandlers) h(ev)
         } catch {
           /* 非法 event 忽略 */
@@ -347,8 +350,12 @@ export class DaemonClient {
     this.send('approve', { id, approved }, { id })
   }
 
-  command(name: string, args?: string | null): void {
-    this.send('command', { name, args: args ?? null })
+  command(name: string, args?: string | null, projectRoot?: string): void {
+    this.send('command', {
+      name,
+      args: args ?? null,
+      project_root: projectRoot ?? this.projectRoot ?? '',
+    })
   }
 
   /** M9.9 真实中断：取消当前连接会话正在生成的任务（中断 LLM 流）。 */
@@ -359,6 +366,15 @@ export class DaemonClient {
   /** M9.9 彻底删除会话（含事件/记忆/trace），后端级联清理。 */
   deleteSession(id: string, projectRoot?: string): void {
     this.send('session.delete', { session_id: id, project_root: projectRoot })
+  }
+
+  /** M11.6 手动设置会话标题（持久化，优先级最高）。 */
+  setSessionTitle(id: string, title: string, projectRoot?: string): void {
+    this.send('session.title', {
+      session_id: id,
+      project_root: projectRoot ?? this.projectRoot ?? '',
+      title,
+    })
   }
 
   // --------------------------------------------------------------------------- //

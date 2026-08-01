@@ -1,4 +1,4 @@
-import React, { useState } from 'react'
+import React, { useEffect, useState } from 'react'
 import { Sparkles, Bot, BarChart2, Search, Plus, Settings, PanelLeft, GitBranch, Trash2, Check, X } from 'lucide-react'
 import type { SessionInfo } from '../../protocol/types'
 import { IconButton, Logo } from '../../components'
@@ -20,6 +20,7 @@ interface SidebarProps {
   onCreate: () => void
   onFork: (id: string) => void
   onDelete: (id: string) => void
+  onRename: (id: string, title: string) => void
   onSettings: () => void
   onCollapse: () => void
   onUser: () => void
@@ -27,7 +28,10 @@ interface SidebarProps {
 
 function relTime(ts?: number | null): string {
   if (!ts) return ''
-  const diff = Date.now() - ts
+  // daemon 下发的 last_activity / updated_at 是秒级 epoch（time.time()），
+  // 而 Date.now() 返回毫秒。判断量级后统一换算，避免显示成「2949 周前」。
+  const ms = ts < 1e12 ? ts * 1000 : ts
+  const diff = Date.now() - ms
   const m = Math.floor(diff / 60000)
   if (m < 1) return '刚刚'
   if (m < 60) return `${m}分钟前`
@@ -66,6 +70,7 @@ export function Sidebar(props: SidebarProps): React.ReactElement {
     onCreate,
     onFork,
     onDelete,
+    onRename,
     onSettings,
     onCollapse,
     onUser,
@@ -73,6 +78,15 @@ export function Sidebar(props: SidebarProps): React.ReactElement {
   const [query, setQuery] = useState('')
   // M9.9 步骤6：删除二次确认。
   const [confirmId, setConfirmId] = useState<string | null>(null)
+  // M11.6：会话标题编辑（id + 当前输入值）。
+  const [editId, setEditId] = useState<string | null>(null)
+  const [editValue, setEditValue] = useState('')
+  // M11.6：相对时间（「X分钟前」等）需周期刷新，否则不重进页面就不会更新。
+  const [, setTick] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setTick((n) => n + 1), 30000)
+    return () => clearInterval(t)
+  }, [])
 
   if (collapsed) {
     return (
@@ -159,9 +173,64 @@ export function Sidebar(props: SidebarProps): React.ReactElement {
                     <DocIcon />
                   </span>
                   <span className="wa-history-item__main">
-                    <span className="wa-history-item__name">{s.name ?? s.id.slice(0, 8)}</span>
+                    {editId === s.id ? (
+                      <input
+                        className="wa-history-item__edit"
+                        autoFocus
+                        value={editValue}
+                        placeholder="输入标题…"
+                        onChange={(e) => setEditValue(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            onRename(s.id, editValue.trim())
+                            setEditId(null)
+                          } else if (e.key === 'Escape') {
+                            setEditId(null)
+                          }
+                        }}
+                      />
+                    ) : (
+                      <span
+                        className="wa-history-item__name"
+                        title={s.title ?? '新会话'}
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditId(s.id)
+                          setEditValue(s.title ?? s.name ?? '')
+                        }}
+                      >
+                        {s.title ?? '新会话'}
+                      </span>
+                    )}
                     <span className="wa-history-item__time">{relTime(s.last_activity)}</span>
                   </span>
+                  {editId === s.id && (
+                    <span className="wa-history-item__confirm">
+                      <button
+                        type="button"
+                        className="wa-history-item__confirm-yes"
+                        title="确认标题"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          onRename(s.id, editValue.trim())
+                          setEditId(null)
+                        }}
+                      >
+                        <Check size={13} />
+                      </button>
+                      <button
+                        type="button"
+                        className="wa-history-item__confirm-no"
+                        title="取消"
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          setEditId(null)
+                        }}
+                      >
+                        <X size={13} />
+                      </button>
+                    </span>
+                  )}
                   {s.running && <span className="wa-history-item__running" title="运行中" />}
                   {confirmId === s.id ? (
                     <span

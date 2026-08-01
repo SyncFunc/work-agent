@@ -261,13 +261,26 @@ class SessionRegistry:
         """
         sessions: list[dict] = []
         seen: set[str] = set()
+        store: SessionStore | None = None
+        if project_root is not None and self._store_factory is not None:
+            try:
+                store = self._store_factory(project_root)
+            except Exception:
+                store = None
         for h in self._sessions.values():
             if project_root is not None and h.project_root != project_root:
                 continue
+            title = None
+            if store is not None:
+                try:
+                    title = store.resolve_title(h.session_id)
+                except Exception:
+                    title = None
             sessions.append(
                 {
                     "id": h.session_id,
                     "name": h.name,
+                    "title": title,
                     "project_root": h.project_root,
                     "attached": h.attached_conn is not None,
                     "running": h.running,
@@ -276,9 +289,9 @@ class SessionRegistry:
             )
             seen.add(h.session_id)
         # 合并持久化会话（仅限指定项目，避免跨项目串扰）
-        if project_root is not None and self._store_factory is not None:
+        if store is not None:
             try:
-                for row in self._store_factory(project_root).list_sessions():
+                for row in store.list_sessions():
                     sid = row["session_id"]
                     if sid in seen:
                         continue
@@ -286,6 +299,7 @@ class SessionRegistry:
                         {
                             "id": sid,
                             "name": row.get("name") or sid[:8],
+                            "title": row.get("title"),
                             "project_root": project_root,
                             "attached": False,
                             "running": False,

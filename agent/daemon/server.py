@@ -16,7 +16,9 @@ import logging
 import os
 import time
 import uuid
+from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
+from pathlib import Path
 from threading import Thread
 from typing import TYPE_CHECKING, Any, cast
 
@@ -200,12 +202,27 @@ async def _route(
     elif mtype == MsgType.APPROVE.value:
         _resolve(conn, registry, payload.get("id"), bool(payload.get("approved", False)))
     elif mtype == MsgType.COMMAND.value:
-        await _command(conn, registry, payload.get("name", ""), payload.get("args"))
+        await _command(
+            conn,
+            registry,
+            payload.get("name", ""),
+            payload.get("args"),
+            payload.get("project_root"),
+        )
     elif mtype == MsgType.TASK_CANCEL.value:
         await _task_cancel(conn, registry)
     elif mtype == MsgType.SESSION_DELETE.value:
         await _session_delete(
             conn, registry, payload.get("session_id"), payload.get("project_root")
+        )
+    elif mtype == MsgType.SESSION_TITLE.value:
+        await _session_set_title(
+            conn,
+            registry,
+            payload.get("session_id") or conn.session_id,
+            payload.get("project_root"),
+            payload.get("title", ""),
+            _mid,
         )
     elif mtype == MsgType.TRACE_LIST.value:
         await _trace_list(
@@ -346,8 +363,20 @@ async def _task_send(
     async def _run() -> None:
         handle.running = True
         handle.last_activity = time.time()
+        # M11.6：生成开始（running→True），推送最新列表让前端「运行中」呼吸点即时出现。
+        try:
+            proj = handle.project_root or os.getcwd()
+            await conn.send(
+                MsgType.SESSION_LIST_RESP,
+                {"project_root": proj, "sessions": registry.list_info(proj)},
+                session=sid,
+            )
+        except Exception:
+            pass
         try:
             t0 = time.time()
+            # M11.6 会话标题：首个提问自动生成（仅当尚无标题时，避免覆盖用户手动/记忆标题）。
+            _maybe_set_user_title(registry, handle, text)
             async with handle.lock:  # 每会话串行化（即便 busy 被绕过也安全）
                 res, _err = await session.step(
                     text, transport, yes=yes, fatal_plan_decline=False, trace_id=trace_id
@@ -376,6 +405,16 @@ async def _task_send(
             handle.running = False
             handle.busy = False
             handle.running_task = None
+            # M11.6：会话生成结束（running→False），推送最新列表让前端运行中标识即时消失。
+            try:
+                proj = handle.project_root or os.getcwd()
+                await conn.send(
+                    MsgType.SESSION_LIST_RESP,
+                    {"project_root": proj, "sessions": registry.list_info(proj)},
+                    session=sid,
+                )
+            except Exception:
+                pass
             try:
                 await conn.send(MsgType.CLOSE, {}, session=sid)
             except Exception:
@@ -465,15 +504,69 @@ async def _session_delete(
     await conn.send(MsgType.SESSION_DELETE_RESP, {"ok": True, "session_id": sid}, session=sid)
 
 
+async def _session_set_title(
+    conn: Connection,
+    registry: SessionRegistry,
+    session_id: str | None,
+    project_root: str | None,
+    title: str,
+    mid: str | None,
+) -> None:
+    """M11.6 用户手动设置会话标题（来源 manual，优先级最高，持久化）。
+
+    写 SessionStore.title（manual）；同时同步内存 handle.name 使列表即时更新。
+    标题会 trim 并截断到 60 字符。
+    """
+    from agent.context.session_store import TITLE_SOURCE_MANUAL
+
+    sid = session_id or conn.session_id
+    if not sid:
+        await conn.send(
+            MsgType.SESSION_TITLE_RESP, {"ok": False, "error": "no_session"}, id=mid, session=None
+        )
+        return
+    # 确定 project_root：优先 payload，其次该会话 handle
+    proj = project_root or os.getcwd()
+    handle = registry.get(sid)
+    if handle is not None and handle.project_root:
+        proj = handle.project_root
+    store_factory = getattr(registry, "_store_factory", None)
+    title = " ".join((title or "").split())[:60]
+    try:
+        if store_factory is not None:
+            store_factory(proj).set_title(sid, title, TITLE_SOURCE_MANUAL)
+        if handle is not None:
+            handle.name = title or handle.session_id[:8]
+        await conn.send(
+            MsgType.SESSION_TITLE_RESP,
+            {"ok": True, "session_id": sid, "title": title},
+            id=mid,
+            session=sid,
+        )
+    except Exception as e:
+        await conn.send(
+            MsgType.SESSION_TITLE_RESP, {"ok": False, "session_id": sid, "error": str(e)}, id=mid
+        )
+
+
 async def _command(
-    conn: Connection, registry: SessionRegistry, name: str, args: str | None
+    conn: Connection,
+    registry: SessionRegistry,
+    name: str,
+    args: str | None,
+    project_root: str | None = None,
 ) -> None:
     from agent.core.session_command import dispatch_command  # 延迟导入（M7.5 才落地）
 
     sid = conn.session_id
     handle = registry.get(sid) if sid else None
     if handle is None:
-        await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid})
+        # 无 attach 会话时，/skills、/agents 是全局只读查询，不依赖具体会话：
+        # 用连接的 project_root 直接构造 loader 列清单（M11 面板无需先建会话即可浏览）。
+        if name in {"skills", "agents"}:
+            await _list_global_specs(conn, name, project_root or os.getcwd())
+        else:
+            await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid})
         return
     if handle.session is None:
         await conn.send(MsgType.ERROR, {"code": "no_session", "message": "session not initialized"})
@@ -492,6 +585,86 @@ async def _command(
     handled = await dispatch_command(handle.session, raw, handle.transport, handle.session.settings)
     if not handled:
         handle.transport.notify(f"未知命令: {raw}")
+
+
+async def _list_global_specs(conn: Connection, name: str, project_root: str) -> None:
+    """无 attach 会话时，按 project_root 全局列技能/智能体清单（只读，不依赖具体会话）。
+
+    复用会话构建 SkillLoader / SubagentSpawner 的最小参数，仅做 ``summaries()`` 查询，
+    失败（settings 缺失等）时退化为空清单，避免阻塞面板浏览。
+    """
+    from agent.daemon.bridge import _spec_to_dict
+    from agent.skills.loader import SkillLoader
+    from agent.subagent import SubagentSpawner
+
+    mtype = MsgType.SHOW_SKILLS if name == "skills" else MsgType.SHOW_AGENTS
+    try:
+        if name == "skills":
+            specs = SkillLoader(Path(project_root)).summaries()
+        else:
+            from agent.config.settings import load_settings
+
+            settings = load_settings(project_root=project_root)
+            spawner = SubagentSpawner(settings, cwd=Path(project_root))
+            specs = spawner.summaries()
+        await conn.send(mtype, {"specs": [_spec_to_dict(s) for s in specs]})
+    except Exception:
+        log.debug("[daemon] 全局查询 %s 失败，返回空清单: %s", name, project_root)
+        await conn.send(mtype, {"specs": []})
+
+
+def _maybe_set_user_title(registry: SessionRegistry, handle: Any, text: str) -> None:
+    """会话首个提问自动生成标题（M11.6，来源 user，优先级最低）。
+
+    仅当该会话尚无任何标题时写入，避免覆盖 session memory 或用户手动设置的标题。
+    标题截断到 60 字符（前后端展示用，超长由前端省略号兜底）。
+    """
+    store_factory = getattr(registry, "_store_factory", None)
+    if store_factory is None:
+        return
+    try:
+        store = store_factory(handle.project_root)
+        row = store.get_session(handle.session_id)
+        if row is not None and row.get("title"):
+            return  # 已有标题（手动/记忆/提问），不覆盖
+        from agent.context.session_store import TITLE_SOURCE_USER
+
+        title = " ".join(text.split())[:60]
+        if title:
+            store.set_title(handle.session_id, title, TITLE_SOURCE_USER)
+            # 通知前端刷新会话列表，让首个提问生成的标题即时反映（不再回退显示 id）。
+            conn = handle.attached_conn
+            if conn is not None:
+                proj = handle.project_root or os.getcwd()
+                asyncio.create_task(
+                    conn.send(
+                        MsgType.SESSION_LIST_RESP,
+                        {"project_root": proj, "sessions": registry.list_info(proj)},
+                        session=handle.session_id,
+                    )
+                )
+    except Exception:
+        log.debug("[daemon] 会话标题(首个提问)落盘失败: %s", handle.session_id)
+
+
+def _make_title_hook(store: Any, session_id: str) -> Callable[[str], None]:
+    """构造 session memory 摘要更新后的标题落盘回调（M11.6）。
+
+    规则：仅当当前标题不是「用户手动设置」时才覆盖（manual 优先级最高）。
+    session memory 生成的标题可覆盖「首个提问」，但不覆盖用户手动编辑的标题。
+    """
+    from agent.context.session_store import TITLE_SOURCE_MANUAL, TITLE_SOURCE_MEMORY
+
+    def _hook(title: str) -> None:
+        try:
+            row = store.get_session(session_id)
+            if row is not None and row.get("title_source") == TITLE_SOURCE_MANUAL:
+                return  # 用户已手动指定标题，不覆盖
+            store.set_title(session_id, title, TITLE_SOURCE_MEMORY)
+        except Exception:
+            log.debug("[daemon] 会话标题落盘失败: %s", session_id)
+
+    return _hook
 
 
 # --------------------------------------------------------------------------- #
@@ -705,7 +878,7 @@ def start_daemon(settings: Settings) -> None:
         # M6.2 冷启动：该 session_id 已存在于 sqlite → 从 store 恢复（重建 messages + event_stream）；
         # 否则新建（并落初始行）。同一工厂同时服务新建与恢复两条路径。
         if store.get_session(session_id) is not None:
-            return Session.from_store(
+            sess = Session.from_store(
                 model,
                 default_registry,
                 s,
@@ -715,17 +888,22 @@ def start_daemon(settings: Settings) -> None:
                 trace_store=trace_store,
                 project_root=project_root,
             )
-        return Session(
-            model,
-            default_registry,
-            s,
-            tracer,
-            plan_mode=s.plan.mode,
-            trace_store=trace_store,
-            session_id=session_id,
-            session_store=store,
-            project_root=project_root,
-        )
+        else:
+            sess = Session(
+                model,
+                default_registry,
+                s,
+                tracer,
+                plan_mode=s.plan.mode,
+                trace_store=trace_store,
+                session_id=session_id,
+                session_store=store,
+                project_root=project_root,
+            )
+        # M11.6 会话标题：session memory 摘要更新后把 Session Title 落盘为会话标题。
+        # 仅当当前标题非「用户手动设置」时才覆盖（手动优先级最高）。
+        sess.title_hook = _make_title_hook(store, session_id)
+        return sess
 
     def session_factory(project_root: str, session_id: str) -> Session:
         return _build_session(project_root, session_id, store_for(project_root))

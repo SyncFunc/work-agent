@@ -70,6 +70,8 @@
 | `task.cancelled` | S→C | 已停止生成（M9.9） |
 | `session.delete` | C→S | 彻底删除会话（M9.9） |
 | `session.delete_resp` | S→C | 删除结果（M9.9） |
+| `session.title` | C→S | 手动设置会话标题（M11.6） |
+| `session.title_resp` | S→C | 标题设置结果（M11.6） |
 | `session.info` | S→C | 推送 plan_mode / model（M9.9） |
 | `trace.list` | C→S | 列出 trace |
 | `trace_list` | S→C | trace 列表应答 |
@@ -142,8 +144,10 @@
 - **行为**：`transport.resolve(id, approved_bool)` 唤醒 `approve` 协程。
 
 ### 4.11 `command`
-- **payload**：`{ "name": string, "args": string|null }`
+- **payload**：`{ "name": string, "args": string|null, "project_root"?: string }`
+  - `project_root`：可选（M11.5），用于无 attach 会话时的全局只读查询（`skills` / `agents`）。
 - **行为**：交给 `dispatch_command`（如 `name="switch"` 触发会话切换）；未识别命令 → `notify`「未知命令」。
+- **无 attach 会话时的特殊分支**：`skills` / `agents` 是**全局只读查询**，不依赖具体会话——即使未 attach 也用 `project_root` 直接构造 loader 返回清单（`show_skills` / `show_agents`），不再报 `no_session`；其余命令仍返回 `error`（`code:"no_session"`）。
 
 ### 4.12 `task.cancel`
 - **payload**：`{}`
@@ -160,6 +164,18 @@
 ### 4.15 `trace.get`
 - **payload**：`{ "project_root": string, "trace_id": string }`（trace_id = message_id）
 - **应答**：`trace_tree`（见 5.18）。
+
+### 4.16 `session.title`（M11.6）
+- **payload**：`{ "session_id"?: string, "project_root"?: string, "title": string }`
+  - `session_id` 缺省时用当前 attach 的会话。
+- **行为**：用户手动设置会话标题（来源 `manual`，**优先级最高**，持久化到 `SessionStore`；同时同步内存 handle.name）。标题会 trim 并截断到 60 字符。
+- **应答**：`session.title_resp`（见 5.16b）。
+
+### 4.17 会话标题的自动生成（M11.6）
+- 标题优先级（低→高）：**用户首个提问 → session memory 的 Session Title → 用户手动设置**。
+- 首个提问在 `task.send` 时捕获（仅当该会话尚无标题时写入，来源 `user`）。
+- session memory 摘要更新后，若含 `## Session Title` 段，则落盘为会话标题（来源 `memory`；**不覆盖**用户手动设置的标题）。
+- 用户手动设置（`session.title`）永不被自动覆盖。
 
 ---
 
@@ -182,10 +198,11 @@
 - **payload**：`{ "project_root": string, "sessions": SessionInfo[] }`
 - **SessionInfo 字段**（见 6.6）：
   ```jsonc
-  { "id": string, "name": string|null, "project_root": string,
+  { "id": string, "name": string|null, "title": string|null, "project_root": string,
     "attached": bool, "running": bool, "last_activity": number|null,
     "persisted"?: bool }   // 持久化会话带 persisted:true
   ```
+  - `title`（M11.6）：显示标题（首个提问 / session memory / 用户手动，持久化）；前端优先展示，缺省回退 `name` / `id[:8]`。
 
 ### 5.6 `event`
 - **payload**：`{ "event": Event.to_dict() }`，子会话事件额外带 `subsession_id`：`{ "event": {...}, "subsession_id": string }`。
@@ -221,6 +238,7 @@
 ### 5.13 `show_skills` / `show_agents`
 - **payload**：`{ "specs": [ { "name": string, "title": string, "description": string, ... } ] }`
   - 各 spec 字段由后端对象 `to_dict()`（或公开属性）决定，至少含 `name/title/description`。
+- **触发**：① 有会话时经 `/skills`、`/agents` 命令；② **无 attach 会话时**（M11.5）经 `command` 的 `skills`/`agents` 全局查询分支——按 `project_root` 直接构造 `SkillLoader` / `SubagentSpawner` 返回清单，无需先建会话。
 
 ### 5.14 `notify` / `close` / `task.cancelled`
 - `notify`：`{ "message": string }`。
@@ -235,6 +253,10 @@
 ### 5.16 `session.delete_resp`（M9.9）
 - **payload（成功）**：`{ "ok": true, "session_id": string }`
 - **payload（失败/缺参）**：`{ "ok": false, "message": string }`（缺 `session_id`）或 `{ "ok": false, "session_id": string, "message": string }`。
+
+### 5.16b `session.title_resp`（M11.6）
+- **payload（成功）**：`{ "ok": true, "session_id": string, "title": string }`
+- **payload（失败/缺参）**：`{ "ok": false, "session_id"?: string, "error"?: string }`。
 
 ### 5.17 `trace_list`
 - **payload**：`{ "project_root": string, "traces": TraceInfo[] }`

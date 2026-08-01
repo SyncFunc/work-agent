@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ListTodo, Play, Send, Square } from 'lucide-react'
+import { ListTodo, Play, Send, Square, Wrench } from 'lucide-react'
 import { Button, Textarea } from '../../components'
 import type { CommandDef } from '../command/useCommands'
 import type { SkillInfo } from '../settings/settingsApi'
@@ -195,6 +195,7 @@ export function Composer(props: ComposerProps): React.ReactElement {
               onClick={onShowSkills}
               title="查看技能"
             >
+              <Wrench size={13} />
               技能
             </button>
           ) : null}

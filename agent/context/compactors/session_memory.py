@@ -177,6 +177,30 @@ class SessionMemory:
         except (json.JSONDecodeError, OSError):
             return {}
 
+    def extract_title(self) -> str | None:
+        """从摘要第一段 ``Session Title`` 提取会话标题（供 M11.6 列表展示用）。
+
+        摘要为 10 段固定 markdown，首段以 ``## Session Title`` 开头；解析其段标题之后的
+        首个非空行作为标题。摘要不存在或段缺失时返回 None。
+        """
+        summary = self.load()
+        if not summary:
+            return None
+        in_title = False
+        for line in summary.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("## Session Title"):
+                in_title = True
+                continue
+            if not in_title:
+                continue
+            if stripped.startswith("## "):
+                return None  # 已越过本段，说明无标题内容
+            if not stripped:
+                continue
+            return stripped
+        return None
+
     # ------------------------------------------------------------------ #
     # 触发判断
     # ------------------------------------------------------------------ #

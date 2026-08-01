@@ -757,6 +757,18 @@ def test_session_memory_save_load_roundtrip_and_perms(tmp_path):
     assert meta.get("version") == 1
 
 
+def test_session_memory_extract_title(tmp_path):
+    """M11.6：从摘要第一段 Session Title 提取标题。"""
+    sm = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s_title")
+    assert sm.extract_title() is None  # 无摘要
+    sm.save("## Session Title\n优化代码性能\n\n## Current State\n...")
+    assert sm.extract_title() == "优化代码性能"
+    # 空标题（段后直接下一段）→ None
+    sm2 = SessionMemory(_sm_config(session_memory_dir=str(tmp_path)), session_id="s_title2")
+    sm2.save("## Session Title\n\n## Current State\n...")
+    assert sm2.extract_title() is None
+
+
 def test_session_memory_should_update_disabled(tmp_path):
     sm = SessionMemory(_sm_config(enabled=False, session_memory_dir=str(tmp_path)), session_id="s3")
     sm.save("摘要")

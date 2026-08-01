@@ -4,7 +4,6 @@ import './layout.css'
 import type { DaemonConfig } from '../shared/daemon-config'
 import { DaemonClient } from '../protocol/client'
 import { loadProjectRoot, saveProjectRoot } from '../features/projects/ProjectSwitcher'
-import { SessionTabs } from '../features/sessions/SessionTabs'
 import { useSessions } from '../features/sessions/useSessions'
 import { MessageList } from '../features/chat/MessageList'
 import { Composer } from '../features/chat/Composer'
@@ -238,6 +237,10 @@ export default function App(): React.ReactElement {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
   const active = sessions.state.tabs.find((t) => t.id === sessions.state.activeId) ?? null
+  // M11.6：聊天区顶部展示会话标题（来自列表的持久化 title，缺省回退 name/id）。
+  const activeTitle = active
+    ? (sessions.state.list.find((s) => s.id === active.id)?.title ?? active.name)
+    : ''
   const model = useChatModel(active ? active.events : [])
   const hitl = useHitl(client)
   const hitlPending = hitl.pending
@@ -271,8 +274,6 @@ export default function App(): React.ReactElement {
   }, [client, pushToast])
   const NOTICE_KIND: Record<string, ToastKind> = {
     notify: 'info',
-    skills: 'info',
-    agents: 'info',
     error: 'error',
   }
   const noticeToasts: ToastData[] = notices.map((n) => ({
@@ -417,6 +418,7 @@ export default function App(): React.ReactElement {
         onCreate={() => sessions.createSession()}
         onFork={sessions.forkSession}
         onDelete={sessions.deleteSession}
+        onRename={sessions.renameSession}
         onSettings={() => setSettingsOpen(true)}
         onCollapse={() =>
           setSidebarCollapsed((v) => {
@@ -433,12 +435,6 @@ export default function App(): React.ReactElement {
       <main className="wa-main">
         {leftNav === 'chat' && (
           <>
-            <SessionTabs
-              tabs={sessions.state.tabs}
-              activeId={sessions.state.activeId}
-              onSwitch={sessions.switchSession}
-              onClose={sessions.closeTab}
-            />
             <section style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
               {error && <p style={{ color: 'var(--wa-danger)', padding: '0 16px' }}>错误：{error}</p>}
               {!client && <p style={{ color: 'var(--wa-text-muted)', padding: '0 16px' }}>正在连接 daemon…</p>}
@@ -448,9 +444,38 @@ export default function App(): React.ReactElement {
               {active && (
                 <div style={{ flex: 1, display: 'flex', flexDirection: 'column', minHeight: 0 }}>
                   <div style={{ display: 'flex', alignItems: 'center', padding: '0 16px', margin: '8px 0', position: 'relative' }}>
-                    <p style={{ color: 'var(--wa-text-muted)', fontSize: 13, margin: 0, flex: 1 }}>
-                      会话 <code>{active.name}</code> · {active.events.length} 条事件
-                      {sessions.state.replaying ? '（回放中…）' : ''}
+                    <p
+                      style={{
+                        color: 'var(--wa-text-muted)',
+                        fontSize: 13,
+                        margin: 0,
+                        flex: 1,
+                        display: 'flex',
+                        alignItems: 'baseline',
+                        gap: 6,
+                        minWidth: 0,
+                      }}
+                    >
+                      <span style={{ flexShrink: 0 }}>会话</span>
+                      <span
+                        title={active.id}
+                        style={{
+                          fontSize: 13,
+                          fontWeight: 600,
+                          color: 'var(--wa-text)',
+                          maxWidth: 'min(320px, 60%)',
+                          overflow: 'hidden',
+                          textOverflow: 'ellipsis',
+                          whiteSpace: 'nowrap',
+                          fontFamily: 'inherit',
+                        }}
+                      >
+                        {activeTitle || '（未命名）'}
+                      </span>
+                      <span style={{ flexShrink: 0, marginLeft: 'auto' }}>
+                        {active.events.length} 条事件
+                        {sessions.state.replaying ? '（回放中…）' : ''}
+                      </span>
                     </p>
                     {/* M11：后台子 agent 面板入口（聊天区右上角），不依赖会话切换。
                         后台有任务运行时，按钮以呼吸律动闪烁提醒用户。 */}

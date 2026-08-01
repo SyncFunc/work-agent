@@ -46,12 +46,11 @@ def test_python_msgtype_nonempty_and_sorted_stable() -> None:
     """Python 端 MsgType 枚举自身合理（回归护栏）。
 
     注意：数量为 Python 与 TS（desktop/src/protocol/types.ts 的 ALL_MSG_TYPES）
-    两端一致的现实值。M9.9 新增 task.cancel / task.cancelled / session.delete /
-    session.delete_resp / session.info 后总数由 32 升为 37。若协议再次增删，
-    需同步更新此处计数并确认 TS 侧一致（check-msgtype.mjs 会兜住漂移）。
+    两端一致的现实值。M11.6 新增 session.title / session.title_resp 后总数升至 38。
+    若协议再次增删，需同步更新此处计数并确认 TS 侧一致（check-msgtype.mjs 会兜住漂移）。
     """
     values = [m.value for m in MsgType]
-    assert len(values) == 36
+    assert len(values) == 38
     assert "hello" in values
     assert "event" in values
     assert "error" in values

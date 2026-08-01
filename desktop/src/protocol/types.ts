@@ -19,6 +19,7 @@ export const ALL_MSG_TYPES = [
   'command',
   'task.cancel', // M9.9 真实中断当前生成
   'session.delete', // M9.9 彻底删除会话（含事件/记忆/trace）
+  'session.title', // M11.6 手动设置会话标题 {title}
   'trace.list',
   'trace.get',
   // ---- Server -> Client ----
@@ -41,6 +42,7 @@ export const ALL_MSG_TYPES = [
   'task.cancelled', // M9.9 已停止生成
   'session.info', // M9.9 推送 plan_mode / model
   'session.delete_resp', // M9.9 删除结果
+  'session.title_resp', // M11.6 标题设置结果 {ok, title?, error?}
   'trace_list',
   'trace_tree',
 ] as const
@@ -121,6 +123,9 @@ export interface AgentEvent {
   ts: number
   /** M9 subsession：归属的子会话 id（顶层会话事件为 undefined/空）。 */
   subsession_id?: string | null
+  /** M11.6：事件归属的顶层会话 id（client 派发时从信封 session 注入），
+      用于切换会话后过滤旧会话仍在输出的实时事件，避免串渲染。 */
+  session_id?: string
   /** M11：后台 subsession 标记（如 session-memory 记忆子 agent），前端据此不渲染进前台聊天区。 */
   background?: boolean
   transient?: boolean
@@ -158,6 +163,8 @@ export interface AgentEvent {
 export interface SessionInfo {
   id: string
   name?: string | null
+  /** M11.6 显示标题（首个提问 / session memory / 用户手动，持久化）。 */
+  title?: string | null
   project_root?: string
   attached?: boolean
   running?: boolean

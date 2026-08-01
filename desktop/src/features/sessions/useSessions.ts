@@ -15,6 +15,7 @@ export interface UseSessions {
   closeTab: (id: string) => void
   forkSession: (id: string) => void
   deleteSession: (id: string) => void
+  renameSession: (id: string, title: string) => void
   sendTask: (text: string, opts?: { yes?: boolean; plan?: boolean }) => void
 }
 
@@ -23,6 +24,9 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
   const replay = useRef(new ReplayBuffer())
   const prevListIds = useRef<Set<string> | null>(null)
   const forkPending = useRef(false)
+  // M11.6：实时事件过滤依赖当前 active 会话；用 ref 避免 useEffect 闭包捕获过期的 activeId。
+  const activeIdRef = useRef<string | null>(null)
+  activeIdRef.current = state.activeId
 
   useEffect(() => {
     if (!client) return
@@ -49,6 +53,9 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
     const offAttached = client.onMessage('attached', (env) => {
       const id = env.payload['session_id'] as string
       const pr = (env.payload['project_root'] as string | undefined) ?? projectRoot
+      // M11.6：切换会话时强制结束上一个会话的未完成 replay（丢弃不完整 buffer），
+      // 避免旧会话的 replay_start/end 与本次交错导致「回放中」残留卡住。
+      if (replay.current.isActive) replay.current.end()
       dispatch({ type: 'attached', id, projectRoot: pr })
     })
     const offReplayStart = client.onMessage('replay_start', () => {
@@ -60,6 +67,11 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
       dispatch({ type: 'replayEnd', events })
     })
     const offEvent = client.onEvent((ev: AgentEvent) => {
+      // M11.6：只处理当前 active 会话的事件；切换会话后旧会话仍在输出的实时事件
+      // （session_id ≠ active）一律忽略——既不污染 replay buffer，也不渲染到当前会话。
+      const actId = activeIdRef.current
+      const evSid = ev.session_id
+      if (typeof evSid === 'string' && actId !== null && evSid !== actId) return
       if (replay.current.isActive) {
         // 回放期间只把事件累积进 ReplayBuffer，供 replayEnd 一次性整体回填。
         // 注意：此处【不】dispatch 任意写 tab.events 的动作——replay 期间若把事件 append 到
@@ -73,6 +85,15 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
       const ok = Boolean(env.payload['ok'])
       if (!ok) client.listSessions(projectRoot)
     })
+    // M11.6：手动设置标题成功后，本地即时更新列表项（持久化由 daemon 负责）。
+    const offTitleResp = client.onMessage('session.title_resp', (env) => {
+      const ok = Boolean(env.payload['ok'])
+      if (ok) {
+        const id = (env.payload['session_id'] as string) ?? ''
+        const title = (env.payload['title'] as string) ?? ''
+        if (id) dispatch({ type: 'sessionRenamed', id, title })
+      }
+    })
     return () => {
       offWelcome()
       offList()
@@ -82,6 +103,7 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
       offReplayEnd()
       offEvent()
       offDeletedResp()
+      offTitleResp()
     }
   }, [client, projectRoot])
 
@@ -147,5 +169,23 @@ export function useSessions(client: DaemonClient | null, projectRoot: string): U
     [client, projectRoot],
   )
 
-  return { state, createSession, openSession, switchSession, closeTab, forkSession, deleteSession, sendTask }
+  // M11.6：手动设置会话标题（发 daemon 持久化，成功经 title_resp 回填）。
+  const renameSession = useCallback(
+    (id: string, title: string) => {
+      client?.setSessionTitle(id, title, projectRoot)
+    },
+    [client, projectRoot],
+  )
+
+  return {
+    state,
+    createSession,
+    openSession,
+    switchSession,
+    closeTab,
+    forkSession,
+    deleteSession,
+    renameSession,
+    sendTask,
+  }
 }

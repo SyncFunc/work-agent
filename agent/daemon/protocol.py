@@ -67,6 +67,7 @@ class MsgType(StrEnum):
     COMMAND = "command"
     TASK_CANCEL = "task.cancel"  # 客户端：取消当前正在生成的任务（真实中断 LLM 流）
     SESSION_DELETE = "session.delete"  # 客户端：彻底删除会话（含事件/记忆/trace）
+    SESSION_TITLE = "session.title"  # 客户端：手动设置会话标题 {title}
     TRACE_LIST = "trace.list"
     TRACE_GET = "trace.get"
     # ---- Server -> Client ----
@@ -91,6 +92,7 @@ class MsgType(StrEnum):
     TASK_CANCELLED = "task.cancelled"  # 服务端：已停止生成
     SESSION_INFO = "session.info"  # 服务端：推送 plan_mode / model 等会话状态
     SESSION_DELETE_RESP = "session.delete_resp"  # 服务端：删除结果 {ok, session_id?, message?}
+    SESSION_TITLE_RESP = "session.title_resp"  # 服务端：标题设置结果
 
 
 @runtime_checkable

@@ -29,6 +29,7 @@ export type SessionsAction =
   | { type: 'liveEvent'; event: AgentEvent }
   | { type: 'closeTab'; id: string }
   | { type: 'sessionDeleted'; id: string }
+  | { type: 'sessionRenamed'; id: string; title: string }
 
 export function initialState(projectRoot: string): SessionsState {
   return { projectRoot, tabs: [], activeId: null, list: [], replaying: false }
@@ -125,6 +126,11 @@ export function sessionsReducer(state: SessionsState, action: SessionsAction): S
 
     case 'liveEvent': {
       if (state.replaying || state.activeId === null) return state
+      // M11.6：切换会话后，旧会话仍在输出的实时事件会带其 session_id；若事件归属
+      // 非当前 active 会话，则忽略（避免旧会话内容串渲染到当前会话）。无 session_id
+      // 的兼容数据（回放/旧版本）仍按 active 会话处理。
+      const evSid = action.event.session_id
+      if (typeof evSid === 'string' && evSid !== state.activeId) return state
       const i = tabIndex(state.tabs, state.activeId)
       if (i < 0) return state
       const tab = state.tabs[i]
@@ -145,6 +151,15 @@ export function sessionsReducer(state: SessionsState, action: SessionsAction): S
       const tabs = state.tabs.filter((t) => t.id !== action.id)
       const activeId = state.activeId === action.id ? (tabs[0]?.id ?? null) : state.activeId
       return { ...state, list, tabs, activeId }
+    }
+
+    // M11.6：用户手动设置标题后，即时更新左侧列表项的 title（持久化由 daemon 负责）。
+    case 'sessionRenamed': {
+      const i = state.list.findIndex((s) => s.id === action.id)
+      if (i < 0) return state
+      const list = state.list.slice()
+      list[i] = { ...list[i], title: action.title, name: action.title }
+      return { ...state, list }
     }
 
     default:
