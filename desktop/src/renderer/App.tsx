@@ -22,6 +22,7 @@ import { useObs } from '../features/obs/useObs'
 import { Sidebar } from '../features/sidebar/Sidebar'
 import type { LeftNav } from '../features/sidebar/Sidebar'
 import { SkillsPanel, AgentsPanel } from '../features/sidebar/SpecPanels'
+import { McpPanel } from '../features/sidebar/McpPanel'
 import { BackgroundAgents } from '../features/obs/BackgroundAgents'
 import { Bot } from 'lucide-react'
 import { ToastStack, TitleBar, IconButton } from '../components'
@@ -522,6 +523,9 @@ export default function App(): React.ReactElement {
         )}
         {leftNav === 'agents' && (
           <AgentsPanel client={client} projectRoot={projectRoot} onClose={() => setLeftNav('chat')} />
+        )}
+        {leftNav === 'mcp' && (
+          <McpPanel client={client} projectRoot={projectRoot} onClose={() => setLeftNav('chat')} />
         )}
         {leftNav === 'traces' && (
           <div className="wa-main__obs">

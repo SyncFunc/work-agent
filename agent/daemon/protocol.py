@@ -11,11 +11,11 @@
 方向约定（同字符串可双向，方向由发送方隐含）：
 - Client → Server：``hello`` / ``session.new`` / ``session.attach`` / ``session.switch`` /
   ``session.detach`` / ``session.list`` / ``task.send`` / ``answer`` / ``confirm_plan`` /
-  ``approve`` / ``command`` / ``trace.list`` / ``trace.get``
+  ``approve`` / ``command`` / ``trace.list`` / ``trace.get`` / ``mcp.update``
 - Server → Client：``welcome`` / ``session.created`` / ``attached`` / ``detached`` /
   ``session_list`` / ``event``(含 usage 子类型) / ``replay_start`` / ``replay_end`` / ``ask`` /
   ``show_questions`` / ``show_plan`` / ``show_skills`` / ``show_agents`` / ``show_tools`` /
-  ``notify`` / ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
+  ``show_mcp`` / ``notify`` / ``close`` / ``error`` / ``trace_list`` / ``trace_tree``
 
 M9.7 可观测面板：新增 trace 查询
 - ``trace.list``（C→S）：``{project_root, session_id?}`` → 按项目根列出 trace（按 trace_id 分组，一个 session 可能有多条）。
@@ -46,7 +46,7 @@ from collections.abc import AsyncIterator
 from enum import StrEnum
 from typing import Any, Protocol, runtime_checkable
 
-DAEMON_VERSION = "1.0.0"
+DAEMON_VERSION = "1.1.0"
 PROTOCOL_VERSION = "1.0"
 
 
@@ -70,6 +70,7 @@ class MsgType(StrEnum):
     SESSION_TITLE = "session.title"  # 客户端：手动设置会话标题 {title}
     SKILL_UPDATE = "skill.update"  # 客户端：技能开关 {name, enabled}
     AGENT_UPDATE = "agent.update"  # 客户端：编辑智能体配置 {name, updates}
+    MCP_UPDATE = "mcp.update"  # M11.6 客户端：管理/接入 MCP Server {action, scope, ...}
     TRACE_LIST = "trace.list"
     TRACE_GET = "trace.get"
     # ---- Server -> Client ----
@@ -87,6 +88,7 @@ class MsgType(StrEnum):
     SHOW_SKILLS = "show_skills"
     SHOW_AGENTS = "show_agents"
     SHOW_TOOLS = "show_tools"  # M11.6：返回真实注册工具清单 {tools:[{name,risk,description}]}
+    SHOW_MCP = "show_mcp"  # M11.6：返回分层 yaml 配置的 MCP Server 清单 {servers:[{name,source}]}
     NOTIFY = "notify"
     CLOSE = "close"
     ERROR = "error"
@@ -98,6 +100,9 @@ class MsgType(StrEnum):
     SESSION_TITLE_RESP = "session.title_resp"  # 服务端：标题设置结果
     SKILL_UPDATE_RESP = "skill.update_resp"  # 服务端：技能开关结果 {ok, name?, enabled?, error?}
     AGENT_UPDATE_RESP = "agent.update_resp"  # 服务端：智能体编辑结果 {ok, name?, error?}
+    MCP_UPDATE_RESP = (
+        "mcp.update_resp"  # M11.6 服务端：MCP 管理结果 {ok, action?, name?, enabled?, error?}
+    )
 
 
 @runtime_checkable

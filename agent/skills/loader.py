@@ -33,7 +33,7 @@ class SkillSummary:
     paths: list[str]
     user_invocable: bool
     disable_model_invocation: bool
-    source: str = "user"  # M11.6 来源：user / project（用于面板分组展示）
+    source: str = "user"  # M11.6 来源：builtin / user / project（用于面板分组展示）
 
 
 def _meta_get(meta: dict[str, Any], key: str, default: Any = None) -> Any:
@@ -62,15 +62,21 @@ class SkillLoader:
         self.user_root = Path(user_root) if user_root else (Path.home() / ".agent")
         self._project_dir = self.project_root / ".agent" / "skills"
         self._user_dir = self.user_root / "skills"
+        # 内建 skill 目录：随代码分发，任何项目开箱即用。
+        self._builtin_dir = Path(__file__).resolve().parent / "builtin"
         self._cache: dict[str, SkillSpec] | None = None
 
     # ------------------------------------------------------------------ #
     # 发现 / 获取
     # ------------------------------------------------------------------ #
     def discover(self) -> list[SkillSpec]:
-        """扫描项目级与用户级 skills；项目级同名覆盖用户级。"""
+        """扫描内建 + 项目级 + 用户级 skills；后扫描覆盖先扫描（项目覆盖用户覆盖内建）。"""
         skills: dict[str, SkillSpec] = {}
-        for d, source in ((self._user_dir, "user"), (self._project_dir, "project")):  # 后写覆盖先写
+        for d, source in (
+            (self._builtin_dir, "builtin"),  # 最低优先级：随代码分发
+            (self._user_dir, "user"),
+            (self._project_dir, "project"),  # 最高优先级
+        ):
             if d.is_dir():
                 for sub in sorted(d.iterdir()):
                     if sub.is_dir():

@@ -47,11 +47,12 @@ def test_python_msgtype_nonempty_and_sorted_stable() -> None:
 
     注意：数量为 Python 与 TS（desktop/src/protocol/types.ts 的 ALL_MSG_TYPES）
     两端一致的现实值。M11.6 新增 session.title/title_resp、skill.update/update_resp、
-    agent.update/update_resp 后总数升至 42，再新增 show_tools 升至 43。
+    agent.update/update_resp 后总数升至 42，再新增 show_tools 升至 43，再新增 show_mcp 升至 44，
+    再新增 mcp.update/mcp.update_resp 升至 46。
     若协议再次增删，需同步更新此处计数并确认 TS 侧一致（check-msgtype.mjs 会兜住漂移）。
     """
     values = [m.value for m in MsgType]
-    assert len(values) == 43
+    assert len(values) == 46
     assert "hello" in values
     assert "event" in values
     assert "error" in values

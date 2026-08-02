@@ -247,6 +247,8 @@ async def _route(
         await _skill_update(conn, registry, payload, _mid)
     elif mtype == MsgType.AGENT_UPDATE.value:
         await _agent_update(conn, payload, _mid)
+    elif mtype == MsgType.MCP_UPDATE.value:
+        await _mcp_update(conn, registry, payload, _mid)
     elif mtype == MsgType.TRACE_LIST.value:
         await _trace_list(
             conn,
@@ -630,6 +632,85 @@ async def _agent_update(conn: Connection, payload: dict, mid: str | None) -> Non
         )
 
 
+async def _mcp_update(
+    conn: Connection, registry: SessionRegistry, payload: dict, mid: str | None
+) -> None:
+    """M11.6 管理/接入 MCP Server：写回分层 yaml，并触发该项目活跃会话重载。
+
+    action: add | remove | toggle
+      add    → {action, name, command, args?, env?, cwd?, enabled?, scope?}
+      remove → {action, name, scope?}
+      toggle → {action, name, enabled, scope?}
+    scope: user | project（默认 project）。
+    """
+    from agent.mcp.config import add_server, remove_server, set_server_enabled
+
+    action = str(payload.get("action", ""))
+    name = str(payload.get("name", ""))
+    scope = str(payload.get("scope", "project"))
+    if scope not in ("user", "project"):
+        scope = "project"
+    proj = str(payload.get("project_root") or os.getcwd())
+    ok = False
+    error = ""
+
+    if action == "add":
+        ok, error = add_server(
+            name,
+            str(payload.get("command", "")),
+            args=payload.get("args"),
+            env=payload.get("env"),
+            cwd=payload.get("cwd"),
+            enabled=bool(payload.get("enabled", True)),
+            scope=scope,
+            project_root=proj,
+        )
+    elif action == "remove":
+        ok, error = remove_server(name, scope=scope, project_root=proj)
+    elif action == "toggle":
+        ok, error = set_server_enabled(
+            name, bool(payload.get("enabled", True)), scope=scope, project_root=proj
+        )
+    else:
+        error = "unknown_action"
+
+    if ok:
+        await _reload_mcp_sessions(registry, proj)
+        await conn.send(
+            MsgType.MCP_UPDATE_RESP,
+            {"ok": True, "action": action, "name": name, "enabled": payload.get("enabled")},
+            id=mid,
+        )
+    else:
+        await conn.send(
+            MsgType.MCP_UPDATE_RESP,
+            {"ok": False, "action": action, "name": name, "error": error or "failed"},
+            id=mid,
+        )
+
+
+async def _reload_mcp_sessions(registry: SessionRegistry, project_root: str) -> None:
+    """让该项目下所有活跃会话重载 MCP（新工具注册 / 禁用工具注销）。安全失败。"""
+    for handle in list(getattr(registry, "_sessions", {}).values()):
+        if handle.project_root != project_root:
+            continue
+        session = handle.session
+        loop = getattr(session, "loop", None)
+        mgr = getattr(loop, "mcp_manager", None)
+        if mgr is None:
+            continue
+        try:
+            stale = await mgr.reload()
+            reg = getattr(loop, "registry", None)
+            if stale and reg is not None:
+                for sname in stale:
+                    reg.unregister(sname)
+            if reg is not None:
+                mgr.register_to(reg)
+        except Exception:  # noqa: BLE001
+            log.debug("[daemon] mcp reload failed for %s", handle.session_id)
+
+
 async def _command(
     conn: Connection,
     registry: SessionRegistry,
@@ -648,6 +729,8 @@ async def _command(
             await _list_global_specs(conn, name, project_root or os.getcwd())
         elif name == "tools":
             await _list_tools(conn)
+        elif name == "mcp":
+            await _list_mcp(conn, project_root or os.getcwd())
         else:
             await conn.send(MsgType.ERROR, {"code": "no_session", "message": sid})
         return
@@ -716,6 +799,63 @@ async def _list_tools(conn: Connection) -> None:
         )
     tools.sort(key=lambda t: t["name"])
     await conn.send(MsgType.SHOW_TOOLS, {"tools": tools})
+
+
+async def _list_mcp(conn: Connection, project_root: str) -> None:
+    """无 attach 会话时返回 MCP Server 配置清单（读分层 yaml，纯只读，不拉起进程）。
+
+    M11.6：daemon 启动后即使没建会话，也能查看已配置的 MCP Server（用户级/项目级）。
+    payload: ``{"servers": [{name, source, command, args, env, enabled}]}``，source ∈ {user, project}。
+    """
+    from agent.mcp.config import builtin_weather_server, mcp_config_paths
+
+    servers = []
+    try:
+        user_path, project_path = mcp_config_paths(project_root)
+        by_name: dict[str, dict] = {}
+        # 用户级先填，项目级覆盖同名（source 标 project）。
+        for p, source in ((user_path, "user"), (project_path, "project")):
+            for name, raw in _mcp_server_raw(p).items():
+                by_name[name] = {
+                    "name": name,
+                    "source": source,
+                    "command": raw.get("command", ""),
+                    "args": raw.get("args") or [],
+                    "env": raw.get("env") or {},
+                    "cwd": raw.get("cwd") or None,
+                    "enabled": bool(raw.get("enabled", True)),
+                }
+        # 内建 weather：yaml 未配置同名时也展示（与 McpManager 加载逻辑一致）。
+        if "weather" not in by_name:
+            w = builtin_weather_server()
+            by_name["weather"] = {
+                "name": w.name,
+                "source": "builtin",
+                "command": w.command,
+                "args": w.args,
+                "env": w.env,
+                "cwd": w.cwd,
+                "enabled": w.enabled,
+            }
+        servers = sorted(by_name.values(), key=lambda s: s["name"])
+    except Exception:  # noqa: BLE001
+        log.debug("[daemon] 全局查询 mcp 失败，返回空清单: %s", project_root)
+        servers = []
+    await conn.send(MsgType.SHOW_MCP, {"servers": servers})
+
+
+def _mcp_server_raw(path: Path) -> dict[str, dict]:
+    """从单个 mcp.yaml 读出 mcpServers 原始 dict（不 env 展开）。"""
+    try:
+        import yaml
+
+        if not path.is_file():
+            return {}
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        servers = data.get("mcpServers") or {}
+        return {k: v for k, v in servers.items() if isinstance(v, dict)}
+    except Exception:  # noqa: BLE001
+        return {}
 
 
 def _maybe_set_user_title(registry: SessionRegistry, handle: Any, text: str) -> None:

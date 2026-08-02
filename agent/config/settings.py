@@ -178,6 +178,26 @@ class UIConfig(BaseModel):
     theme: str = "textual-dark"
 
 
+class MCPConfig(BaseModel):
+    """MCP（Model Context Protocol）接入配置（M11.6）。
+
+    只做 stdio 本地 Server（MVP）。Server 定义统一放 **yaml**，分两层：
+      - 用户级：``~/.agent/mcp.yaml``（跨项目，优先级低）
+      - 项目级：``<project>/.agent/mcp.yaml``（随项目，优先级高，项目覆盖用户）
+    路径可被 ``AGENT_USER_CONFIG_DIR`` / ``AGENT_PROJECT_ROOT`` 覆盖（与 settings.yaml 同约定）。
+    也可经 ``servers`` 内联提供（优先级最高）。两者都没有则 MCP 不启用。
+    """
+
+    enabled: bool = True
+    tool_timeout_sec: float = 45.0  # 单次 tools/call 超时
+    concurrency: int = 4  # 每个 Server 的并发信号量上限
+    max_output_chars: int = 20000  # 结果截断上限（复用 loop 同款默认）
+    max_catalog: int = 200  # L1 目录最大行数（延迟加载预留）
+    max_active: int = 30  # L2 完整 schema 最大激活数（延迟加载预留）
+    # 内联 Server 定义：{"name": {"command": ..., "args": [...], "env": {...}}}
+    servers: dict[str, dict[str, Any]] = {}
+
+
 # Textual 主题名校验（宽松：仅作提示，未知名 Textual 会回退默认主题不报错）。
 _ALLOWED_THEMES = (
     "textual-dark",
@@ -224,6 +244,7 @@ class Settings(BaseSettings):
     subagents: SubagentsConfig = SubagentsConfig()
     daemon: DaemonConfig = DaemonConfig()
     ui: UIConfig = UIConfig()
+    mcp: MCPConfig = MCPConfig()
 
     @classmethod
     def settings_customise_sources(

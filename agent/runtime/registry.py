@@ -54,15 +54,36 @@ class ToolSpec:
     fn: Callable[[dict[str, Any]], Awaitable[ToolResult]]
     risk: str = "read"
     schema: dict[str, Any] = field(default_factory=dict)
+    # MCP 标记（M11.6）：True 表示由 MCP Server 适配而来。用于延迟加载（L1 目录 / L2 完整）
+    # 与前端「工具来源」展示，不影响调度/审批/上下文（它们只认扁平 name）。
+    is_mcp: bool = False
+    # 归属的 MCP Server 名（仅 is_mcp=True 时有意义），供调用时定位连接。
+    mcp_server: str | None = None
 
     def to_openai(self) -> dict[str, Any]:
-        """导出给 OpenAI 兼容协议用的 function tool 形态。"""
+        """导出给 OpenAI 兼容协议用的 function tool 形态（完整 schema）。"""
         return {
             "type": "function",
             "function": {
                 "name": self.name,
                 "description": self.schema.get("description", ""),
                 "parameters": self.schema,
+            },
+        }
+
+    def to_catalog(self) -> dict[str, Any]:
+        """L1 目录形态（延迟加载）：仍为合法 OpenAI function，但只带 name + 首行描述，
+        参数 schema 用一个空壳（无 properties），大幅节省上下文。模型据此判断是否要
+        tool_search 激活完整 schema。
+        """
+        desc = self.schema.get("description", "")
+        first = desc.splitlines()[0][:160] if desc else self.name
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": first,
+                "parameters": {"type": "object", "properties": {}},
             },
         }
 
@@ -110,6 +131,17 @@ class ToolRegistry:
 
     def list(self) -> list[ToolSpec]:
         return list(self._tools.values())
+
+    def unregister(self, name: str) -> bool:
+        """移除单个工具；不存在返回 False。"""
+        return self._tools.pop(name, None) is not None
+
+    def unregister_server(self, mcp_server: str) -> int:
+        """移除某个 MCP Server 归属的所有工具（M11.6：MCP 重载时用）。返回移除数。"""
+        removed = [n for n, s in self._tools.items() if s.is_mcp and s.mcp_server == mcp_server]
+        for n in removed:
+            self._tools.pop(n, None)
+        return len(removed)
 
     async def run(
         self, name: str, args: dict[str, Any], max_output_chars: int | None = None

@@ -19,7 +19,7 @@
 | 传输层 | WebSocket（仅绑定回环地址 `127.0.0.1`，由 `settings.daemon.host/port` 配置） |
 | 子协议（Sec-WebSocket-Protocol） | `agent-daemon-{PROTOCOL_VERSION}`，当前 `PROTOCOL_VERSION = "3.1"` |
 | 数据格式 | 每条消息为一段 JSON 文本（`json.loads` 解析） |
-| 健康检查 | 独立 HTTP：`http://127.0.0.1:{health_port}/health`，返回 `{"status":"ok","daemon_version":"1.0.0"}` |
+| 健康检查 | 独立 HTTP：`http://127.0.0.1:{health_port}/health`，返回 `{"status":"ok","daemon_version":"1.1.0"}` |
 | 鉴权 | 可选。若 `settings.daemon.token` 非空，`hello` 必须带 `token`，否则服务端回 `error`（`code:"auth"`） |
 
 ---
@@ -76,6 +76,8 @@
 | `skill.update_resp` | S→C | 技能开关结果（M11.6） |
 | `agent.update` | C→S | 编辑智能体配置（M11.6） |
 | `agent.update_resp` | S→C | 智能体编辑结果（M11.6） |
+| `mcp.update` | C→S | 管理/接入 MCP Server `{action, name, scope, ...}`（M11.6） |
+| `mcp.update_resp` | S→C | MCP 管理结果（M11.6） |
 | `session.info` | S→C | 推送 plan_mode / model（M9.9） |
 | `trace.list` | C→S | 列出 trace |
 | `trace_list` | S→C | trace 列表应答 |
@@ -90,6 +92,7 @@
 | `show_skills` | S→C | 展示可用技能 |
 | `show_agents` | S→C | 展示可用子 Agent |
 | `show_tools` | S→C | 展示已注册真实工具清单（M11.6） |
+| `show_mcp` | S→C | 展示分层 yaml 配置的 MCP Server 清单（M11.6） |
 | `notify` | S→C | 轻量通知文本 |
 | `close` | S→C | 一轮任务结束 |
 | `error` | S→C | 错误 |
@@ -152,7 +155,7 @@
 - **payload**：`{ "name": string, "args": string|null, "project_root"?: string }`
   - `project_root`：可选（M11.5），用于无 attach 会话时的全局只读查询（`skills` / `agents`）。
 - **行为**：交给 `dispatch_command`（如 `name="switch"` 触发会话切换）；未识别命令 → `notify`「未知命令」。
-- **无 attach 会话时的特殊分支**：`skills` / `agents` 是**全局只读查询**，不依赖具体会话——即使未 attach 也用 `project_root` 直接构造 loader 返回清单（`show_skills` / `show_agents`），不再报 `no_session`；`tools` 同样全局可查（`show_tools`）；其余命令仍返回 `error`（`code:"no_session"`）。
+- **无 attach 会话时的特殊分支**：`skills` / `agents` 是**全局只读查询**，不依赖具体会话——即使未 attach 也用 `project_root` 直接构造 loader 返回清单（`show_skills` / `show_agents`），不再报 `no_session`；`tools` 同样全局可查（`show_tools`）；`mcp` 同样全局可查（`show_mcp`，读分层 yaml，不拉起进程）；其余命令仍返回 `error`（`code:"no_session"`）。
 
 ### 4.12 `task.cancel`
 - **payload**：`{}`
@@ -193,12 +196,20 @@
 - **行为**：编辑智能体——把 `updates` 合并进该 agent 的 `.md` frontmatter 并写回。**仅非内置**（用户/项目级）可编辑；内置（explore/plan 等）返回 `ok:false`。
 - **应答**：`agent.update_resp`（见 5.16d）。
 
+### 4.20 `mcp.update`（M11.6）
+- **payload**：`{ "project_root": string, "action": "add"|"remove"|"toggle", "name": string, "scope": "user"|"project", ... }`
+  - `add`：还需 `command`（必填）/ `args` / `env` / `cwd` / `enabled`。写回 scope 层 yaml（同名覆盖）。
+  - `remove`：从 scope 层 yaml 删除。
+  - `toggle`：还需 `enabled: boolean`，写 scope 层 yaml 的 `enabled` 字段。
+- **行为**：管理/接入 MCP Server——写回分层 yaml（用户级 `~/.agent/mcp.yaml` 或项目级 `.agent/mcp.yaml`），并触发该项目所有活跃会话重载（新工具注册 / 禁用工具注销）。`scope` 默认 `project`。
+- **应答**：`mcp.update_resp`（见 5.16e）。
+
 ---
 
 ## 5. 服务端 → 客户端（S→C）
 
 ### 5.1 `welcome`
-- **payload**：`{ "daemon_version": "1.0.0", "protocol_version": "3.1" }`
+- **payload**：`{ "daemon_version": "1.1.0", "protocol_version": "3.1" }`
 
 ### 5.2 `session.created`
 - **payload**：`{ "session_id": string, "name": string|null, "project_root": string }`，信封带 `session`。
@@ -263,7 +274,13 @@
   - 数据源：当前进程 `default_registry.list()`（真实注册工具），与 LLM 实际可调用的工具一致。
 - **触发**：经 `command` 的 `tools` 全局查询分支（无 attach 会话即可），用于前端渲染「工具白名单」勾选项，避免前端硬编码与后端不一致。
 
-### 5.15 `notify` / `close` / `task.cancelled`
+### 5.15 `show_mcp`（M11.6）
+- **payload**：`{ "servers": [ { "name": string, "source": "user" | "project" } ] }`
+  - 数据源：分层 yaml —— 用户级 `~/.agent/mcp.yaml` + 项目级 `<project>/.agent/mcp.yaml`（项目覆盖用户）。
+  - 仅列已配置的 Server **名称与来源**，不拉起进程、不解析 command（纯只读）。
+- **触发**：经 `command` 的 `mcp` 全局查询分支（无 attach 会话即可，daemon 启动后未建会话也能查看）。
+
+### 5.16 `notify` / `close` / `task.cancelled`
 - `notify`：`{ "message": string }`。
 - `close`：`{}`（信封带 `session`），表示一轮 `task.send` 运行结束（含正常完成 / 计划拒绝中止 / 取消后清理）。前端须保证在收到 `close` 后再处理最终 `event`，以避免顺序错乱（服务端已用发送锁保证 FINAL 先到）。
 - `task.cancelled`：`{}`，生成被 `task.cancel` 真实中断后下发。
@@ -288,6 +305,10 @@
 ### 5.16d `agent.update_resp`（M11.6）
 - **payload（成功）**：`{ "ok": true, "name": string }`
 - **payload（失败）**：`{ "ok": false, "name": string, "error": "agent_not_editable" }`（内置或未找到）。
+
+### 5.16e `mcp.update_resp`（M11.6）
+- **payload（成功）**：`{ "ok": true, "action": string, "name": string, "enabled"?: boolean }`
+- **payload（失败）**：`{ "ok": false, "action": string, "name": string, "error": "unknown_action"|"name required"|"command required"|"server_not_found"|"write failed: ..." }`。
 
 ### 5.17 `trace_list`
 - **payload**：`{ "project_root": string, "traces": TraceInfo[] }`
@@ -461,7 +482,7 @@ C→S trace.get {trace_id}           → S→C trace_tree {spans}
 ## 9. 版本与契约一致性
 
 - **`PROTOCOL_VERSION = "3.1"`**：WebSocket 子协议版本。变更需评估前端兼容并同步 `types.ts` 与桌面端 WS 客户端。
-- **`DAEMON_VERSION = "1.0.0"`**：随 `welcome` 下发，便于前端判断能力。
+- **`DAEMON_VERSION = "1.1.0"`**：随 `welcome` 下发，便于前端判断能力。
 - **契约测试**：`scripts/check-msgtype.mjs`（`tests/unit/test_m9_protocol_contract.py` 通过 `node` 调用）比对 `protocol.py` 的 `MsgType` 值与 `types.ts` 的 `ALL_MSG_TYPES`，不一致则 CI 失败。**新增/删除消息类型必须两端同步**。
 - **前端对齐点**：`desktop/src/protocol/types.ts`（`ALL_MSG_TYPES`、`Envelope`、`AgentEvent` 等强类型投影）须与本文件保持一致。
 

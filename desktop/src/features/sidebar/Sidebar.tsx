@@ -1,10 +1,10 @@
 import React, { useEffect, useState } from 'react'
-import { Sparkles, Bot, BarChart2, Search, Plus, Settings, PanelLeft, GitBranch, Trash2, Check, X } from 'lucide-react'
+import { Sparkles, Bot, Plug, BarChart2, Search, Plus, Settings, PanelLeft, GitBranch, Trash2, Check, X } from 'lucide-react'
 import type { SessionInfo } from '../../protocol/types'
 import { IconButton, Logo } from '../../components'
 import './Sidebar.css'
 
-export type LeftNav = 'chat' | 'skills' | 'agents' | 'traces'
+export type LeftNav = 'chat' | 'skills' | 'agents' | 'mcp' | 'traces'
 
 interface SidebarProps {
   appName: string
@@ -50,6 +50,7 @@ function basename(p: string): string {
 const NAV: { key: LeftNav; label: string; icon: React.ReactNode }[] = [
   { key: 'skills', label: '技能', icon: <Sparkles size={16} /> },
   { key: 'agents', label: '智能体', icon: <Bot size={16} /> },
+  { key: 'mcp', label: 'MCP', icon: <Plug size={16} /> },
   { key: 'traces', label: '可观测', icon: <BarChart2 size={16} /> },
 ]
 

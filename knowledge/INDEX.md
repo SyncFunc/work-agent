@@ -22,6 +22,8 @@
 - **Claude Code Subagents + Skills**：`knowledge/claude-code-subagents-skills.md`（映射到本项目既有接口）。
 - **Claude Code 上下文管理机制**：`knowledge/claude-code-context-management.md`（四层渐进压缩防线、Session Memory 深度机制）。
 - **行业调研**：`knowledge/调研-agent-cli渲染与runner交互.md`、`调研-CLI美化方案.md`、`调研-Textual全屏CLI重构方案.md`。
+- **MCP 调研**：`docs/mcp-调研与教程.md`（概念、架构、Claude/Codex/Cursor 管理、多工具处理）。
+- **MCP 接入设计**：`docs/mcp-接入设计.md`（发现/调用/延迟加载/安全/MVP，唯一的当前设计方案）。
 
 ## 工程约定（现状）
 
@@ -151,20 +153,20 @@
 - **`present_plan` 不可通过 `dropInterceptedControl` 丢弃**：后端对 `present_plan` 拦截前**不发送 `TOOL_USE`**，因此其 `toolCallId` 永远为 `null`。但该工具块是前端展示「计划生成中」呼吸动画的唯一载体，必须保留。若将它加入 `INTERCEPTED_CONTROL_TOOLS`，`dropInterceptedControl` 会在 `PLAN` 事件到达时匹配并移除它，导致呼吸动画丢失。**区分**：`ask_clarification`/`update_plan` 仍走丢弃逻辑（无有用渲染），`present_plan` 独立不参与清理。详见 `INTERCEPTED_CONTROL_TOOLS` 注释。
 
 ### 工具 / 后台子 agent 切换（M11.6，v1.0.0）
-- **工具白名单从后台动态获取**：前端不再硬编码工具清单，daemon 新增 `/tools` 命令 + `show_tools` 消息（`server._list_tools`），从 `default_registry.list()` 返回真实注册工具 `{name,risk,description}`；前端进入面板拉取渲染复选框，避免「前端以为有、后台没注册」的悬空引用。
-- **探索工具在 `agent/tools/explore.py`**：`glob`/`find`/`list_dir`/`fetch_url`（对标 Claude Code / Codex）。**坑**：这些工具要生效必须经 `agent/tools/__init__.py` 导入 `explore` 模块（`from agent.tools import bash, explore, fs`），否则不会注册到 `default_registry`；`cli.py` 导入 `agent.tools` 会触发注册。`glob`/`find` 此前是 `BUILTIN_EXPLORE.tools` 白名单里的**悬空字符串引用**（根本无实现），本版本才补上。
-- **后台 session-memory 子 agent 运行时会饿死会话切换**：`SubsessionBridgeTransport._on_event` 用 `asyncio.ensure_future(conn.send(...))` 无限投递事件到连接，全部排队抢占 `Connection._lock`；`_switch` 的 `ATTACHED`/replay 也要 `await conn.send()` 排队，被后台事件洪流排到队尾饿死 → 前端「切换不了会话」。**修复**：`Connection` 加 `track_background(task)`/`cancel_background()`，`_attach`/`_switch` 发 `ATTACHED` 前先 `conn.cancel_background()` 清掉旧会话后台转发积压（已落盘/进 event_buffer，切回时 replay 恢复，不丢历史）。**判据**：后台 session-memory 运行时切换卡住、手动子 agent 却正常。
+- **工具白名单从后台动态获取**：daemon 新增 `/tools` 命令 + `show_tools` 消息（`server._list_tools`），从 `default_registry.list()` 返回真实注册工具 `{name,risk,description}`；前端不再硬编码勾选项，避免悬空引用。
+- **探索工具在 `agent/tools/explore.py`**：`glob`/`find`/`list_dir`/`fetch_url`。**坑**：必须经 `agent/tools/__init__.py` 导入 `explore` 模块才注册进 `default_registry`（`cli.py` 导入 `agent.tools` 触发）。`glob`/`find` 曾是 `BUILTIN_EXPLORE.tools` 白名单的**悬空引用**，本版才补实现。
+- **后台 session-memory 会饿死会话切换**：`SubsessionBridgeTransport._on_event` 无限 `ensure_future(conn.send(...))` 抢占 `Connection._lock`，把 `_switch` 的 `ATTACHED`/replay 排到队尾 → 前端切不了会话。**修复**：`Connection` 加 `track_background`/`cancel_background`，`_attach`/`_switch` 发 `ATTACHED` 前先 `cancel_background()` 清积压（事件已落盘，切回时 replay 恢复，不丢）。**判据**：后台 session-memory 运行中切换卡、手动子 agent 正常。
 
-### Textual TUI（M8，basedpyright 类型检查铁律）
-- 不要用 `self._log` 缓存日志容器（`App` 基类已有 `_log` 方法，覆盖会触发 `reportAttributeAccessIssue`）→ 改名 `self._log_container`。
-- mixin 的抽象方法必须在基类声明（如 `MessageRenderer` 须声明 `def _mount(self, widget): raise NotImplementedError`）。
-- **提交前务必本地跑 `basedpyright`**：CI `fast` 门禁含 `basedpyright`（锁版 `1.39.9`），而本地常只跑 `ruff`/`pytest` 漏掉类型错误，导致「本地过、远端挂」。典型坑：`object`/协议未声明属性就动态赋值（如 `session.daemon_handle=`、`store_factory` 返回 `object` 后 `.list_sessions()`）会触发 `reportAttributeAccessIssue`。协议要动态挂属性就在 `Protocol` 显式声明 `x: Any`；工厂返回类型用具体存储类（`SessionStore`/`TraceStore`）而非 `object`。
-- `App.notify` 重写需兼容签名 `def notify(self, message, *args, **kwargs)`（否则 `reportIncompatibleMethodOverride`）。
-- `DOMNode.action_toggle` 是保留动作，自定义折叠改名如 `action_toggle_collapse` 并同步 `BINDINGS`。
-- `TextArea.action_cursor_up/down` 有 `select: bool = False` 参数，子类重写须带上。
-- 子类访问 app 专属方法：`self.app` 被推断为基类 `App`，需 `cast("ChatApp", self.app)`。
-- **子 agent 独立块 widget 坑**：`VerticalScroll` 在 `textual.containers`（非 `textual.widgets`）；`Static` 内容用 `.content` 属性（非 `.renderable`），`Syntax` 用 `.code`；`Hit` 展示名在 `.text`（非 `.name`）；`Collapsible` 的 Contents 容器类名 `Collapsible.Contents`。
-- TUI `text-style` 合法值**不含 `normal`**（用 `none`，否则 `StylesheetParseError` 整屏崩）。
+### MCP（调研与接入设计，2026-08-02）
+- **概念/业界调研** → `docs/mcp-调研与教程.md`（USB-C 类比、Host/Client/Server、Tools/Resources/Prompts、Claude/Codex/Cursor 管理与多工具处理）。
+- **接入设计（当前唯一方案）** → `docs/mcp-接入设计.md`（发现/调用/延迟加载/安全/MVP/验收）。
+- **核心决策（易忘，实现时必查）**：① 工具翻译成 `ToolSpec` 进 `default_registry`，让循环/审批/上下文**零改动**；② 命名 `mcp__server__tool` 三段式（`mcp__` 免疫内置冲突 + 非法字符清洗成 `_`）；③ **risk 默认 fail-closed**（`isReadOnly=False`，白名单例外才 read）；④ 返回是 `content` 数组，从 `TextContent` 抽文本拼 `output`；⑤ 延迟加载 L1 目录 + L2 按需，给 `ToolSpec` 加 `is_mcp`+`to_catalog()`（MVP 就预留）；⑥ 沙箱只对 stdio 本地 Server 可行，远程靠审批兜底；⑦ **配置统一 yaml 分层**：用户级 `~/.agent/mcp.yaml` + 项目级 `.agent/mcp.yaml`（项目覆盖用户，`.agent/` 已被 gitignore），`env` 用 `${VAR}` 展开不进版本控制。
+- **MCP 已落地（v1.0.1+，MVP）**：`agent/mcp/` 模块（client/config/adapter/manager/demo_server）已实现 stdio 接入；`ToolSpec` 已加 `is_mcp`/`mcp_server`/`to_catalog()`；`Settings.mcp`（MCPConfig）开关；`AgentLoop._ensure_mcp` 懒启动（首次 run 拉起 + 注册进 `self.registry`）；daemon 新增 `/mcp` 命令 + `show_mcp` 消息（无会话可查分层 yaml 清单，source=user/project，**含 command/args/env/enabled 完整配置**）；`tool_timeout_sec`/`concurrency`/`max_output_chars` 已在 MCPConfig。测试：`tests/unit/test_mcp.py`（14 用例，真实拉起 demo_server）。**坑**：Windows 下 demo_server 子进程要 `close()` 干净（terminate + cancel read task），否则 ResourceWarning。**实现细节/廖雪峰教程（含 mermaid 图）见 `milestones/M11-技能智能体与MCP接入/M11.6-MCP接入.md`**。
+- **MCP 管理交互（前端可增删改/启停）**：协议 `mcp.update` + `mcp.update_resp`（MsgType 46），action=`add`/`remove`/`toggle`，scope=`user`/`project`（默认 project）。daemon `_mcp_update` 写回分层 yaml（`config.add_server/remove_server/set_server_enabled`，原子写临时文件 replace）+ `_reload_mcp_sessions` 触发该项目活跃会话重载（遍历 `registry._sessions`，`handle.session.loop.mcp_manager.reload()` → 注销 stale 工具 + 重注册）。`McpManager.reload()` 返回 stale 工具名列表；`reload_if_changed()` 按配置 mtime 惰性检测（loop 每轮 run 调 `_ensure_mcp` 分支）。`ToolRegistry` 加 `unregister(name)` / `unregister_server(mcp_server)`。前端：`McpPanel.tsx`（列表 + 来源徽标 + 启停开关 + 新增/编辑/删除表单，scope 选择），`client.updateMcp(action,name,{...})`；Sidebar 加 `LeftNav 'mcp'`（`Plug` 图标）。**坑**：`show_mcp` 返回完整配置才能编辑（否则前端只有名字）；scope 写错层会导致工具在错误 scope 生效。
+- **MCP 延迟加载 / tool_search（已实现）**：**未激活的 MCP 工具不进 tools 列表**（否则模型会直接调空 schema 工具——bug！），只在 **system prompt 的 `_mcp_catalog_prompt()` 文本目录**里列出 name+一句话，引导模型 `tool_search`；`tool_search(query)` 命中即入 `loop._mcp_active`（下一轮完整 `to_openai()` 进 tools 列表），激活后从目录消失。`_model_tools()` = 内置全量 + 已激活 MCP 完整 + 有未激活 MCP 时附 `tool_search` 控制工具。**坑**：① 千万别把未激活 MCP 以 function 形式塞进 tools 列表（模型会直接调，参数缺失）；② `tool_search`/`_mcp_catalog_prompt` 定义放所有 import 之后（E402）；③ `to_catalog()` 现在**不再使用**（保留但无效），用 `_mcp_catalog_prompt()` 文本代替；④ `_mcp_active` 在 loop `__init__` 初始化；⑤ `_exec_tools` 加 `tc.name=="tool_search"` 分支。
+- **内建 skill 机制**：`SkillLoader` 加内建目录 `agent/skills/builtin/<name>/SKILL.md`，`discover()` 按 `builtin→user→project` 顺序扫描（后覆盖先，即项目>用户>内建）；`SkillSpec.source` 扩为 `builtin/user/project`。已含 `skillcreator`（教 Agent 写规范 SKILL.md）。**坑**：新增内建 skill 后，断言"精确集合"的旧测试要放宽为 `<=` 包含断言。
+- **内建 MCP（weather 天气查询）**：`agent/mcp/weather_server.py`（stdio server，`get_weather(city)`）。**真实天气数据源**：首选 **wttr.in**（免费无 key，`https://wttr.in/<city>?format=j1&lang=zh` 返回 JSON，`current_condition[0]` 取 `weatherDesc[0].value`/`temp_C`/`humidity`），网络失败返回离线提示（标注 [离线数据]）。**不设白名单、不硬编码城市**：任意城市名（中文/拼音/英文）原样传 wttr.in 直查，未收录拼音按原输入显示，绝不报"未收录"。`_PINYIN_ZH` 仅用于把常见拼音/英文翻译成中文显示名（非白名单，wttr.in 的 lang=zh 下 areaName 仍是英文/拼音，拿不到中文名）。**坑**：① Windows 子进程 stdin/stdout 默认 GBK，MCP JSON 用 UTF-8，**必须在 server 的 main() 里 reconfigure UTF-8**（否则中文乱码）；② `urllib.parse.quote` 不是 `urllib.request.quote`；③ wttr.in 对任意字符串（如 nowhere）都返回最近地区数据，不会因城市无效报错，故"无效城市→isError"无法靠 wttr.in 判，空 city 才 isError；④ 中文输入判定用 CJK 区间 `\u4e00-\u9fff`。`McpManager._load_config()` 加载 yaml 后若没有 `weather` 则自动追加内建，用户 yaml 配同名则覆盖。**坑**：加内建 MCP 后既有 MCP 测试的计数断言要 +1；真实天气测试不能断言固定值（晴/26°C），要断言含城市中文名 + °C/实时/离线之一。
+- **契约脚本跨行 Bug（check-msgtype.mjs）**：`ruff format` 会把超长 `NAME = "value"` 拆成 `NAME = (\n "value"\n)` 跨行，导致 `pyMsgTypes` 的 `NAME = "value"` 正则少算。**已修**：正则改为 `NAME\s*=\s*(?:\(\s*)?["']value["']` 兼容可选开括号跨行。
 
 ### 发版 / CD
 - **PowerShell 下 `git credential fill` 传 stdin 多行会报 `refusing to work with credential missing protocol field`**：PowerShell 管道把整块当字符串丢给 stdin 会坏，须用 Python `subprocess.run(input="protocol=https\nhost=github.com\n\n")` 正确传多行。

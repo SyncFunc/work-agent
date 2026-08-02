@@ -147,6 +147,7 @@ class Session:
 
         skill_loader = None
         subagent_spawner = None
+        mcp_manager = None
         if settings.skills.enabled:
             _proj = cwd
             skill_loader = SkillLoader(_proj)
@@ -154,6 +155,11 @@ class Session:
             subagent_spawner = SubagentSpawner(
                 settings, tracer=tracer, max_depth=settings.subagents.max_depth, cwd=cwd
             )
+        # M11.6：MCP 接入（懒启动：loop 首次 run 时才拉起进程并注册工具）。
+        if settings.mcp.enabled:
+            from agent.mcp.manager import McpManager
+
+            mcp_manager = McpManager(settings.mcp, project_root=cwd)
         self.loop = AgentLoop(
             model,
             reg,
@@ -161,6 +167,7 @@ class Session:
             tracer=tracer,
             sandbox=sandbox,
             gate=gate,
+            mcp_manager=mcp_manager,
             skill_loader=skill_loader,
             subagent_spawner=subagent_spawner,
             cwd=cwd,

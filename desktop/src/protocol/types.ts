@@ -22,6 +22,7 @@ export const ALL_MSG_TYPES = [
   'session.title', // M11.6 手动设置会话标题 {title}
   'skill.update', // M11.6 技能开关 {name, enabled}
   'agent.update', // M11.6 编辑智能体配置 {name, updates}
+  'mcp.update', // M11.6 客户端：管理/接入 MCP Server {action, scope, ...}
   'trace.list',
   'trace.get',
   // ---- Server -> Client ----
@@ -39,6 +40,7 @@ export const ALL_MSG_TYPES = [
   'show_skills',
   'show_agents',
   'show_tools', // M11.6 已注册真实工具清单：tools 数组，每项含 name/risk/description
+  'show_mcp', // M11.6 分层 yaml 配置的 MCP Server 清单：servers 数组，每项含 name/source
   'notify',
   'close',
   'error',
@@ -48,6 +50,7 @@ export const ALL_MSG_TYPES = [
   'session.title_resp', // M11.6 标题设置结果 {ok, title?, error?}
   'skill.update_resp', // M11.6 技能开关结果 {ok, name?, enabled?, error?}
   'agent.update_resp', // M11.6 智能体编辑结果 {ok, name?, error?}
+  'mcp.update_resp', // M11.6 MCP 管理结果 {ok, action?, name?, enabled?, error?}
   'trace_list',
   'trace_tree',
 ] as const
@@ -266,4 +269,15 @@ export interface ToolInfo {
   name: string
   risk: 'read' | 'edit' | 'exec' | string
   description: string
+}
+
+/** 一个 MCP Server 配置项（show_mcp 响应项，M11.6）。 */
+export interface McpServerInfo {
+  name: string
+  source: 'user' | 'project' | string
+  command?: string
+  args?: string[]
+  env?: Record<string, string>
+  cwd?: string | null
+  enabled?: boolean
 }

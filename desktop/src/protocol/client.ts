@@ -4,6 +4,7 @@
 //
 // 协议信封与 agent/daemon/protocol.py 一致；重连指数退避上限 5s。
 
+import { APP_VERSION } from '../shared/version'
 import { parseEvent } from './events'
 import type {
   AgentEvent,
@@ -97,7 +98,7 @@ export class DaemonClient {
         settled = true
         this.clearConnectTimer()
         this.reconnectAttempt = 0
-        this.send('hello', { client_type: 'desktop', version: '1.0.0', token: this.token })
+        this.send('hello', { client_type: 'desktop', version: APP_VERSION, token: this.token })
         // 重连后恢复会话订阅（M9.3 切换/断线恢复）。
         if (this.currentSessionId) {
           this.attach(this.currentSessionId, this.currentProjectRoot)
@@ -298,7 +299,7 @@ export class DaemonClient {
   // --------------------------------------------------------------------------- //
 
   hello(token?: string): void {
-    this.send('hello', { client_type: 'desktop', version: '1.0.0', token: token ?? this.token })
+    this.send('hello', { client_type: 'desktop', version: APP_VERSION, token: token ?? this.token })
   }
 
   newSession(name?: string, projectRoot?: string): void {
@@ -394,6 +395,33 @@ export class DaemonClient {
       name,
       updates,
       project_root: projectRoot ?? this.currentProjectRoot ?? this.projectRoot ?? '',
+    })
+  }
+
+  /** M11.6 管理/接入 MCP Server（写回分层 yaml + 触发重载）。 */
+  updateMcp(
+    action: 'add' | 'remove' | 'toggle',
+    name: string,
+    opts: {
+      command?: string
+      args?: string[]
+      env?: Record<string, string>
+      cwd?: string
+      enabled?: boolean
+      scope?: 'user' | 'project'
+      projectRoot?: string
+    } = {},
+  ): void {
+    this.send('mcp.update', {
+      action,
+      name,
+      project_root: opts.projectRoot ?? this.currentProjectRoot ?? this.projectRoot ?? '',
+      command: opts.command,
+      args: opts.args,
+      env: opts.env,
+      cwd: opts.cwd,
+      enabled: opts.enabled,
+      scope: opts.scope ?? 'project',
     })
   }
 

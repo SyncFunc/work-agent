@@ -16,7 +16,9 @@ function pyMsgTypes(src) {
   const block = src.split('class MsgType')[1]?.split('@runtime_checkable')[0]
   if (!block) throw new Error('未能在 protocol.py 定位 MsgType 枚举块')
   const values = []
-  const re = /^\s*([A-Z_][A-Z0-9_]*)\s*=\s*"([^"]+)"/gm
+  // 兼容 ruff format 可能把长行拆成 `NAME = (\n  "value"\n)` 的跨行写法：
+  // 匹配 `NAME = ` 后可选的开括号+空白，再捕获值字符串。
+  const re = /^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(?:\(\s*)?["']([^"']+)["']/gm
   let m
   while ((m = re.exec(block)) !== null) values.push(m[2])
   return values

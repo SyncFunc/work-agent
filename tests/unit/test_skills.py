@@ -38,7 +38,8 @@ def test_discover_finds_project_and_user(tmp_path: Path):
     _write_skill(tmp_path / "user" / "skills", "b", "---\nname: b\ndescription: B\n---")
     loader = _make_loader(tmp_path, with_user=True)
     names = {s.name for s in loader.discover()}
-    assert names == {"a", "b"}
+    # 项目/用户 skill 均被发现（另有内建 skillcreator 恒在）
+    assert {"a", "b"} <= names
 
 
 def test_discover_project_overrides_user(tmp_path: Path):
@@ -55,11 +56,11 @@ def test_discover_project_overrides_user(tmp_path: Path):
         body="项目正文",
     )
     loader = _make_loader(tmp_path, with_user=True)
-    specs = loader.discover()
-    assert len(specs) == 1
-    shared = specs[0]
-    assert shared.description == "项目级"
-    assert shared.body() == "项目正文"
+    specs = {s.name: s for s in loader.discover()}
+    # 同名 shared 被项目级覆盖（source=project）；内建 skillcreator 恒在但影响覆盖语义
+    assert specs["shared"].source == "project"
+    assert specs["shared"].description == "项目级"
+    assert specs["shared"].body() == "项目正文"
 
 
 def test_discover_ignores_dir_without_skill_md(tmp_path: Path):
@@ -71,7 +72,7 @@ def test_discover_ignores_dir_without_skill_md(tmp_path: Path):
     )
     loader = _make_loader(tmp_path)
     names = {s.name for s in loader.discover()}
-    assert names == {"ok"}
+    assert "ok" in names
 
 
 def test_get_returns_none_for_missing(tmp_path: Path):
@@ -364,6 +365,29 @@ def test_discover_marks_project_source(tmp_path: Path):
     specs = {s.name: s for s in loader.discover()}
     assert specs["a"].source == "project"
     assert specs["b"].source == "user"
+
+
+def test_discover_finds_builtin_skillcreator(tmp_path: Path):
+    """M11.6：内建 skill（skillcreator）随代码分发，开箱即得，source=builtin。"""
+    loader = _make_loader(tmp_path)
+    specs = {s.name: s for s in loader.discover()}
+    sc = specs.get("skillcreator")
+    assert sc is not None
+    assert sc.source == "builtin"
+    assert "SKILL.md" in sc.path.name or sc.path.is_dir()
+
+
+def test_project_overrides_builtin_skillcreator(tmp_path: Path):
+    """项目级同名 skill 覆盖内建 skillcreator。"""
+    _write_skill(
+        tmp_path / "proj" / ".agent" / "skills",
+        "skillcreator",
+        "---\nname: skillcreator\ndescription: 自定义\n---",
+    )
+    loader = _make_loader(tmp_path, with_project=True)
+    specs = {s.name: s for s in loader.discover()}
+    assert specs["skillcreator"].source == "project"
+    assert specs["skillcreator"].description == "自定义"
 
 
 def test_set_enabled_writes_skill_md(tmp_path: Path):

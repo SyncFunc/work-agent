@@ -37,9 +37,37 @@ from agent.core.prompts import _build_system_parts
 from agent.core.transport import AgentTransport
 from agent.obs.tracer import Tracer, _span
 from agent.runtime.approval import Action, ApprovalGate
-from agent.runtime.registry import ToolRegistry, ToolResult, UnknownTool
+from agent.runtime.registry import ToolRegistry, ToolResult, ToolSpec, UnknownTool
 from agent.runtime.sandbox import ExecRequest, Executor, SandboxProfile
 from agent.tools.fs import _extract_path_from_args_fragment, read_file_original
+
+# M11.6：MCP 工具延迟加载的搜索/发现工具名。
+TOOL_SEARCH_TOOL_NAME = "tool_search"
+
+
+def _tool_search_spec() -> dict:
+    """tool_search 的 OpenAI function 形态：按关键词搜索并激活 MCP 工具。"""
+    return {
+        "type": "function",
+        "function": {
+            "name": TOOL_SEARCH_TOOL_NAME,
+            "description": (
+                "按关键词搜索可用的 MCP 工具（如天气、数据库、GitHub 等外部服务工具）。"
+                "当你需要调用某个未出现在工具列表中的工具时，先调用本工具查询并激活它，"
+                "激活后即可在下一轮正常调用。query 留空会列出全部 MCP 工具。"
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "搜索关键词，匹配工具名或描述，如 'weather'、'issue'",
+                    }
+                },
+            },
+        },
+    }
+
 
 if TYPE_CHECKING:
     from agent.context import ContextManager
@@ -92,6 +120,7 @@ class AgentLoop:
         gate: ApprovalGate | None = None,
         skill_loader: SkillLoader | None = None,
         subagent_spawner: SubagentSpawner | None = None,
+        mcp_manager: Any | None = None,
         cwd: Path | None = None,
     ) -> None:
         self.model = model
@@ -104,6 +133,9 @@ class AgentLoop:
         self.gate = gate
         self.skill_loader = skill_loader
         self.subagent_spawner = subagent_spawner
+        # M11.6 MCP 接入：懒启动（首次 run 时拉起进程并注册工具到 self.registry）。
+        self.mcp_manager = mcp_manager
+        self._mcp_started = False
         # M9.0 多项目：工具执行/提示的工作目录（默认进程 cwd，由 Session 传入 project_root）。
         self.cwd = cwd or Path.cwd()
         self._agent_span = None  # 由 run() 内的 _span 上下文设置；直接调工具时回退为 None
@@ -118,9 +150,34 @@ class AgentLoop:
         self._pending_skill_injections: list[str] = []
         # M11：本次 run 已预读过原文件的 path 集合（避免同一文件重复读 + 重复 emit）。
         self._prefetched_originals: set[str] = set()
+        # M11.6：已激活的 MCP 工具名（tool_search 命中即常驻，进完整 schema；未激活只发目录）。
+        self._mcp_active: set[str] = set()
         # M10.2：本 run 的 message_id（run 时更新），供子 agent spawn 透传为 parent_message_id；
         # 初始化为 None，使不经 run 直接调用 _tool_spawn_subagent 的路径也不报属性缺失。
         self._run_message_id: str | None = None
+
+    async def _ensure_mcp(self) -> None:
+        """MCP 懒启动：首次调用时拉起 Server、发现工具并注册进 self.registry。
+
+        之后每轮 run 调用 reload_if_changed：配置（mcp.yaml）变化时重载——
+        新增/启用的拉起并注册，禁用/删除的从 registry 注销，让前端"启停/接入"即时生效。
+        失败（如配置缺失/Server 连不上）静默跳过，不影响主流程。
+        """
+        if self.mcp_manager is None:
+            return
+        try:
+            if not self._mcp_started:
+                self._mcp_started = True
+                await self.mcp_manager.start()
+                self.mcp_manager.register_to(self.registry)
+            else:
+                stale = await self.mcp_manager.reload_if_changed()
+                if stale:
+                    for name in stale:
+                        self.registry.unregister(name)
+                    self.mcp_manager.register_to(self.registry)
+        except Exception:  # noqa: BLE001 - MCP 失败不应拖垮主循环
+            logger.warning("[loop] MCP init/reload failed, tools unavailable", exc_info=True)
 
     async def run(
         self,
@@ -165,6 +222,10 @@ class AgentLoop:
         # 此时消息上下文（含 system 确认消息）已传达指令，无需再添加空 user 行。
         if task:
             conv.append(Message(role="user", content=task))
+
+        # M11.6：MCP 懒启动——首次 run 时拉起 Server、发现工具并注册进 self.registry。
+        # 幂等：_ensure_mcp 内部用 _mcp_started 保证只注册一次。
+        await self._ensure_mcp()
 
         # M4.5：每轮 _decide 前执行零成本 Microcompact（清除较旧的 tool 结果，保留最近 N 个）。
         # 作用于本次 run 的 conv 投影，绝不触碰 EventStream（审计真相不可变）。
@@ -437,7 +498,18 @@ class AgentLoop:
         )
 
     def _model_tools(self, *, plan_mode: bool = False, plan_path: str | None = None) -> list[dict]:
-        registry_tools = [spec.to_openai() for spec in self.registry.list()]
+        # 内置工具全量下发；MCP 工具延迟加载——未激活的**不进 tools 列表**（只在 system prompt
+        # 目录里以文本形式可见，需 tool_search 激活后才有完整 function），已激活的进完整 schema。
+        registry_tools: list[dict] = []
+        has_mcp = False
+        for spec in self.registry.list():
+            if spec.is_mcp:
+                if spec.name in self._mcp_active:
+                    registry_tools.append(spec.to_openai())
+                else:
+                    has_mcp = True
+            else:
+                registry_tools.append(spec.to_openai())
         skills_enabled = self.settings.skills.enabled and self.skill_loader is not None
         subagents_enabled = self.settings.subagents.enabled and self.subagent_spawner is not None
         control = (
@@ -451,7 +523,27 @@ class AgentLoop:
             if self._control_tools_enabled
             else []
         )
+        # M11.6 延迟加载：有未激活 MCP 工具时提供 tool_search 供模型查询并激活。
+        if has_mcp and self._control_tools_enabled:
+            control = control + [_tool_search_spec()]
         return registry_tools + control
+
+    def _mcp_catalog_prompt(self) -> str:
+        """L1 目录（system prompt 文本）：列出未激活的 MCP 工具名+一句话，供模型决定 tool_search。"""
+        lines: list[str] = []
+        for spec in self.registry.list():
+            if not spec.is_mcp or spec.name in self._mcp_active:
+                continue
+            desc = (spec.schema.get("description", "") or "").splitlines()
+            lines.append(f"- {spec.name}: {desc[0] if desc else ''}")
+        if not lines:
+            return ""
+        head = (
+            "以下 MCP 外部工具可用，但未加载（需先调用 tool_search 激活后才可调用）：\n"
+            + "\n".join(lines)
+            + "\n使用方式：调用 tool_search(query)，命中后下一轮即可直接调用该工具。"
+        )
+        return head
 
     def _system_prompt(self, *, plan_mode: bool = False, plan_path: str | None = None) -> str:
         catalog = ""
@@ -475,9 +567,15 @@ class AgentLoop:
         if self._context_mgr is not None:
             self._context_mgr._system_fixed = _estimate_tokens(static)
             self._context_mgr._system_dynamic = _estimate_tokens(dynamic)
+        mcp_catalog = self._mcp_catalog_prompt()
         if dynamic:
-            return static + "\n\n" + dynamic
-        return static
+            out = static + "\n\n" + dynamic
+        else:
+            out = static
+        # M11.6：MCP 工具 L1 目录（未激活工具以文本可见，引导模型 tool_search）。
+        if mcp_catalog:
+            out = out + "\n\n" + mcp_catalog
+        return out
 
     @staticmethod
     def _find_tool_args(decision: Decision, name: str) -> dict[str, Any] | None:
@@ -534,6 +632,9 @@ class AgentLoop:
                 # 控制工具：spawn_subagent（委派子任务，回填摘要）
                 if tc.name == SPAWN_SUBAGENT_TOOL_NAME:
                     return await self._tool_spawn_subagent(tc)
+                # M11.6 控制工具：tool_search（搜索并激活 MCP 工具完整 schema）
+                if tc.name == "tool_search":
+                    return self._tool_search(tc)
 
                 # 未知工具
                 try:
@@ -670,6 +771,30 @@ class AgentLoop:
         with _span(self.tracer, "tool.sandbox", kind="sandbox"):
             r = await sandbox.run(req)
         return ToolResult(ok=r.ok, output=r.output, error=r.error)
+
+    def _tool_search(self, tc: ToolCall) -> ToolResult:
+        """M11.6 延迟加载：按关键词搜索 MCP 工具，命中即激活（进完整 schema）。"""
+        a = tc.arguments or {}
+        query = str(a.get("query", "")).lower()
+        hits: list[ToolSpec] = []
+        for spec in self.registry.list():
+            if not spec.is_mcp:
+                continue
+            hay = f"{spec.name} {spec.schema.get('description', '')}".lower()
+            if not query or query in hay:
+                hits.append(spec)
+        if not hits:
+            return ToolResult(ok=False, error=f"no MCP tool matches query: {query!r}")
+        # 命中即激活（下一轮完整下发）
+        for spec in hits:
+            self._mcp_active.add(spec.name)
+        lines = [f"- {s.name}: {s.schema.get('description', '')}" for s in hits]
+        out = f"{len(hits)} tool(s) activated:\n" + "\n".join(lines)
+        out += (
+            "\n\nThe full input schemas of the activated tools are now available. "
+            "You can call them directly in the next turn."
+        )
+        return ToolResult(ok=True, output=out)
 
     @staticmethod
     def _describe(tc: ToolCall) -> str:
