@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import uuid
+from typing import Any
 
 from agent.config.settings import Settings
 from agent.context.session_store import SessionStore, SessionStoreSink
@@ -21,9 +22,9 @@ from agent.core.events import Event, EventStream, EventType
 from agent.core.loop import AgentLoop
 from agent.core.model import Decision, FakeModel
 from agent.core.session import Session
-from agent.daemon.protocol import MsgType
+from agent.daemon.protocol import MsgType, parse_message
 from agent.daemon.registry import SessionHandle
-from agent.daemon.server import _replay
+from agent.daemon.server import Connection, _replay
 from agent.runtime.registry import default_registry
 from agent.runtime.terminal_transport import TerminalTransport
 
@@ -140,6 +141,93 @@ def test_replay_preserves_global_seq():
     ev_seqs = [p["event"]["seq"] for (t, p) in conn.sent if t == MsgType.EVENT]
     # 保持全局 seq（0,1,5,6），若被旧逻辑重编则为 0,1,2,3
     assert ev_seqs == [0, 1, 5, 6]
+
+
+class _BlockingReplayWs:
+    """在首条历史 EVENT 上暂停，让测试精确注入 replay 期间的实时事件。"""
+
+    def __init__(self) -> None:
+        self.sent: list[dict] = []
+        self.history_started = asyncio.Event()
+        self.release_history = asyncio.Event()
+        self._blocked = False
+
+    async def send(self, message: str) -> None:
+        msg = parse_message(message)
+        self.sent.append(msg)
+        if msg["type"] == MsgType.EVENT.value and not self._blocked:
+            self._blocked = True
+            self.history_started.set()
+            await self.release_history.wait()
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self):
+        raise StopAsyncIteration
+
+
+async def test_connection_buffers_live_events_until_replay_end_and_dedupes() -> None:
+    """replay 中实时事件必须接在 replay_end 后；快照重复按 (source, seq) 去重。"""
+    ws = _BlockingReplayWs()
+    conn = Connection(ws)
+    conn.begin_replay("s1")
+    history: list[tuple[dict[str, Any], str | None]] = [
+        ({"event": Event(type=EventType.TEXT, text="h0", seq=0, ts=1.0).to_dict()}, "s1"),
+        ({"event": Event(type=EventType.TEXT, text="h1", seq=1, ts=2.0).to_dict()}, "s1"),
+    ]
+
+    replay_task = asyncio.create_task(conn.replay_events(history, session="s1"))
+    await ws.history_started.wait()
+
+    # seq=1 已在历史快照中，实时副本应丢弃；父 seq=2 与子流 seq=0 都应保留。
+    await conn.send(
+        MsgType.EVENT,
+        {"event": Event(type=EventType.TEXT, text="duplicate", seq=1, ts=2.0).to_dict()},
+        session="s1",
+    )
+    await conn.send(
+        MsgType.EVENT,
+        {
+            "event": Event(type=EventType.TEXT, text="child", seq=0, ts=3.0).to_dict(),
+            "subsession_id": "s1/sub_a",
+        },
+        session="s1",
+    )
+    await conn.send(
+        MsgType.EVENT,
+        {"event": Event(type=EventType.TEXT, text="live", seq=2, ts=4.0).to_dict()},
+        session="s1",
+    )
+
+    ws.release_history.set()
+    await replay_task
+
+    types = [m["type"] for m in ws.sent]
+    assert types == [
+        MsgType.REPLAY_START.value,
+        MsgType.EVENT.value,
+        MsgType.EVENT.value,
+        MsgType.REPLAY_END.value,
+        MsgType.EVENT.value,
+        MsgType.EVENT.value,
+    ]
+    sent_events = [m for m in ws.sent if m["type"] == MsgType.EVENT.value]
+    assert [m["payload"]["event"]["text"] for m in sent_events] == [
+        "h0",
+        "h1",
+        "child",
+        "live",
+    ]
+    assert sent_events[2]["payload"]["subsession_id"] == "s1/sub_a"
+
+    # 模拟快照事件的实时发送 task 延迟到 replay 完成后才启动，仍应被高水位丢弃。
+    await conn.send(
+        MsgType.EVENT,
+        {"event": Event(type=EventType.TEXT, text="late duplicate", seq=1, ts=5.0).to_dict()},
+        session="s1",
+    )
+    assert len(ws.sent) == 6
 
 
 def test_stream_maxlen_trims_but_keeps_global_seq():

@@ -382,7 +382,12 @@ async def _run_subprocess(
 # 执行器实现
 # --------------------------------------------------------------------------- #
 class LocalExecutor:
-    """本地执行器：按运行时内核选择隔离手段。"""
+    """本地执行器：按运行时内核选择隔离手段。
+
+    ``isolation`` 取值：``auto``（默认，按平台探测）/ ``restricted-user``（Windows
+    强制受限沙箱用户，不可用即报错）/ ``app-layer``（仅应用层 CommandFilter）。
+    ``writable_roots`` 为工作区外额外允许沙箱写入的路径（对齐 Codex 配置）。
+    """
 
     name = "local"
 
@@ -392,16 +397,41 @@ class LocalExecutor:
         workspace: Path,
         profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE,
         pipeline: Any | None = None,
+        isolation: str = "auto",
+        writable_roots: list[str] | None = None,
     ) -> None:
         self._workspace = Path(workspace)
         self._profile = profile
         self.default_profile = profile
+        self._writable_roots = [Path(p) for p in (writable_roots or [])]
         self._filter = CommandFilter(workspace=self._workspace)
         self._shell = _resolve_shell()
+        self._isolation_requested = isolation
         self._isolation = self._choose_isolation()
         self._pipeline = pipeline
+        self._windows_sandbox: Any | None = None
+        if self._isolation == "windows-restricted-user":
+            from agent.runtime.sandbox_windows import WindowsRestrictedUserSpawner
+
+            self._windows_sandbox = WindowsRestrictedUserSpawner(
+                workspace=self._workspace,
+                profile_value=str(profile),
+                write_roots=self._writable_roots,
+            )
 
     def _choose_isolation(self) -> str:
+        req = self._isolation_requested
+        if req == "app-layer":
+            return "app-layer"
+        if req in ("restricted-user", "restricteduser"):
+            if sys.platform == "win32":
+                from agent.runtime.sandbox_windows import usable as _ws_usable
+
+                if _ws_usable(self._workspace, shell_prefix=self._shell[0]):
+                    return "windows-restricted-user"
+                raise RuntimeError("sandbox.isolation=restricted-user 但受限沙箱用户不可用")
+            raise RuntimeError("sandbox.isolation=restricted-user 仅支持 Windows")
+        # auto
         if hasattr(os, "uname"):
             sysname = os.uname().sysname
             if sysname == "Linux":
@@ -411,6 +441,12 @@ class LocalExecutor:
                     "unshare 网络命名空间不可用，LocalExecutor 降级为进程级执行（无 OS 网络隔离）"
                 )
                 return "app-layer"
+        if sys.platform == "win32":
+            from agent.runtime.sandbox_windows import usable as _ws_usable
+
+            if _ws_usable(self._workspace, shell_prefix=self._shell[0]):
+                return "windows-restricted-user"
+            _log.warning("受限沙箱用户不可用，LocalExecutor 降级为应用层沙箱")
         return "app-layer"
 
     @staticmethod
@@ -441,6 +477,32 @@ class LocalExecutor:
             )
         prefix, _ = self._shell
         base_argv = [*prefix, req.cmd]
+        # 前两档走受限沙箱用户（danger-full 脱离沙箱走裸子进程）。
+        # Windows 沙箱一旦被选中即 fail-closed：初始化/执行失败不降级裸跑。
+        if (
+            self._isolation == "windows-restricted-user"
+            and req.profile != SandboxProfile.DANGER_FULL
+            and self._windows_sandbox is not None
+        ):
+            try:
+                self._windows_sandbox.prepare()
+                r = await self._windows_sandbox.run_async(
+                    req.cmd,
+                    cwd=req.cwd,
+                    env=req.env,
+                    timeout=req.timeout,
+                    shell_prefix=prefix,
+                )
+            except Exception as e:  # noqa: BLE001 - fail-closed，不降级裸执行
+                _log.error("受限沙箱执行失败，拒绝降级裸执行: %s", e)
+                return ExecResult(
+                    ok=False,
+                    output="",
+                    error=f"受限沙箱执行失败（fail-closed）: {e}",
+                    returncode=-1,
+                    sandbox="windows-restricted-user",
+                )
+            return r
         if self._isolation == "linux-kernel" and req.profile != SandboxProfile.DANGER_FULL:
             argv = ["unshare", "-n", *base_argv]
             try:
@@ -551,10 +613,18 @@ def build_executor(
     workspace: Path,
     profile: SandboxProfile = SandboxProfile.WORKSPACE_WRITE,
     pipeline: Any | None = None,
+    isolation: str = "auto",
+    writable_roots: list[str] | None = None,
 ) -> Executor:
     workspace = Path(workspace)
     if mode == "local":
-        return LocalExecutor(workspace=workspace, profile=profile, pipeline=pipeline)
+        return LocalExecutor(
+            workspace=workspace,
+            profile=profile,
+            pipeline=pipeline,
+            isolation=isolation,
+            writable_roots=writable_roots,
+        )
     if mode == "docker":
         return DockerExecutor(workspace=workspace, profile=profile)
     if mode == "external":

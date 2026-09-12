@@ -32,7 +32,7 @@ export function TraceList({ traces, totalPages, page, activeTraceId, onSelect, o
 
   return (
     <div className="wa-tracelist">
-      {traces.map((t) => {
+      {traces.filter((t) => typeof t.trace_id === 'string' && t.trace_id.length > 0).map((t) => {
         const iconType = getIconType(t)
         return (
           <div
@@ -47,7 +47,7 @@ export function TraceList({ traces, totalPages, page, activeTraceId, onSelect, o
             <span className="wa-trace-row__spans">{t.span_count} spans</span>
             <span className="wa-trace-row__duration">{formatDuration(t)}</span>
             <span className="wa-trace-row__text">
-              {t.session_id.slice(0, 8)} — {new Date((t.last_ts ?? t.first_ts ?? 0) * 1000).toLocaleTimeString()}
+              {(t.session_id ?? '-').slice(0, 8)} — {new Date((t.last_ts ?? t.first_ts ?? 0) * 1000).toLocaleTimeString()}
             </span>
           </div>
         )

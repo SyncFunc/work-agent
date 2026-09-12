@@ -57,6 +57,8 @@ class LoopConfig(BaseModel):
 class SandboxConfig(BaseModel):
     mode: str = "local"
     profile: str = "workspace-write"
+    isolation: str = "auto"  # auto / restricted-user / app-layer（Windows 受限沙箱用户硬沙箱）
+    writable_roots: list[str] = []  # 工作区外额外允许沙箱写入的路径（对齐 Codex writable_roots）
 
 
 class ApprovalConfig(BaseModel):

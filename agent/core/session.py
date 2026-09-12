@@ -132,6 +132,8 @@ class Session:
             workspace=cwd,
             profile=SandboxProfile(settings.sandbox.profile),
             pipeline=sandbox_pipeline,
+            isolation=settings.sandbox.isolation,
+            writable_roots=settings.sandbox.writable_roots,
         )
         gate = ApprovalGate(
             settings.approval.mode,

@@ -20,7 +20,7 @@ from collections.abc import Callable
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from threading import Thread
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Protocol, cast
 
 import websockets  # 仅 daemon 路径 import
 
@@ -45,6 +45,19 @@ if TYPE_CHECKING:
 log = logging.getLogger("agent.daemon")
 
 
+class _ReplaySender(Protocol):
+    """``_replay`` 所需的最小发送接口，兼容真实 Connection 与测试替身。"""
+
+    async def send(
+        self,
+        type: MsgType | str,
+        payload: dict[str, Any] | None = None,
+        *,
+        id: str | None = None,
+        session: str | None = None,
+    ) -> None: ...
+
+
 class Connection:
     """对单个前端 WebSocket 连接的轻量包装。"""
 
@@ -57,6 +70,15 @@ class Connection:
         # 会话切换/attach 前 cancel 掉这些积压任务，避免它们排队抢占 conn._lock、
         # 把 ATTACHED / replay 响应饿死，导致「切换会话卡住」。
         self._backlog: list[asyncio.Task] = []
+        # replay/live 屏障：attach 后先进入 replaying。此期间 BridgeTransport 产生的实时
+        # EVENT 不直接抢占 websocket，而是暂存；历史发送完毕后再按事件时间/流内 seq 冲刷。
+        # 否则实时事件会插进 replay_start..replay_end，甚至与 sqlite 快照重复。
+        self._replay_session: str | None = None
+        self._replay_pending: list[tuple[dict[str, Any], str | None]] = []
+        self._replay_guard = asyncio.Lock()
+        # 最近一次回放的每流高水位。用于丢弃「事件已进入历史快照，但其实时发送 task
+        # 延迟到 replay 结束后才开始运行」造成的晚到重复。
+        self._replay_highwater: dict[tuple[str, str], int] = {}
 
     def track_background(self, task: asyncio.Task) -> None:
         """登记一条后台事件转发任务（由 BridgeTransport 在 ensure_future 后调用）。"""
@@ -73,6 +95,107 @@ class Connection:
             t.cancel()
         self._backlog = []
 
+    @staticmethod
+    def _event_cursor(
+        payload: dict[str, Any], session: str | None
+    ) -> tuple[tuple[str, str], int] | None:
+        """返回 ``((顶层 session, 事件源流), seq)``；瞬时/非法事件无可靠游标则返回 None。
+
+        子 agent 拥有独立 EventStream，seq 会与父流重复，因此不能只按 seq 去重。
+        ``subsession_id`` 缺省时事件源流就是顶层 session。
+        """
+        event = payload.get("event")
+        if not isinstance(event, dict):
+            return None
+        seq = event.get("seq")
+        if not isinstance(seq, int) or isinstance(seq, bool) or seq < 0:
+            return None
+        top = session or ""
+        sub = payload.get("subsession_id")
+        source = sub if isinstance(sub, str) and sub else top
+        return ((top, source), seq)
+
+    @staticmethod
+    def _pending_sort_key(item: tuple[dict[str, Any], str | None]) -> tuple[float, str, int]:
+        payload, session = item
+        event = payload.get("event")
+        if not isinstance(event, dict):
+            return (float("inf"), session or "", -1)
+        ts = event.get("ts")
+        timestamp = float(ts) if isinstance(ts, (int, float)) else float("inf")
+        cursor = Connection._event_cursor(payload, session)
+        source = cursor[0][1] if cursor is not None else session or ""
+        seq = cursor[1] if cursor is not None else -1
+        return (timestamp, source, seq)
+
+    def begin_replay(self, session: str) -> None:
+        """在 attach/switch 的第一个 await 之前开启实时事件缓冲。"""
+        self._replay_session = session
+        self._replay_pending = []
+
+    def abort_replay(self, session: str) -> None:
+        """回放失败/会话切换时丢弃连接级缓存；事件本身仍在 sqlite，可再次回放。"""
+        if self._replay_session == session:
+            self._replay_session = None
+            self._replay_pending = []
+
+    async def replay_events(
+        self,
+        items: list[tuple[dict[str, Any], str | None]],
+        *,
+        session: str,
+    ) -> None:
+        """原子发送历史区间，并把 replay 期间到达的实时事件接在 replay_end 之后。
+
+        ``_lock`` 覆盖整个输出批次，保证其它非事件消息也不能插入历史区间；实时 EVENT
+        不等待该锁，而是在 ``send`` 的 replay 分支进入 ``_replay_pending``。
+        """
+        if self._replay_session != session:
+            self.begin_replay(session)
+
+        history_cursors: set[tuple[tuple[str, str], int]] = set()
+        highwater: dict[tuple[str, str], int] = {}
+        for payload, item_session in items:
+            cursor = self._event_cursor(payload, item_session)
+            if cursor is None:
+                continue
+            history_cursors.add(cursor)
+            stream, seq = cursor
+            highwater[stream] = max(highwater.get(stream, -1), seq)
+
+        try:
+            async with self._lock:
+                await self.ws.send(make_message(MsgType.REPLAY_START, {}, session=session))
+                for payload, item_session in items:
+                    await self.ws.send(
+                        make_message(MsgType.EVENT, payload, session=item_session or session)
+                    )
+
+                # 在仍持有 websocket 写锁时原子切到 live：之后到达的 send(EVENT) 会等待
+                # _lock，因此必定排在 replay_end 与本批 pending 之后。
+                async with self._replay_guard:
+                    pending = self._replay_pending
+                    self._replay_pending = []
+                    self._replay_session = None
+                    self._replay_highwater.update(highwater)
+
+                await self.ws.send(make_message(MsgType.REPLAY_END, {}, session=session))
+
+                # 历史快照可能已经包含 pending 中的事件；按 (source, seq) 去重。
+                seen = set(history_cursors)
+                for payload, item_session in sorted(pending, key=self._pending_sort_key):
+                    cursor = self._event_cursor(payload, item_session)
+                    if cursor is not None and cursor in seen:
+                        continue
+                    if cursor is not None:
+                        seen.add(cursor)
+                    await self.ws.send(
+                        make_message(MsgType.EVENT, payload, session=item_session or session)
+                    )
+        except BaseException:
+            self.abort_replay(session)
+            raise
+
     async def send(
         self,
         type: MsgType | str,
@@ -81,6 +204,19 @@ class Connection:
         id: str | None = None,
         session: str | None = None,
     ) -> None:
+        mtype = type.value if isinstance(type, MsgType) else type
+        if mtype == MsgType.EVENT.value:
+            event_payload = payload or {}
+            async with self._replay_guard:
+                if self._replay_session == session:
+                    self._replay_pending.append((event_payload, session))
+                    return
+                cursor = self._event_cursor(event_payload, session)
+                if cursor is not None:
+                    stream, seq = cursor
+                    # 晚调度的实时发送若已被刚完成的历史快照覆盖，直接丢弃重复。
+                    if seq <= self._replay_highwater.get(stream, -1):
+                        return
         async with self._lock:
             await self.ws.send(make_message(type, payload, id=id, session=session))
 
@@ -279,11 +415,18 @@ async def _attach(
     # M11.6：attach 前取消积压的后台事件转发任务（如 session-memory），
     # 避免它们排队抢占 conn._lock 饿死 ATTACHED / replay 响应。
     conn.cancel_background()
-    await conn.send(
-        MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
-    )
-    await _send_session_info(conn, handle, sid)
-    await _replay(conn, handle, sid)
+    # registry.attach 到这里没有发生 await；立即打开 replay 屏障，不给实时 EVENT 留出
+    # 插入 ATTACHED 与历史回放之间的窗口。
+    conn.begin_replay(sid or "")
+    try:
+        await conn.send(
+            MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
+        )
+        await _send_session_info(conn, handle, sid)
+        await _replay(conn, handle, sid)
+    except BaseException:
+        conn.abort_replay(sid or "")
+        raise
 
 
 async def _switch(
@@ -295,14 +438,19 @@ async def _switch(
         return
     # M11.6：切换前取消旧会话后台事件转发积压（session-memory 持续投递会饿死响应）。
     conn.cancel_background()
-    await conn.send(
-        MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
-    )
-    await _send_session_info(conn, handle, sid)
-    await _replay(conn, handle, sid)
+    conn.begin_replay(sid or "")
+    try:
+        await conn.send(
+            MsgType.ATTACHED, {"session_id": sid, "project_root": project_root}, session=sid
+        )
+        await _send_session_info(conn, handle, sid)
+        await _replay(conn, handle, sid)
+    except BaseException:
+        conn.abort_replay(sid or "")
+        raise
 
 
-async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> None:
+async def _replay(conn: _ReplaySender, handle: SessionHandle, sid: str | None) -> None:
     """M7.4：先发 replay_start，再批量补发**持久化**事件，最后 replay_end。
 
     缓冲仅含非 transient 事件（见 BridgeTransport._on_event），故 tool_call_delta 等瞬时
@@ -315,7 +463,7 @@ async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> N
     缓冲，长会话会被截断、子会话事件从未落盘（重启即丢）。现改为读 sqlite 全量，且子会话事件已带
     ``parent_session_id`` 持久化，重启后仍能按父会话恢复完整历史。
     """
-    await conn.send(MsgType.REPLAY_START, {}, session=sid)
+    replay_items: list[tuple[dict[str, Any], str | None]] = []
     # 优先用 sqlite 全量回放（含子会话）；无 store 时回退内存缓冲（CLI / 兼容）。
     store = None
     reg = handle.registry
@@ -329,28 +477,29 @@ async def _replay(conn: Connection, handle: SessionHandle, sid: str | None) -> N
     if store is not None:
         for ev, sub in store.iter_events_with_subsession(sid):
             if sub is not None:
-                await conn.send(
-                    MsgType.EVENT,
-                    {"event": ev.to_dict(), "subsession_id": sub},
-                    session=sid,
-                )
+                replay_items.append(({"event": ev.to_dict(), "subsession_id": sub}, sid))
             else:
-                await conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=sid)
+                replay_items.append(({"event": ev.to_dict()}, sid))
     else:
         # 回退：内存缓冲（无持久化场景）。
         for ev in list(handle.event_buffer):
-            await conn.send(MsgType.EVENT, {"event": ev.to_dict()}, session=sid)
+            replay_items.append(({"event": ev.to_dict()}, sid))
         if reg is not None:
             for cid in list(handle.children):
                 sub = reg.get_subsession(cid)
                 if sub is None:
                     continue
                 for ev in list(sub.event_buffer):
-                    await conn.send(
-                        MsgType.EVENT,
-                        {"event": ev.to_dict(), "subsession_id": cid},
-                        session=sid,
-                    )
+                    replay_items.append(({"event": ev.to_dict(), "subsession_id": cid}, sid))
+
+    # 真实 Connection 走原子 replay/live 屏障；轻量测试替身/兼容连接保留旧接口。
+    if isinstance(conn, Connection) and sid is not None:
+        await conn.replay_events(replay_items, session=sid)
+        return
+
+    await conn.send(MsgType.REPLAY_START, {}, session=sid)
+    for payload, item_session in replay_items:
+        await conn.send(MsgType.EVENT, payload, session=item_session or sid)
     await conn.send(MsgType.REPLAY_END, {}, session=sid)
 
 

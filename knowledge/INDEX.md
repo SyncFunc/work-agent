@@ -18,8 +18,12 @@
 ## 设计文档索引（standalone，现状）
 
 - **上下文管理设计**：`knowledge/context-management.md`（工具结果保存 vs 注入、双轨映射、四层压缩防线、配对铁律、子代理隔离）。面向用户介绍见 `docs/上下文与记忆体系介绍.md`。
+- **Agent Memory 工程入门**：`docs/Agent Memory：从聊天记录到可控长期记忆.md`（Context/RAG 边界、分层与作用域、主流方案、一致性、检索治理、最小可落地架构与面试题）。
 - **沙盒与审批设计**：`knowledge/sandbox-approval-design.md`（Codex 模式：local/docker/external + 三档 profile + 网络默认拒绝 + AskForApproval 四模式）。面向用户介绍见 `docs/沙箱体系介绍.md`。
+- **Windows 硬沙箱（已对齐 Codex elevated）**：工程落地 `knowledge/appcontainer-sandbox-design.md`（`CodexSandboxOffline`/`CodexSandboxOnline` + **write-restricted token** + 合成 SID `sandbox-write` + ACL 双重检查 + Firewall 按用户 SID + DPAPI 凭据 + runner 分层；含 setup 脚本 `scripts/windows_sandbox_setup.ps1`、接入点、验收、决策留痕）；AppContainer 概念教学（历史方案）见 `docs/windows-appcontainer-hard-sandbox.md`。
+- **Codex Windows 沙箱实现**：`docs/codex-windows-sandbox.md`（write-restricted token + 合成 SID + ACL + `CodexSandboxOffline`/`CodexSandboxOnline` + Firewall；廖雪峰教程风格，含 mermaid 图）。
 - **Claude Code Subagents + Skills**：`knowledge/claude-code-subagents-skills.md`（映射到本项目既有接口）。
+- **Subagent 异步通信架构**：`docs/subagent异步通信架构设计.md`（Actor 化稳定身份、非阻塞 spawn、持久 mailbox、SendMessage 双向唤醒、安全点收信、至少一次投递、SQLite 表结构与迁移路线）。
 - **Claude Code 上下文管理机制**：`knowledge/claude-code-context-management.md`（四层渐进压缩防线、Session Memory 深度机制）。
 - **行业调研**：`knowledge/调研-agent-cli渲染与runner交互.md`、`调研-CLI美化方案.md`、`调研-Textual全屏CLI重构方案.md`。
 - **MCP 调研**：`docs/mcp-调研与教程.md`（概念、架构、Claude/Codex/Cursor 管理、多工具处理）。
