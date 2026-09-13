@@ -1,291 +1,265 @@
-# work-agent
+# Work Agent
 
-通用编码 Agent（类 Claude Code / Codex）。把「决策」交给 LLM，把「循环 / 权限 / 路由 / 压缩 / 持久化」全部做成确定性的工程实现；并通过 **agentrunner 守护进程分离**（WebSocket 协议）让渲染前端（CLI / Web）与 Agent 核心彻底解耦、常驻多会话。
+Work Agent 是一个面向真实软件项目的通用编码 Agent。它把需求理解、方案规划和工具选择交给大模型，把工具执行、权限审批、上下文压缩、会话恢复、任务并发与运行观测做成确定性的工程系统，并通过 Electron 桌面端提供完整的可视化工作区。
 
-> 完整架构依据见 [`通用Agent架构调研与设计报告.md`](./通用Agent架构调研与设计报告.md)；开发约定见 [`CODEBUDDY.md`](./CODEBUDDY.md)；里程碑计划见 [`milestones/`](./milestones/)。
+项目当前版本为 **v1.1.0**，已覆盖从单轮工具调用到多项目、多会话、后台子 Agent、长期记忆、MCP 外部工具接入和 Windows 隔离沙箱的完整链路。
 
----
+## 项目定位
 
-## 特性
+普通的模型对话只能生成文本，而编码 Agent 需要持续观察环境、调用工具、处理失败并根据结果继续决策。Work Agent 的核心目标，是让这条循环既有足够的自主性，又具备明确的安全边界和可追踪性。
 
-- **ReAct 循环**：模型只决策，工具执行 / 迭代 / 并发由确定性循环驱动。
-- **安全分层**：沙箱（本地 `unshare` / `CommandFilter` 应用层拦截）+ 审批门（四模式）+ 风险分级（read/edit/exec）。
-- **可观测与韧性**：Trace/Span（OTel 语义、父子树）持久化到 SQLite；限流 / 熔断 / 降级；`agent health` 健康检查 + HTTP `/health` 端点。
-- **上下文与记忆**：Microcompact（零成本占位符）→ Auto Compact（9 段摘要）→ Session Memory（后台子 Agent 增量维护）→ 防漂移；`/context` `/compact` 可观测与手动压缩。
-- **扩展能力**：Skill（双轨加载 / 触发目录）+ Subagent（内置 explore/plan/general-purpose + 自定义 / 工具白名单 / 深度限制 / 隔离上下文）+ 后台 Subagent（`/agent` `/bg`）。
-- **意图澄清 / PLAN 模式**：`ask_clarification` 工具、计划落盘 + 进度更新 + 风险门控。
-- **agentrunner 守护进程分离（M7，已落地）**：`agent daemon` 常驻 + `agent client` 经 WebSocket 连接，多会话 `attach` / `switch`，前端断连不中断 Agent，后台 Subagent 持续运行。
+系统遵循三个基本原则：
 
----
+- **模型负责决策，程序负责约束**：模型选择下一步动作，循环次数、工具路由、并发、审批和错误恢复由代码控制。
+- **事件流是真相来源**：用户输入、模型决策、工具调用、审批、结果和异常都进入统一事件流，用于实时渲染、持久化和恢复。
+- **能力彼此正交**：Tool 提供原子操作，Skill 提供按需知识，Subagent 提供隔离的任务上下文，MCP 连接外部工具生态。
+
+## 核心能力
+
+| 能力 | 说明 |
+|---|---|
+| ReAct 执行循环 | 支持模型流式输出、工具调用、结果回填、多轮迭代、重复调用保护和并发控制。 |
+| 计划与人工确认 | 计划模式只分析不修改；高风险动作经过审批，可在执行前澄清需求或请求授权。 |
+| 多项目与多会话 | 桌面端可打开不同项目，每个项目独立保存配置、会话、事件和观测数据。 |
+| 会话恢复与分支 | 会话写入 SQLite，应用重启后可继续；也可从历史状态派生新会话，保留父子关系。 |
+| 上下文与长期记忆 | 通过工具结果瘦身、自动摘要和 Session Memory 控制上下文体积，同时保留完整审计事件。 |
+| Skill 与子 Agent | Skill 按需加载；子 Agent 使用独立上下文和工具白名单，可在后台并行执行任务。 |
+| MCP 外部工具 | 支持 stdio MCP Server、用户级与项目级配置、运行时启停和工具延迟加载。 |
+| 安全执行 | 提供只读、工作区可写和完全访问三档策略，并结合命令过滤、审批门与操作系统隔离。 |
+| 可观测与韧性 | Trace/Span、工具时间线、Token 用量和错误持久化；内置限流、熔断、重试与降级机制。 |
+
+## 桌面工作区
+
+桌面端基于 Electron、React 和 TypeScript 构建，是项目的主要交互界面。应用启动时会自动拉起一个本地 agentrunner 后台进程，渲染进程通过 WebSocket 订阅实时事件，不直接持有命令执行能力。
+
+当前桌面端提供：
+
+- 项目文件夹打开与最近项目管理；
+- 会话新建、重命名、删除、切换、恢复和分支；
+- 模型流式回复、工具调用参数、执行结果和错误展示；
+- 计划/执行模式切换、停止生成和人工审批弹窗；
+- Skill、子 Agent 和 MCP Server 管理面板；
+- 后台子 Agent 状态与结果查看；
+- Trace、Span、Token 用量和工具执行时间线；
+- 模型、沙箱、审批、上下文和外观设置。
+
+后台进程与桌面窗口分离后，即使渲染界面短暂断开，正在运行的主任务和后台子 Agent 仍可继续执行。重新连接时，界面会依据持久化事件恢复状态。
 
 ## 架构总览
 
-整体分层：决策交给 LLM，循环 / 权限 / 路由 / 压缩 / 持久化是确定性工程实现；渲染层在进程内直连 `TerminalTransport`，或在 daemon 模式下经 WebSocket 与 Agent 核心解耦（渲染仍复用同一份 `TerminalTransport`）。
-
 ```mermaid
 graph TD
-    CLI["CLI (typer)"] -->|run / chat| Sess["Session"]
-    CLI -->|daemon| D["agentrunner 守护进程"]
-    CLI -->|client| Front["WebSocket 前端"]
+    Desktop["Electron 桌面端"] -->|WebSocket| Daemon["agentrunner 后台进程"]
+    Daemon --> Registry["SessionRegistry<br/>项目与会话管理"]
+    Registry --> Session["Session<br/>会话编排"]
+    Session --> Loop["AgentLoop<br/>ReAct 循环"]
 
-    Sess --> Loop["AgentLoop (ReAct)"]
-    Loop --> Model["Model (OpenAI 兼容)"]
-    Loop --> Tools["工具注册表 / 审批 / 沙箱"]
-    Loop --> Ctx["上下文管理 / 压缩"]
-    Loop --> Stream["EventStream (事件单一事实源)"]
+    Loop --> Model["Model<br/>OpenAI 兼容协议"]
+    Loop --> Tools["ToolRegistry<br/>内置工具与 MCP"]
+    Loop --> Context["ContextManager<br/>压缩与记忆"]
+    Loop --> Safety["Approval + Sandbox<br/>审批与隔离"]
+    Loop --> Subagents["SubagentManager<br/>并行子任务"]
 
-    Sess --> T["AgentTransport"]
-    T -->|进程内| Term["TerminalTransport (唯一渲染实现)"]
+    Session --> Events["EventStream<br/>事件单一事实源"]
+    Events --> Store["SQLite<br/>会话、事件与用量"]
+    Events --> Bridge["BridgeTransport<br/>协议转发"]
+    Bridge --> Desktop
 
-    D --> Bridge["BridgeTransport (序列化中转, 不渲染)"]
-    Bridge -->|EVENT / HITL| Front
-    Front --> Term
+    Loop --> Tracer["Trace / Span"]
+    Tracer --> TraceStore["TraceStore<br/>观测数据持久化"]
 ```
 
-ReAct 主循环：
+一次任务的主要执行流程如下：
 
 ```mermaid
 flowchart TD
-    A[用户输入 task] --> B[Session.step]
-    B --> C[AgentLoop: 调用 Model]
-    C --> D{决策?}
-    D -->|工具调用| E[执行工具 (沙箱 + 审批)]
-    E --> F[EventStream 事件]
-    F --> C
-    D -->|澄清| G[ask_clarification → HITL]
-    G --> C
-    D -->|计划| H[show_plan → 确认门]
-    H --> C
-    D -->|结束| I[Final / 返回 AgentResult]
+    A[用户提交任务] --> B[写入会话事件流]
+    B --> C[组装固定上下文与对话上下文]
+    C --> D[调用模型]
+    D --> E{模型决策}
+    E -->|直接回答| F[流式返回结果]
+    E -->|调用工具| G[风险判断与审批]
+    G --> H[沙箱执行]
+    H --> I[结果写回事件流]
+    I --> J{是否继续}
+    J -->|继续| C
+    J -->|完成| F
+    E -->|需要澄清| K[请求用户补充信息]
+    K --> C
+    F --> L[持久化会话、用量与 Trace]
 ```
 
----
+## 上下文与记忆
 
-## 安装
+长任务最容易遇到的问题不是“记不住”，而是工具输出和历史对话持续膨胀，最终挤占模型上下文。Work Agent 使用逐级处理策略控制体积：
 
-要求 **Python ≥ 3.12**。
+1. **Microcompact**：优先把较旧、体积较大的工具结果替换成可追溯占位信息，不调用模型。
+2. **Session Memory**：后台增量维护当前任务的目标、进度、关键决策、文件状态和待办事项。
+3. **Auto Compact**：接近上下文上限时生成结构化摘要，保留最近对话继续工作。
+4. **Reactive Compact**：模型请求因上下文超限失败时，立即压缩并重试。
 
-```bash
-# 克隆后在项目根目录
-pip install -e ".[dev]"      # 含开发依赖（pytest / pytest-asyncio）
-```
+模型看到的是经过治理的工作上下文，SQLite 中保存的 EventStream 则保留完整事实。这样既能控制 Token 成本，也不会为了压缩而破坏会话恢复和审计能力。
 
-安装后可用 `python -m agent.cli <命令>` 或（若安装了控制台脚本）`agent <命令>` 调用。
+`AGENTS.md`、系统约束和工具定义属于固定底座，不参与历史压缩。项目约定因此能在长会话中持续生效。
 
----
+## 安全模型
+
+安全能力由“风险识别、人工审批、应用层过滤、操作系统隔离”共同组成，而不是仅依赖提示词。
+
+| 沙箱档位 | 文件访问 | 网络访问 | 典型用途 |
+|---|---|---|---|
+| `read-only` | 只读 | 默认禁止 | 代码检索、依赖分析、方案规划 |
+| `workspace-write` | 工作区内可写 | 默认禁止 | 常规开发、测试和文档修改 |
+| `danger-full` | 不限制 | 允许 | 用户明确批准后的特殊任务 |
+
+在 Windows 上，系统可使用受限本地账户、受限 Token、ACL 和 Job Object 形成操作系统级隔离；在 Linux 上可使用内核隔离能力；也可切换到一次性 Docker 执行器。若硬隔离不可用，应用层 `CommandFilter` 仍会在进程创建前拦截明显越界的写入、网络和危险命令。
+
+审批的含义是允许当前动作临时突破默认边界，而不是永久关闭保护。动作结束后，后续执行仍回到原有沙箱策略。
+
+## Skill、子 Agent 与 MCP
+
+这三类扩展解决的问题不同：
+
+- **Tool** 是可执行的最小能力，例如读取文件、编辑内容或运行测试。
+- **Skill** 是按需加载的任务说明和领域知识，不会默认占满上下文。
+- **Subagent** 拥有独立对话历史和事件流，适合代码检索、方案设计、测试分析等可并行任务。
+- **MCP** 把外部服务转换成统一工具，例如代码托管、数据库或内部系统。
+
+MCP 工具采用两级加载。未激活工具只以名称和简介出现在目录中，模型需要使用时先通过 `tool_search` 检索并激活，随后才把完整参数 Schema 放入上下文。这样可以连接较多工具，同时避免工具定义挤占主要任务空间。
+
+子 Agent 默认受工具白名单和最大深度限制。它们的中间消息不会混入主会话，完成后只把结构化结果交还父 Agent；后台任务即使暂时没有界面连接，也会由 agentrunner 继续维护。
 
 ## 配置
 
-密钥与模型只写在 YAML，**不读 `.env` / 环境变量**。
+桌面端可直接编辑常用设置。高级配置使用 YAML，分为两层：
 
-```bash
-# 首次运行自动生成配置骨架（仅创建缺失项，绝不覆盖已有 settings.yaml）
-python -m agent.cli init
-```
+- 项目级：`<project>/.agent/settings.yaml`，只影响当前项目；
+- 用户级：`~/.agent/settings.yaml`，作为所有项目的个人默认值。
 
-- **项目级**：`<project>/.agent/settings.yaml`（随项目，优先级更高）
-- **用户级**：`~/.agent/settings.yaml`（跨项目个人偏好，优先级更低）
-- **优先级**：CLI 参数 > 项目级 YAML > 用户级 YAML > 内置默认
-
-直接创建上述任一 YAML 文件并填入密钥即可：
+项目级配置优先于用户级配置。`.agent/` 默认被版本控制忽略，模型密钥和本地会话数据不会提交到仓库。
 
 ```yaml
 llm:
-  base_url: https://api.deepseek.com   # 任意 OpenAI 兼容端点
+  base_url: https://api.deepseek.com
   model: deepseek-v4-flash
-  api_key: sk-xxx                       # 你的密钥（已 .gitignore 忽略）
-max_iterations: 25
+  api_key: sk-xxx
+
+loop:
+  max_iterations: 25
+  max_tool_concurrency: 5
+
+sandbox:
+  mode: local
+  profile: workspace-write
+  isolation: auto
+
+approval:
+  mode: on-request
+  elevated_sandbox_profile: danger-full
+
+context:
+  context_window: 200000
+  microcompact_enabled: true
+  auto_compact_enabled: true
+  session_memory_enabled: true
+
+skills:
+  enabled: true
+
+subagents:
+  enabled: true
+  max_depth: 5
+
+mcp:
+  enabled: true
+  tool_timeout_sec: 45
+  concurrency: 4
 ```
 
-> **provider 无关**：底层走 OpenAI 兼容协议（`/v1/chat/completions`）。换 DeepSeek / OpenAI / 本地 vLLM 等，仅需改 `base_url` / `model` / `api_key`，**无需改代码**。默认指向 DeepSeek。
->
-> 可用环境变量 `AGENT_PROJECT_ROOT`（覆盖项目根，也支持从其他目录启动）、`AGENT_USER_CONFIG_DIR`（覆盖用户级配置目录）。
+模型层使用 OpenAI 兼容的 `/v1/chat/completions` 协议。更换 DeepSeek、OpenAI 兼容服务或本地模型时，只需要调整 `base_url`、`model` 和 `api_key`，无需修改 Agent 核心代码。
 
----
+MCP Server 使用独立的 `mcp.yaml` 管理，支持用户级与项目级覆盖，也可以在桌面端 MCP 面板中增删、启停和查看连接状态。
 
-## 快速开始
+## 本地开发
 
-```bash
-# 一次性执行（非交互）：给任务，Agent 跑完一轮 ReAct 返回
-python -m agent.cli run "把 TODO 注释清理掉"
+环境要求：
 
-# PLAN 模式：先产出计划，确认后再执行
-python -m agent.cli run --plan "重构 utils 模块"
+- Python 3.12 或更高版本；
+- Node.js 20 或更高版本；
+- Windows、macOS 或 Linux 桌面环境。
 
-# 交互式 REPL：多轮对话，单会话持续累积历史（默认进入 Textual 全屏 TUI，对标 Claude Code）
-python -m agent.cli chat
-
-# 强制使用旧版非全屏渲染（CI / 管道 / 偏好旧交互时）
-python -m agent.cli chat --legacy
-```
-
----
-
-## CLI 命令参考
-
-| 命令 | 说明 |
-|---|---|
-| `run <task>` | 一次性执行任务。选项：`--plan/--no-plan`（PLAN 起步）、`--yes`（跳过计划确认）、`--no-clarify`（关澄清）、`--no-trace`（关 trace）。 |
-| `chat` | 交互式 REPL，多轮对话。默认进入 **Textual 全屏 TUI**（需交互终端 TTY）；非交互环境（CI / 管道）自动退回旧渲染；`--legacy` 强制旧版非全屏渲染。 |
-| `init` | 生成 `.agent/` 配置骨架（settings.yaml / skills / agents / AGENTS.md）。 |
-| `health` | 健康检查：`--watch`（轮询）、`--port 9090`（HTTP `/health` 端点）。 |
-| `daemon` | 启动 agentrunner 守护进程（常驻，仅绑 `127.0.0.1`）。`--port` 覆盖端口。 |
-| `client` | 连接 daemon 的 CLI 前端。`--session <id>` attach 指定会话、`--resume` 恢复最近会话、`--run "<task>"` 一次性模式。 |
-| `resume <id>` | 跨重启恢复指定会话（从 SQLite 事件流重建消息，可继续未完成任务；中断处自动注入「继续」）。 |
-| `fork <id>` | 从指定会话 fork 出新分支（复制事件前缀，记录 `parent_session_id` 血缘）。 |
-
-### chat REPL 内置命令
-
-| 命令 | 作用 |
-|---|---|
-| `/plan` · `/exec` | 切换探索 / 执行模式（任意轮次） |
-| `/approve` | 批准当前计划并切到执行 |
-| `/mode` | 查看当前模式 |
-| `/skills` · `/agents` | 列出可用 Skill / Subagent 类型 |
-| `/skill <name>` | 显式把某 Skill 加载到下一轮 |
-| `/agent <name> <task>` | 后台运行一个 Subagent（如 `/agent explore "梳理调用关系"`） |
-| `/bg` | 查看运行中的后台 Subagent |
-| `/context` | 查看上下文占用占比 |
-| `/compact` | 手动压缩上下文 |
-
-输入 `exit` / `quit` 退出（退出时会优雅等待后台 Subagent 收尾）。
-
-### 会话恢复与 fork（M6）
-
-会话持久化到 `<project>/.agent/sessions/` 下的 SQLite（事件流 + 元数据），**跨重启可恢复**：
-
-```bash
-python -m agent.cli resume <id>     # 从持久化事件流重建消息并继续；中断处自动注入「继续」
-python -m agent.cli fork <id>       # 派生独立分支（复制父会话事件前缀，记录血缘）
-python -m agent.cli client --resume # daemon 模式：恢复最近会话
-```
-
-`chat` REPL 内也支持 `/resume <id>`、`/fork <id>` 即时切换会话分支。恢复基于完整未压缩的 `EventStream`，fork 为复制语义、恢复路径无特殊分支。
-
----
-
-## agentrunner 守护进程（M7）
-
-渲染层与 Agent 核心分离为「常驻守护进程 + 前端」：
-
-```bash
-# 终端 1：启动守护进程（默认 127.0.0.1:18789，另起 18790 健康检查）
-python -m agent.cli daemon
-
-# 终端 2：CLI 前端连接、发任务、触发 HITL、切换会话
-python -m agent.cli client --run "帮我加一个单元测试"
-python -m agent.cli client --resume          # 恢复最近会话
-python -m agent.cli client --session <id>    # attach 指定会话
-```
-
-- WebSocket 双向流式：事件直接复用 `Event.to_dict()` 转发，前端复用 `TerminalTransport._on_event` 逐事件渲染（逐字 / 逐参流式）。
-- HITL 经带 `id` 的协议消息 + `asyncio.Future` 往返：前端就地提问、回传应答。
-- 多会话：`attach` 其一；切换 = `detach` + `attach`；环形缓冲仅收持久化事件，`tool_call_delta` 不重画。
-- 后台 Subagent 在无人 attach 时仍由 daemon 单循环驱动，attach 后回放近期活动。
-- **安全**：daemon 仅绑 `127.0.0.1`；core（loop/session/transport/events）保持零 / 极小改动。
-
-> 同一套协议天然支撑未来 Web 前端：只需另写一个订阅事件流的渲染器。
-
-**传输与渲染分离**：渲染只有 `TerminalTransport` 一份；daemon 侧的 `BridgeTransport` 仅做序列化中转，不渲染。两种路径共用同一份渲染实现。
-
-```mermaid
-graph TD
-    subgraph Proc["进程内 run / chat"]
-        S1["Session.step"] --> T1["TerminalTransport<br/>(唯一渲染 + HITL)"]
-    end
-    subgraph Daemon["daemon 模式"]
-        S2["Session.step (守护进程)"] --> B["BridgeTransport<br/>(序列化中转, 不渲染)"]
-        B -->|EVENT / HITL via WS| F["client.py 前端"]
-        F --> T2["TerminalTransport<br/>(复用同一份渲染 + HITL)"]
-    end
-```
-
-**事件与 HITL 往返**（daemon 模式下，每类事件都经 `TerminalTransport._on_event` 渲染，无遗漏）：
-
-```mermaid
-sequenceDiagram
-    participant Loop as AgentLoop
-    participant Bridge as BridgeTransport
-    participant WS as WebSocket
-    participant Client as client.py
-    participant Term as TerminalTransport
-
-    Loop->>Bridge: emit Event / HITL 请求
-    Bridge->>WS: 序列化消息 (event/ask/approve/...)
-    WS->>Client: 转发
-    Client->>Term: _on_event / ask / confirm_plan / approve / show_*
-    Term-->>Client: 渲染到终端
-    Client->>WS: 回传应答 (answer/approve/...)
-    WS->>Bridge: 唤醒 asyncio.Future
-    Bridge->>Loop: 返回 HITL 结果
-```
-
----
-
-## 目录结构
-
-```
-agent/
-  core/        循环 / 意图 / 模型 / 事件流 / 会话 / 传输层
-  runtime/     工具注册 / 审批 / 沙箱
-  context/     上下文管理 / 压缩器（Microcompact / AutoCompact / Session Memory）
-  skills/      Skill 加载
-  resilience/  限流 / 熔断 / 降级 / 健康检查
-  obs/         Trace / Span 持久化
-  config/      配置（pydantic-settings + YAML）
-  daemon/      agentrunner 守护进程（WS / HTTP server + BridgeTransport + 协议）
-  cli.py       typer 入口（run / chat / init / health / daemon / client）
-tools/         内置工具（read / write / edit / bash / grep / find）
-skills/        项目级 Skill（<.agent/skills/>）
-milestones/    里程碑计划与步骤文档
-knowledge/     跨里程碑知识沉淀
-```
-
----
-
-## 里程碑进度
-
-| 里程碑 | 状态 |
-|---|---|
-| M1 骨架 | ✅ 已完成 |
-| M2 安全与确认 | ✅ 已完成 |
-| M3 可观测与韧性层 | ✅ 已完成 |
-| M4 上下文与记忆 | 🟡 部分完成（M4.1–M4.7 已落地，M4.5–M4.7 见文档） |
-| M5 扩展能力 | ✅ 已完成 |
-| M6 生产化（会话恢复 / 测试金字塔 / CI） | ✅ 已完成 |
-| M7 agentrunner 守护进程分离 | ✅ 已完成（全量 `pytest` 380 passed） |
-
----
-
-## 文档
-
-面向使用的介绍性文档（大白话讲设计背景、流程与好处）：
-
-- [`docs/沙箱体系介绍.md`](./docs/沙箱体系介绍.md) — 沙箱执行层：为什么做、三档 profile、四种执行器、`CommandFilter` 纵深防御、完整执行流程
-- [`docs/上下文与记忆体系介绍.md`](./docs/上下文与记忆体系介绍.md) — 上下文与记忆：双轨（EventStream/conv）、四层渐进压缩防线、计量触发、防漂移
-- [`docs/测试体系介绍.md`](./docs/测试体系介绍.md) — 测试金字塔：单测/快照、工具录像带、端到端 e2e
-
----
-
-## 开发
+安装后端与测试依赖：
 
 ```bash
 pip install -e ".[dev]"
-pytest -q                       # 跑 unit + integration（默认跳过 slow/e2e）
-pytest -m slow                  # 跑 e2e（非确定/慢，CI 走 nightly / workflow_dispatch）
-ruff check .                    # lint
-ruff format --check .           # 格式检查
-basedpyright                    # 类型检查（standard 模式）
-pytest --cov=agent --cov-report=xml   # 带覆盖率（需 pip install pytest-cov）
 ```
 
-> CI：`.github/workflows/ci.yml` 在 push/PR 跑 `fast` job（ruff + basedpyright + pytest + cov），
-> `slow` job 仅 nightly / 手动触发跑 e2e（真实 LLM 调用只在此处，绝不进 PR 门禁）。
+安装并启动桌面端：
 
-- LLM 一律可 Mock：`Model` 抽象 + `FakeModel` / `RecordingModel`，测试不依赖真实 API。
-- 异步测试：`pytest-asyncio`（`asyncio_mode = "auto"`）。
+```bash
+cd desktop
+npm install
+npm run dev
+```
 
----
+桌面窗口会自动启动并连接本地 agentrunner。首次进入后，打开一个项目文件夹，并在设置面板中填写模型服务信息即可开始使用。
+
+常用质量检查：
+
+```bash
+pytest -q
+ruff check .
+ruff format --check .
+basedpyright
+
+cd desktop
+npm test
+npm run typecheck
+npm run build
+```
+
+后端模型调用通过 `Model` 接口抽象，测试可使用 `FakeModel` 和 `RecordingModel`，因此大部分测试不依赖真实模型服务。耗时或非确定性的端到端测试与常规门禁分开运行。
+
+## 目录结构
+
+```text
+agent/
+  core/          ReAct 循环、会话、事件、模型与传输协议
+  runtime/       工具注册、风险审批和沙箱执行
+  context/       上下文计量、压缩、长期记忆与会话恢复
+  daemon/        agentrunner、会话注册表和 WebSocket 协议
+  mcp/           MCP 客户端、配置、适配器与生命周期管理
+  skills/        Skill 发现、解析与加载
+  obs/           Trace、Span 和 SQLite 观测存储
+  resilience/    限流、熔断、重试、降级与健康检查
+  tools/         内置文件、检索和命令工具
+
+desktop/
+  src/main/      Electron 主进程与 agentrunner 生命周期
+  src/preload/   安全的主进程桥接
+  src/renderer/  React 工作区入口、主题与布局
+  src/features/  会话、聊天、Skill、Agent、MCP、设置与观测面板
+
+tests/           单元、集成、快照与端到端测试
+milestones/      各里程碑的实现方案、验收标准与复盘
+knowledge/       跨里程碑沉淀的设计知识
+docs/            架构设计、实现细节与专题文档
+```
+
+## 进一步阅读
+
+- [上下文与记忆体系介绍](./docs/上下文与记忆体系介绍.md)：四层压缩防线、EventStream 与 Session Memory 的职责边界。
+- [沙箱体系介绍](./docs/沙箱体系介绍.md)：三档安全策略、执行器选择、审批和命令过滤。
+- [Windows AppContainer 硬沙箱设计](./docs/windows-appcontainer-hard-sandbox.md)：Windows 隔离模型、Token、ACL 与进程约束。
+- [Agent 长连接与崩溃恢复机制](./docs/Agent长连接与崩溃恢复机制.md)：前后台分离、断线恢复和任务续跑。
+- [MCP 接入设计](./docs/mcp-接入设计.md)：MCP 生命周期、工具适配、风险分级与延迟加载。
+- [Subagent 异步通信架构设计](./docs/subagent异步通信架构设计.md)：上下文隔离、并行调度和结果回传。
+- [测试体系介绍](./docs/测试体系介绍.md)：测试金字塔、模型替身、录像带与端到端验证。
+- [v1.1.0 发布说明](./docs/release-v1.1.0.md)：当前版本新增能力和质量门禁。
+
+## 项目状态
+
+项目已完成核心 Agent、沙箱与审批、可观测与韧性、上下文与记忆、Skill 与子 Agent、会话生产化、agentrunner 分离、桌面客户端、用量与消息模型、MCP 接入等里程碑。当前工作重点是继续完善桌面体验、扩展外部工具生态，并加强真实项目上的长期运行评测。
 
 ## 许可
 
